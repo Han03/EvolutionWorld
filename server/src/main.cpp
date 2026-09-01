@@ -6,6 +6,7 @@
 #include "auth/auth.h"
 #include "anticheat/anticheat.h"
 #include "net/server.h"
+#include "store/store.h"
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
@@ -50,11 +51,16 @@ int main(int argc, char** argv) {
     cfg.clientDir = base + cfg.clientDir;
   }
 
+  // 存储系统：MySQL(账号/存档) + Redis(会话/缓存)，内存兜底；连不上自动降级不影响功能
+  StoreConfig sc = storeConfigFromEnv(cfg);
+  Store store(cfg, sc);
+  store.init();
+
   World world(cfg);
   world.seedWorld();
-  Auth auth(cfg);
+  Auth auth(cfg, store);
   AntiCheat ac(cfg);
-  GameServer server(cfg, world, auth, ac);
+  GameServer server(cfg, world, auth, ac, store);
 
   if (!server.start()) {
     fprintf(stderr, "[EvolutionWorld] 启动失败：端口 %d 可能被占用\n", cfg.port);
@@ -70,6 +76,10 @@ int main(int argc, char** argv) {
   fprintf(stderr, "  防作弊: sample=%d%% tol=%.1fm vertTol=%.1fm maxRate=%d/s burst=%d kick=%d\n",
           cfg.sampleRatePct, cfg.teleportToleranceM, cfg.verticalToleranceM,
           cfg.maxInputRatePerSec, cfg.inputBurst, cfg.kickThreshold);
+  fprintf(stderr, "  存储: %s%s%s\n",
+          store.mysqlActive() ? "MySQL" : "MySQL(内存)",
+          store.redisActive() ? "+Redis" : "+Redis(内存)",
+          store.anyExternal() ? "" : "  [纯内存模式: EW_DB_MYSQL/EW_DB_REDIS 可启用外部存储]");
   fprintf(stderr, "  EW_DEBUG=1 时输出防作弊日志与 /api/debug/players\n");
 
   server.run();

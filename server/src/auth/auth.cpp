@@ -10,8 +10,11 @@
 
 namespace ew {
 
-Auth::Auth(const Config& cfg) : cfg_(cfg) {
+Auth::Auth(const Config& cfg, Store& store) : cfg_(cfg), store_(store) {
   load();
+  // 若 MySQL 可用，启动时把 MySQL 账号合并进内存（跨进程/跨重启持久）
+  for (const auto& u : store_.mysqlLoadAllUsers())
+    users_[u.username] = User{u.username, u.salt, u.hash, u.createdAt};
 }
 
 std::string Auth::hashPassword(const std::string& password, const std::string& salt) const {
@@ -102,6 +105,8 @@ Json Auth::registerUser(const std::string& username, const std::string& password
   u.createdAt = "now";
   users_[uname] = u;
   save();
+  // 同步到 MySQL（尽力而为；失败由 Store 自动降级，不影响功能）
+  store_.upsertUser(UserRecord{u.username, u.salt, u.hash, u.createdAt});
 
   Json r = Json::object();
   r["ok"] = true;
@@ -146,17 +151,30 @@ Json Auth::login(const std::string& username, const std::string& password) {
 std::string Auth::verifyToken(const std::string& token) {
   if (token.empty()) return "";
   auto it = sessions_.find(token);
-  if (it == sessions_.end()) return "";
-  uint64_t nowMs = (uint64_t)time(nullptr) * 1000;
-  if (it->second.expiresAtMs < nowMs) {
-    sessions_.erase(it);
-    return "";
+  if (it != sessions_.end()) {
+    uint64_t nowMs = (uint64_t)time(nullptr) * 1000;
+    if (it->second.expiresAtMs < nowMs) {
+      sessions_.erase(it);
+    } else {
+      return it->second.username;
+    }
   }
-  return it->second.username;
+  // 内存未命中 → 尝试 Redis（其他实例签发的 token），命中则回填本地
+  std::string uname = store_.getSession(token);
+  if (!uname.empty()) {
+    Session s;
+    s.userId = uname;
+    s.username = uname;
+    s.expiresAtMs = (uint64_t)time(nullptr) * 1000 + (uint64_t)cfg_.sessionTtlSec * 1000;
+    sessions_[token] = s;
+    return uname;
+  }
+  return "";
 }
 
 void Auth::logout(const std::string& token) {
   sessions_.erase(token);
+  store_.delSession(token);
 }
 
 } // namespace ew

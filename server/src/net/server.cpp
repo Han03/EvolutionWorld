@@ -117,6 +117,8 @@ void GameServer::run() {
       }
       world_.tick();
       broadcastTick();
+      // 周期落玩家存档（每 100 tick ≈ 5s 一次；写失败由 Store 降级，不影响功能）
+      if ((world_.tickCount() % 100) == 0) periodicSavePlayers();
       nextTickMs_ += (uint64_t)cfg_.tickMs;
       // 仅当真正落后超过一个 tick 时才重同步（防止无符号减法下溢造成空转）
       uint64_t sNow = steadyMs();
@@ -152,7 +154,10 @@ void GameServer::closeConn(int fd) {
     Conn& c = it->second;
     if (!c.playerId.empty()) {
       Entity* e = world_.findEntity(c.playerId);
-      if (e) ac_.reset(*e);
+      if (e) {
+        ac_.reset(*e);
+        savePlayerToStore(*e); // 下线落存档（MySQL/内存）
+      }
       netcode_.resetPlayer(c.playerId);
       world_.despawnPlayer(c.playerId);
     }
@@ -263,7 +268,20 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
           c.closeAfterFlush = true;
           return;
         }
-        Entity* player = world_.spawnPlayer(username);
+        // 加载玩家存档（MySQL/内存；无存档则随机出生，不影响功能）
+        Vec3 hint; bool hasSave = false;
+        PlayerSave ps;
+        if (store_.loadPlayer(username, ps)) {
+          hint = {ps.x, ps.y, ps.z};
+          hasSave = true;
+        }
+        Entity* player = world_.spawnPlayer(username, hasSave ? &hint : nullptr);
+        if (hasSave) {
+          player->hp = ps.hp > 0 && ps.hp <= player->maxHp ? ps.hp : player->maxHp;
+          player->level = ps.level;
+          fprintf(stderr, "[save] %s 从存档恢复位置 (%.1f,%.1f,%.1f) hp=%.0f\n",
+                  username.c_str(), ps.x, ps.y, ps.z, ps.hp);
+        }
         c.playerId = player->id;
         c.phase = Conn::Ws;
         c.inBuf.clear();
@@ -569,6 +587,21 @@ int GameServer::fdOfPlayer(const std::string& playerId) const {
   return -1;
 }
 // 每 tick：为每个在线玩家构建并下发二进制缓冲（AOI 进出 + 增量 + 校准快照）
+void GameServer::savePlayerToStore(const Entity& e) {
+  PlayerSave ps;
+  ps.username = e.username;
+  ps.x = (float)e.pos.x; ps.y = (float)e.pos.y; ps.z = (float)e.pos.z;
+  ps.hp = (float)e.hp;
+  ps.level = e.level;
+  ps.updatedAtMs = world_.tickCount() * (uint64_t)cfg_.tickMs;
+  store_.savePlayer(ps);
+}
+void GameServer::periodicSavePlayers() {
+  for (const auto& pid : world_.players()) {
+    Entity* e = world_.findEntity(pid);
+    if (e && e->kind == EntityKind::Player) savePlayerToStore(*e);
+  }
+}
 void GameServer::broadcastTick() {
   const auto& out = netcode_.tickBroadcast();
   for (const auto& [pid, buf] : out) {

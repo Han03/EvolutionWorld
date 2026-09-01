@@ -8,13 +8,14 @@
 #include "game/netcode.h"
 #include "auth/auth.h"
 #include "anticheat/anticheat.h"
+#include "store/store.h"
 #include "net/protocol.h"
 #include "../config.h"
 namespace ew {
 class GameServer {
 public:
-  GameServer(const Config& cfg, World& world, Auth& auth, AntiCheat& ac)
-      : cfg_(cfg), world_(world), auth_(auth), ac_(ac), netcode_(world, cfg) {}
+  GameServer(const Config& cfg, World& world, Auth& auth, AntiCheat& ac, Store& store)
+      : cfg_(cfg), world_(world), auth_(auth), ac_(ac), store_(store), netcode_(world, cfg) {}
   bool start();
   void run();
   void stop();
@@ -41,6 +42,8 @@ private:
   void handleBinary(Conn& c, const std::string& payload);
   void handleInput(Conn& c, const proto::InputMsg& in);
   void broadcastTick();
+  void savePlayerToStore(const Entity& e);
+  void periodicSavePlayers();
   void sendTo(Conn& c, const std::string& frame);
   int fdOfPlayer(const std::string& playerId) const;
   static uint64_t steadyMs();
@@ -48,6 +51,7 @@ private:
   World& world_;
   Auth& auth_;
   AntiCheat& ac_;
+  Store& store_;
   Netcode netcode_;
   int listenFd_ = -1;
   int epollFd_ = -1;

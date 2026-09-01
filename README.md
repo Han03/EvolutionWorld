@@ -29,6 +29,9 @@ make
 ./evolution_server
 # 或
 EW_DEBUG=1 ./evolution_server          # 输出防作弊日志 + /api/debug/players + /api/terrain/chunk
+# 启用外部存储（可选；不设置则纯内存模式，功能不受影响）
+EW_DB_MYSQL=127.0.0.1:3306 EW_DB_MYSQL_USER=root EW_DB_MYSQL_PASS=secret EW_DB_MYSQL_DB=evolutionworld \
+EW_DB_REDIS=127.0.0.1:6379 ./evolution_server
 ```
 浏览器打开 `http://localhost:3000` → 输入账号密码 → 点「注册」自动注册并登录（或注册后点「登录」）→ 进入俯视角无缝世界。
 
@@ -115,6 +118,17 @@ node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇�
 - **仇恨模型**：`aggro[wid]` 权重表；攻击增仇、Boss 被击目标仇恨衰减；玩家离线/死亡自动清仇；`pickAggroTarget` 取最高仇恨，便于后续扩展（威胁值衰减/距离权重/坦克切换）。
 - **扩展位**：AI 参数全部集中在 `config.h`（仇恨/追击/巡逻/LOD 阈值），可用环境变量覆盖；新行为 = 新状态 + 新系统，不改既有系统。
 
+## 存储系统（MySQL + Redis，无 DB 不影响功能）
+`server/src/store/` 实现 **存储抽象层**：账号/玩家存档 → MySQL 持久化；会话/缓存 → Redis；**内存兜底，连不上外部存储自动降级，纯内存模式完整可用**。
+- **三层架构**：`IStore` 抽象接口（业务层只依赖它）+ `MemoryStore`（永远可用、读权威、兜底）+ 外部后端（`MysqlStore` 账号/存档、`RedisStore` 会话/缓存）。
+- **降级策略**：启动探测连接失败/运行期断线 → `available()=false` → 门面路由到内存，**不抛异常不崩溃**；启动时 MySQL 账号全量灌入内存缓存，断线后读仍命中。
+- **MySQL**：libmysqlclient 预处理语句（防 SQL 注入）+ 幂等建表 `accounts` / `player_saves`；编译期检测头文件，缺库编译为空实现（全内存），不因无 MySQL 开发库而失败。
+- **Redis**：自写最小 RESP 协议客户端（零第三方依赖，`PING/AUTH/SET(EX)/GET/DEL/EXISTS/EXPIRE`），键前缀 `ew:`，会话 `sess:<token>` 带 TTL。
+- **玩家存档**：WS 登录按存档恢复出生点；每 100 tick（≈5s）周期落盘 + 下线落盘。
+- **会话**：内存 + Redis(EXPIRE)，多实例可共享 token（A 实例签发、B 实例校验）。
+- **配置**：`EW_DB_MYSQL[=host:port]` + `EW_DB_MYSQL_USER/PASS/DB`、`EW_DB_REDIS[=host:port]` + `EW_DB_REDIS_PASS/PREFIX`；未设置即纯内存模式。
+详见 `server/docs/storage-design.md`。
+
 
 ## 项目结构
 ```
@@ -143,8 +157,9 @@ EvolutionWorld/
         │   ├── http.h/cpp / websocket.h/cpp
         │   ├── protocol.h/cpp     # ★ 二进制帧/量化/编解码
         │   └── ...
-        ├── auth/                  # 注册/登录/会话令牌（SHA-256 加盐）
+        ├── auth/                  # 注册/登录/会话令牌（SHA-256 加盐，接 Store）
         ├── anticheat/             # ★ 防作弊：限频/序号/随机采样/轨迹/回退/踢出
+        ├── store/                 # ★ 存储层：IStore 抽象 + 内存兜底 + MySQL/Redis（无 DB 不影响功能）
         └── game/                  # ★ 游戏逻辑（权威模拟）
             ├── world.h/cpp        # 实体注册表 / tick / 系统调度 / 快照
             ├── terrain.h/cpp      # 确定性噪声 + 高度场（与客户端逐位一致）
@@ -154,7 +169,9 @@ EvolutionWorld/
             ├── aoi.h/cpp          # ★ AOI 空间网格
             ├── ai.h/cpp           # ★ 生物/NPC/Boss AI 框架（状态机 + 三级调度）
             └── netcode.h/cpp      # ★ 每玩家兴趣集 + 增量/LOD/校准快照 + Boss 全局广播
-    └── docs/world-shared-state.md  # 世界怪物/Boss 状态共享方案设计文档
+    └── docs/
+        ├── world-shared-state.md  # 世界怪物/Boss 状态共享方案设计文档
+        └── storage-design.md      # 存储系统（MySQL+Redis 降级）设计文档
 ```
 （`server/data/users.json` 为运行时生成的账号数据，已被 .gitignore 忽略。）
 
