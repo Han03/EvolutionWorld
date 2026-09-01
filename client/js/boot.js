@@ -6,6 +6,7 @@ import { NetworkClient } from './network.js';
 import { InputState } from './input.js';
 import { createRenderer } from './renderer.js';
 import { EntityViewManager } from './entities.js';
+import { Predictor } from './predict.js';
 import * as THREE from 'three';
 
 const $ = (id) => document.getElementById(id);
@@ -27,11 +28,12 @@ window.addEventListener('unhandledrejection', (e) => {
 let renderer = null;
 let entities = null;
 let input = null;
+let predictor = null;
 let running = false;
 let lastT = 0;
 let fpsAcc = 0;
 let fpsCount = 0;
-let inputTimer = 0;
+let inputAcc = 0;
 
 // ---------------- 登录 UI ----------------
 
@@ -118,10 +120,30 @@ async function enterWorld(token, username, worldMeta) {
   window.__ewEntities = entities; // 测试/调试钩子
   input = new InputState(renderer.renderer.domElement);
   window.__ewInput = input;
+  // 本地预测器：从 welcome 位置起步
+  predictor = new Predictor();
+  if (net.welcome && net.welcome.you) {
+    predictor.setPosition(net.welcome.you.x, net.welcome.you.y, net.welcome.you.z);
+  }
+  window.__ewPredictor = predictor; // 测试/调试钩子
   $('loading-text').textContent = '接收世界数据…';
 
   net.onSnapshot = (snap) => {
     entities.applySnapshot(snap.entities);
+  };
+
+  net.onCorrection = (msg) => {
+    // 服务端后校验不通过 → 回退到权威位置
+    predictor.correction(msg.x, msg.y, msg.z);
+    entities.setSelf(msg.x, msg.y, msg.z);
+    console.warn('[prediction] 服务端回退:', msg.reason, msg.x.toFixed(2), msg.y.toFixed(2), msg.z.toFixed(2));
+  };
+
+  net.onKick = (msg) => {
+    $('hud-conn').textContent = '已断开（' + (msg.reason || '违规') + '）';
+    $('hud-conn').className = 'hud-chip off';
+    running = false;
+    net.close();
   };
 
   $('loading-text').textContent = '进入世界…';
@@ -135,21 +157,29 @@ async function enterWorld(token, username, worldMeta) {
 
 function loop(now) {
   if (!running) return;
-  const dt = Math.min(0.1, (now - lastT) / 1000);
+  const rawDt = (now - lastT) / 1000;         // 真实墙钟 dt（预测器用，保证实时推进）
+  const dt = Math.min(0.1, rawDt);            // 插值/HUD 用 dt（防止爆炸）
   lastT = now;
 
-  // 1) 输入 → 服务端（约 20Hz）
-  inputTimer -= dt;
-  if (inputTimer <= 0) {
-    inputTimer = 0.05;
-    const mv = input.moveVector();
-    net.sendInput(mv.x, mv.z, input.takeJump());
+  // 1) 读取输入 → 本地预测即时生效
+  const mv = input.moveVector();
+  inputAcc += dt;
+  // 与服务端同频（20Hz）发送并推进预测
+  if (inputAcc >= 0.05) {
+    inputAcc -= 0.05;
+    const jump = input.takeJump();
+    predictor.applyInput(mv.x, mv.z, jump);
+    const pred = predictor.predicted();
+    net.sendInput(mv.x, mv.z, jump, pred);
   }
 
-  // 2) 实体插值 + 相机跟随
+  // 2) 推进预测（内部按 50ms 步进；用真实 dt 保持与服务端实时同步），插值位置驱动自身渲染
+  const selfPos = predictor.step(rawDt);
+  entities.setSelf(selfPos.x, selfPos.y, selfPos.z);
+
+  // 3) 其他实体插值 + 相机跟随
   entities.update(dt);
-  const target = new THREE.Vector3();
-  entities.selfPosition(target);
+  const target = new THREE.Vector3(selfPos.x, selfPos.y, selfPos.z);
   updateCamera(dt);
 
   // 3) 渲染

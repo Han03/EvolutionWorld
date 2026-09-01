@@ -1,5 +1,15 @@
+# 依赖与构建产物
 node_modules/
-server/src/data/*.json
+build/
+*.o
+server/evolution_server
+server/build/
+
+# 运行时数据（用户账号、会话）
+server/data/
+server/src/data/
+
+# 本地产物
 artifacts/
 *.log
 .DS_Store

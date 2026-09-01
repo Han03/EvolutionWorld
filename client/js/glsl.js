@@ -182,3 +182,61 @@ void main() {
   }
 }
 `;
+
+// ==================== JS 版地形高度（供客户端预测/物理使用） ====================
+// 必须与上方 GLSL 中的 hash2i / noise2 / fbm2 / terrainHeight **逐位一致**，
+// 同时与服务端 server/src/game/terrain.cpp 一致，否则预测位置与服务端权威位置漂移。
+
+function _imul32(a, b) {
+  // Math.imul 语义
+  return Math.imul(a, b);
+}
+
+/** 整数坐标哈希 -> [0,1) */
+export function hash2i(x, z) {
+  let hx = _imul32((x ^ 0x9e3779b9) | 0, 0x85ebca6b) >>> 0;
+  let hz = _imul32((z ^ 0xc2b2ae3d) | 0, 0x27d4eb2f) >>> 0;
+  let h = (hx ^ hz) >>> 0;
+  h = _imul32((h ^ (h >>> 16)) >>> 0, 0x45d9f3b) >>> 0;
+  h = _imul32((h ^ (h >>> 16)) >>> 0, 0x45d9f3b) >>> 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967296;
+}
+
+/** 2D value noise */
+export function noise2(x, z) {
+  const ix = Math.floor(x);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fz = z - iz;
+  const a = hash2i(ix, iz);
+  const b = hash2i(ix + 1, iz);
+  const c = hash2i(ix, iz + 1);
+  const d = hash2i(ix + 1, iz + 1);
+  const ux = fx * fx * (3 - 2 * fx);
+  const uz = fz * fz * (3 - 2 * fz);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+
+/** fbm 分形叠加 */
+export function fbm2(x, z, octaves = 5) {
+  let amp = 0.5;
+  let freq = 1.0;
+  let sum = 0.0;
+  let norm = 0.0;
+  for (let i = 0; i < octaves; i++) {
+    sum += amp * noise2(x * freq, z * freq);
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2.0;
+  }
+  return sum / norm;
+}
+
+/** 地形高度（世界坐标 xz -> y），与服务端 terrainHeight 一致 */
+export function terrainHeight(x, z) {
+  const base = fbm2(x * 0.006, z * 0.006, 5);
+  const detail = fbm2(x * 0.03 + 100.0, z * 0.03 + 100.0, 4) * 0.5;
+  const h = (base - 0.5) * 46.0 + (detail - 0.25) * 10.0;
+  return Math.max(-12, Math.min(34, h));
+}

@@ -149,7 +149,9 @@ export class EntityViewManager {
   /** 每帧插值并更新位置 */
   update(dt) {
     for (const view of this.views.values()) {
-      const k = view.isSelf ? 18 : 9;
+      // 自身由客户端预测驱动（setSelf 已直接放置），不再向服务端快照插值
+      if (view.isSelf) continue;
+      const k = 9;
       const f = Math.min(1, dt * k);
       view.cur.lerp(view.target, f);
       view.group.position.copy(view.cur);
@@ -157,6 +159,14 @@ export class EntityViewManager {
         view.label.position.set(view.cur.x, view.cur.y + 1.7, view.cur.z);
       }
     }
+  }
+  /** 直接把自身实体放到预测位置（零延迟渲染 + 回退） */
+  setSelf(x, y, z) {
+    const view = this.views.get(this.selfId);
+    if (!view) return;
+    view.cur.set(x, y, z);
+    view.target.set(x, y, z);
+    view.group.position.copy(view.cur);
   }
 
   /** 获取当前角色位置（用于相机跟随） */

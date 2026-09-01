@@ -1,5 +1,7 @@
 /**
  * 网络客户端：HTTP 登录 + WebSocket 游戏连接
+ * 扩展：输入上报携带预测位置 px/py/pz（供服务端防作弊校验），
+ *       处理 correction（回退）与 kick（踢出）消息。
  */
 export class NetworkClient {
   constructor() {
@@ -10,9 +12,10 @@ export class NetworkClient {
     this.seq = 0;
     this.onWelcome = null;
     this.onSnapshot = null;
+    this.onCorrection = null;
+    this.onKick = null;
     this.onDisconnect = null;
   }
-
   async _post(url, body) {
     const res = await fetch(url, {
       method: 'POST',
@@ -25,22 +28,18 @@ export class NetworkClient {
     }
     return data;
   }
-
   async register(username, password) {
     await this._post('/api/register', { username, password });
   }
-
   async login(username, password) {
     return this._post('/api/login', { username, password });
   }
-
   /** 建立 WebSocket 游戏连接 */
   connect(token) {
     return new Promise((resolve, reject) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
       this.ws = ws;
-
       ws.onopen = () => {
         this.connected = true;
         resolve();
@@ -67,6 +66,13 @@ export class NetworkClient {
           case 'snapshot':
             if (this.onSnapshot) this.onSnapshot(msg);
             break;
+          case 'correction':
+            // 服务端后校验不通过 → 回退
+            if (this.onCorrection) this.onCorrection(msg);
+            break;
+          case 'kick':
+            if (this.onKick) this.onKick(msg);
+            break;
           case 'error':
             console.error('[net]', msg.message);
             break;
@@ -74,9 +80,13 @@ export class NetworkClient {
       };
     });
   }
-
-  /** 发送输入（移动 + 跳跃） */
-  sendInput(moveX, moveZ, jump) {
+  /**
+   * 发送输入（移动 + 跳跃 + 预测位置）
+   * @param {number} moveX moveZ 归一化移动量
+   * @param {number} jump  是否跳跃（边沿）
+   * @param {{x,y,z}} pred 客户端预测位置（防作弊校验依据）
+   */
+  sendInput(moveX, moveZ, jump, pred) {
     if (!this.connected) return;
     this.ws.send(
       JSON.stringify({
@@ -85,10 +95,12 @@ export class NetworkClient {
         moveX,
         moveZ,
         jump,
+        px: pred.x,
+        py: pred.y,
+        pz: pred.z,
       })
     );
   }
-
   close() {
     this.connected = false;
     if (this.ws) this.ws.close();
