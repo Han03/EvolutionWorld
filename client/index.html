@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EvolutionWorld · 无缝世界</title>
+  <link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+  <!-- 3D 渲染容器 -->
+  <div id="app"></div>
+
+  <!-- 登录界面 -->
+  <div id="login-overlay" class="overlay">
+    <div class="login-card">
+      <h1 class="title">EVOLUTION<span>WORLD</span></h1>
+      <p class="subtitle">无缝世界 · SDF 体积地形 · 空壳网络游戏服务端</p>
+      <form id="login-form" autocomplete="off">
+        <label>账号</label>
+        <input id="username" type="text" placeholder="2-16 位字母/数字/中文" maxlength="16" />
+        <label>密码</label>
+        <input id="password" type="password" placeholder="6-64 位" maxlength="64" />
+        <div id="login-msg" class="msg"></div>
+        <div class="btn-row">
+          <button type="button" id="btn-register" class="btn btn-ghost">注册</button>
+          <button type="submit" id="btn-login" class="btn btn-primary">登录</button>
+        </div>
+      </form>
+      <div class="hint">登录后将以 <b>橙色球体</b> 进入无缝世界<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC</div>
+    </div>
+  </div>
+
+  <!-- 加载遮罩 -->
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <span id="loading-text">连接世界中…</span>
+  </div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="hud-title">EVOLUTIONWORLD</div>
+      <div id="hud-conn" class="hud-chip">…</div>
+    </div>
+    <div class="hud-bottom">
+      <div id="hud-info">
+        <div><b id="hud-user">-</b></div>
+        <div id="hud-pos">x:0 y:0 z:0</div>
+        <div id="hud-fps">fps:0</div>
+      </div>
+      <div class="hud-controls">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
+        <div><kbd>Space</kbd> 跳跃 &nbsp;·&nbsp; <kbd>鼠标拖拽</kbd> 旋转视角</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./js/boot.js"></script>
+</body>
+</html>

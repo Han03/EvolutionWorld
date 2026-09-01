@@ -1,0 +1,104 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #0b1622;
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: #e6f1ff;
+}
+
+#app { position: fixed; inset: 0; }
+#app canvas { display: block; }
+
+/* ---------- 遮罩层 ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(1200px 700px at 50% 35%, #12314d 0%, #0b1622 55%, #060b12 100%);
+}
+.overlay.hidden, .hidden { display: none !important; }
+
+.login-card {
+  width: 380px; padding: 34px 34px 26px;
+  background: rgba(16, 34, 54, 0.82);
+  border: 1px solid rgba(120, 200, 255, 0.18);
+  border-radius: 14px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.title {
+  font-size: 26px; letter-spacing: 3px; font-weight: 800;
+  background: linear-gradient(90deg, #7dd3fc, #60a5fa);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  text-align: center;
+}
+.title span { display: block; font-size: 15px; letter-spacing: 8px; font-weight: 600; }
+.subtitle { text-align: center; color: #8fb6d8; font-size: 12px; margin: 10px 0 22px; }
+
+form label { display: block; font-size: 12px; color: #a9c6e2; margin: 14px 0 6px; }
+form input {
+  width: 100%; padding: 10px 12px;
+  background: rgba(8, 20, 34, 0.7);
+  border: 1px solid rgba(120, 200, 255, 0.25);
+  border-radius: 8px; color: #e6f1ff; font-size: 14px; outline: none;
+}
+form input:focus { border-color: #60a5fa; box-shadow: 0 0 0 2px rgba(96,165,250,.25); }
+
+.msg { min-height: 20px; margin-top: 10px; font-size: 13px; color: #fca5a5; }
+.msg.ok { color: #86efac; }
+
+.btn-row { display: flex; gap: 12px; margin-top: 14px; }
+.btn {
+  flex: 1; padding: 11px 0; border: none; border-radius: 8px;
+  font-size: 15px; font-weight: 600; cursor: pointer; transition: all .15s;
+}
+.btn-primary { background: linear-gradient(90deg, #38bdf8, #6366f1); color: #fff; }
+.btn-primary:hover { filter: brightness(1.15); }
+.btn-ghost { background: transparent; color: #8fb6d8; border: 1px solid rgba(120,200,255,.3); }
+.btn-ghost:hover { background: rgba(120,200,255,.1); }
+
+.hint { margin-top: 20px; padding-top: 14px; border-top: 1px dashed rgba(120,200,255,.2); color: #7fa3c5; font-size: 12px; line-height: 1.9; text-align: center; }
+
+/* ---------- 加载 ---------- */
+.loading {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  background: rgba(6, 12, 20, 0.75); color: #a9c6e2; font-size: 14px;
+}
+.spinner {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 3px solid rgba(96,165,250,.2); border-top-color: #60a5fa;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- HUD ---------- */
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+.hud-top {
+  position: absolute; top: 16px; left: 18px; right: 18px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.hud-title { font-weight: 800; letter-spacing: 4px; font-size: 14px; color: rgba(220,240,255,.85); text-shadow: 0 1px 6px rgba(0,0,0,.6); }
+.hud-chip {
+  padding: 5px 12px; border-radius: 20px; font-size: 12px;
+  background: rgba(8,20,34,.6); border: 1px solid rgba(120,200,255,.25);
+}
+.hud-chip.on { color: #86efac; border-color: rgba(134,239,172,.4); }
+.hud-chip.off { color: #fca5a5; }
+
+.hud-bottom {
+  position: absolute; left: 18px; bottom: 18px; display: flex; align-items: flex-end; gap: 22px;
+}
+#hud-info {
+  padding: 12px 16px; border-radius: 10px; font-size: 12px; line-height: 1.8;
+  background: rgba(8,20,34,.55); border: 1px solid rgba(120,200,255,.18);
+  min-width: 210px;
+}
+#hud-info b { color: #fbbf24; }
+.hud-controls { color: rgba(180,210,240,.75); font-size: 12px; line-height: 2; padding-bottom: 6px; text-shadow: 0 1px 4px rgba(0,0,0,.7); }
+kbd {
+  display: inline-block; padding: 1px 6px; margin: 0 1px; font-size: 11px;
+  background: rgba(8,20,34,.7); border: 1px solid rgba(120,200,255,.3); border-bottom-width: 2px;
+  border-radius: 4px; color: #dbeafe;
+}
