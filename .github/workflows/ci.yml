@@ -56,7 +56,10 @@ jobs:
           }
           if (-not $ok) { throw "Server failed health check" }
 
-      - name: Stop game server
-        if: always()
+      - name: Server kept running for manual testing
         run: |
-          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true"
+          Write-Output "=============================================="
+          Write-Output " Game server is now RUNNING and left alive."
+          Write-Output " Open http://localhost:3000 in your browser"
+          Write-Output " to manually test the latest build."
+          Write-Output "=============================================="
