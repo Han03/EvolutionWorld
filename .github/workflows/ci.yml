@@ -25,7 +25,7 @@ jobs:
         run: |
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
-          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true; cat > /etc/systemd/system/evolution-server.service <<'EOF'
+          $svc = @"
 [Unit]
 Description=EvolutionWorld Game Server
 After=network.target
@@ -38,8 +38,9 @@ Restart=no
 
 [Install]
 WantedBy=multi-user.target
-EOF
-systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
+"@
+          $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($svc))
+          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true; echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
 
       - name: Health check
         run: |
