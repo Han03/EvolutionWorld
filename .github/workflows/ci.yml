@@ -21,15 +21,25 @@ jobs:
           Write-Output "Building in: $wsl/server"
           wsl -d Ubuntu -- bash -lc "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
 
-      - name: Start game server (scheduled task, detached from runner)
+      - name: Start game server (systemd, survives runner process cleanup)
         run: |
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
-          $script = "$env:GITHUB_WORKSPACE\server\scripts\_ci_start.sh"
-          Set-Content -Path $script -Value "#!/bin/bash`ncd `"$wsl/server`"`nexec ./build/evolution_server" -Encoding ascii
-          $task = "EW_Server_$env:GITHUB_RUN_ID"
-          schtasks /create /tn $task /tr "wsl -d Ubuntu -- bash $wsl/server/scripts/_ci_start.sh" /sc once /st 00:00 /f
-          schtasks /run /tn $task
+          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true; cat > /etc/systemd/system/evolution-server.service <<'EOF'
+[Unit]
+Description=EvolutionWorld Game Server
+After=network.target
+
+[Service]
+WorkingDirectory=$wsl/server
+ExecStart=$wsl/server/build/evolution_server
+Environment=EW_DEBUG=1
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
 
       - name: Health check
         run: |
@@ -60,6 +70,4 @@ jobs:
       - name: Stop game server
         if: always()
         run: |
-          wsl -d Ubuntu -- bash -lc "pkill -f evolution_server || true"
-          schtasks /delete /tn "EW_Server_$env:GITHUB_RUN_ID" /f
-          Remove-Item "$env:GITHUB_WORKSPACE\server\scripts\_ci_start.sh" -Force -ErrorAction SilentlyContinue
+          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true"
