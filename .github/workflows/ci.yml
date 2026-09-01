@@ -1,0 +1,59 @@
+name: CI - Build & Smoke Test (WSL)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build C++ server in WSL Ubuntu
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
+          Write-Output "Building in: $wsl/server"
+          wsl -d Ubuntu -- bash -lc "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
+
+      - name: Start game server in WSL
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
+          Start-Process -FilePath "wsl.exe" -ArgumentList "-d","Ubuntu","--","bash","-lc","cd '$wsl/server' && EW_DEBUG=1 ./build/evolution_server" -WindowStyle Hidden
+
+      - name: Health check
+        run: |
+          $ok = $false
+          for ($i = 0; $i -lt 15; $i++) {
+            try {
+              $r = Invoke-RestMethod -Uri "http://localhost:3000/api/health" -TimeoutSec 3
+              if ($r.ok) { Write-Output "HEALTH OK: $($r | ConvertTo-Json -Compress)"; $ok = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ok) { throw "Server failed health check" }
+
+      - name: Smoke test - normal movement
+        run: python "server/scripts/ws_smoke_test.py" --normal
+
+      - name: Smoke test - teleport cheat detection
+        run: python "server/scripts/ws_smoke_test.py" --teleport
+
+      - name: Smoke test - flood rate limiting
+        continue-on-error: true
+        run: python "server/scripts/ws_smoke_test.py" --flood
+
+      - name: Prediction consistency test
+        continue-on-error: true
+        run: node --experimental-websocket "server/scripts/prediction_test.mjs"
+
+      - name: Stop game server
+        if: always()
+        run: |
+          wsl -d Ubuntu -- bash -lc "pkill -f evolution_server || true"
