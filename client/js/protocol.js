@@ -8,15 +8,17 @@ export const MSG = {
   C2S_INPUT: 0x01, C2S_EVENT: 0x02, C2S_PONG: 0x03, C2S_ATTACK: 0x04,
   C2S_SHOP_OPEN: 0x05, C2S_SHOP_BUY: 0x06, C2S_PICKUP: 0x07,
   C2S_EQUIP: 0x08, C2S_USE_ITEM: 0x09,
+  C2S_CAST_SKILL: 0x0A, C2S_CONSOLE: 0x0B,
   // S2C
   S2C_HELLO: 0x81, S2C_SNAPSHOT: 0x82, S2C_ENTER: 0x83,
   S2C_LEAVE: 0x84, S2C_UPDATE: 0x85, S2C_SELF: 0x86,
   S2C_EVENT: 0x87, S2C_PING: 0x88, S2C_KICK: 0x89, S2C_ERROR: 0x8A,
   S2C_BOSS: 0x8B,
   S2C_SHOP: 0x8C, S2C_INVENTORY: 0x8D, S2C_LOOT: 0x8E, S2C_STATS: 0x8F,
+  S2C_SKILLS: 0x90, S2C_SKILL_CAST: 0x91, S2C_BUFFS: 0x92, S2C_CONSOLE: 0x93,
 };
 // 世界共享事件类型（S2C_EVENT 首字节）
-export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5 };
+export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7 };
 // Boss 状态（S2C_BOSS.state）
 export const BOSS_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
 export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04 };
@@ -139,6 +141,18 @@ export function encodeUseItem(itemId, count = 1) {
   const w = new Writer();
   w.u32(itemId >>> 0).u16(count & 0xFFFF);
   return makeFrame(MSG.C2S_USE_ITEM, w.finish());
+}
+/** 施放技能：skillId + 目标 wid（0=无）+ 落点 x/z（绝对量化） */
+export function encodeCastSkill(skillId, targetWid, tx, tz) {
+  const w = new Writer();
+  w.u32(skillId >>> 0).u32(targetWid >>> 0).i32(qAbs(tx)).i32(qAbs(tz));
+  return makeFrame(MSG.C2S_CAST_SKILL, w.finish());
+}
+/** 控制台命令（UTF-8 文本，用于功能测试） */
+export function encodeConsole(cmd) {
+  const w = new Writer();
+  w.str(cmd);
+  return makeFrame(MSG.C2S_CONSOLE, w.finish());
 }
 // ---------------- S2C 解码（返回已解实体描述） ----------------
 export function decodeEntityFull(r, refX, refY, refZ) {
@@ -291,6 +305,35 @@ export function parseS2C(type, payload, refX, refY, refZ) {
       const hp = r.u32();
       const mp = r.u32();
       return { type, maxHp, maxMp, attack, defense, hp, mp };
+    }
+    case MSG.S2C_SKILLS: {
+      const count = r.u16();
+      const skills = [];
+      for (let i = 0; i < count; i++) {
+        skills.push({ id: r.u32(), cdMs: r.u32() });
+      }
+      return { type, skills };
+    }
+    case MSG.S2C_SKILL_CAST: {
+      const ok = r.u8();
+      const skillId = r.u32();
+      const targetWid = r.u32();
+      const x = dq(r.i32());
+      const z = dq(r.i32());
+      const castTimeMs = r.u16();
+      return { type, ok, skillId, targetWid, x, z, castTimeMs };
+    }
+    case MSG.S2C_BUFFS: {
+      const count = r.u16();
+      const buffs = [];
+      for (let i = 0; i < count; i++) {
+        buffs.push({ skillId: r.u32(), type: r.u8(), value: r.f32(), remainSec: r.f32() });
+      }
+      return { type, buffs };
+    }
+    case MSG.S2C_CONSOLE: {
+      const text = r.str();
+      return { type, text };
     }
     case MSG.S2C_EVENT: {
       const evtType = r.u8();

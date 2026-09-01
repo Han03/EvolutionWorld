@@ -72,8 +72,10 @@ node scripts/items_test.mjs                   # 物品/属性/商店端到端：
 | **物品系统** | 装备/消耗品/任务道具三类物品，`ItemDef` 按 ID 管理（名称/描述/缩略图/类型/穿戴属性）；怪物死亡随机掉落物品 + 金币（金币也是物品，`itemId=0`）；地面掉落物 60s 过期，2m 拾取 |
 | **属性系统** | 玩家/怪物/ Boss 血量、蓝量、攻击力、防御力；6 槽位装备（头盔/上衣/裤子/手套/鞋子/武器）穿戴影响派生属性；伤害公式 `atk×var×100/(100+def)`（防御减伤，最低 1 点） |
 | **商店系统** | 商店 NPC「商店老板·全能杂货铺」固定 (6,6)，4m 内可打开，出售全部物品；`stock=0` 表示无限库存；金币购买，背包/金币同步（S2C_INVENTORY） |
-| **配置系统** | `data/items.json|monsters.json|shop.json` 可热配置：怪物属性与掉落概率（`DropEntry`）、NPC 商店售价/库存、按 ID 管理物品；未提供配置时内置 `loadDefaults()` 兜底 |
+| **配置系统** | `data/items.json|monsters.json|shop.json|skills.json` 可热配置：怪物属性与掉落概率（`DropEntry`）、NPC 商店售价/库存、按 ID 管理物品、技能（伤害倍率/冷却/蓝耗/范围/**前摇 castTimeMs**/打断开关）；未提供配置时内置 `loadDefaults()` 兜底 |
 | **预置测试物品** | 20 件默认物品：铁剑/烈焰剑等武器、皮帽/铁盔/锁子甲等防具、小血瓶/大血瓶消耗品、任务道具（可卖金币） |
+| **技能系统** | 8 个技能（冲刺斩/烈焰冲击/治疗之光/冰霜新星/战吼/雷霆一击/吸血打击/荆棘护体），`SkillDef` 按 ID 配置；三层范围判定（施法距离/AOE 落点距离/AOE 命中半径）+ **技能前摇（castTimeMs）+ 释放时间判定**：前摇期间不生效、到期才结算（扣蓝/冷却/施加效果），**移动/受击可打断**（打断不消耗，`EVT_SKILL_CANCEL` 广播）；冷却/蓝量/范围/目标校验服务端权威 |
+| **游戏控制台** | 服务端调试控制台：HTTP `POST /api/console` + WS `CONSOLE`(0x0B/0x93) 双通道，命令：`help/gold/level/stat/status/skill/items/boss/entities/echo/…`，用于功能测试与在线调试 |
 
 ---
 
@@ -96,6 +98,10 @@ node scripts/items_test.mjs                   # 物品/属性/商店端到端：
 | `INVENTORY`(0x8D) | 背包/金币/装备全量（登录即下发 + 变更后同步） |
 | `LOOT`(0x8E) | 拾取反馈（成功/失败） |
 | `STATS`(0x8F) | 自身属性（HP/MP/攻击/防御，穿戴后重算下发） |
+| `SKILLS`(0x90) | 已学技能列表（含冷却 cdMs） |
+| `SKILL_CAST`(0x91) | 施放反馈：ok + skillId + 落点 + **castTimeMs（前摇毫秒）** |
+| `BUFFS`(0x92) | 自身 Buff 列表（剩余时间） |
+| `CONSOLE`(0x93) | 控制台回显（命令 + 输出文本） |
 ### 上行消息（C2S）
 | 消息 | 作用 |
 |---|---|
@@ -106,6 +112,8 @@ node scripts/items_test.mjs                   # 物品/属性/商店端到端：
 | `PICKUP`(0x07) | 拾取地面掉落物（服务端校验 2m） |
 | `EQUIP`(0x08) | 穿戴/卸下装备（6 槽位，重算派生属性） |
 | `USE_ITEM`(0x09) | 使用消耗品（如血瓶回血） |
+| `CAST_SKILL`(0x0A) | 施放技能：skillId + 目标 wid + AOE 落点(qAbs)（服务端前摇/范围/冷却/蓝量权威校验） |
+| `CONSOLE`(0x0B) | 控制台命令（与 HTTP 通道等价） |
 ### AOI + 增量 + LOD
 - **AOI 空间网格**（`aoi.cpp`，cell 25m）+ 距离过滤：只向玩家广播其兴趣集内实体
 - **LOD 分级**：近 25m 每 tick、中 50m 每 2 tick、远每 4 tick 更新
@@ -184,6 +192,8 @@ node scripts/items_test.mjs                   # 物品/属性/商店端到端：
 | S2C | `SHOP`(0x8C) / `INVENTORY`(0x8D) / `LOOT`(0x8E) / `STATS`(0x8F) | 商店列表 / 背包+金币+装备 / 拾取反馈 / 自身属性 |
 | 实体 | `KIND_ITEM=4`，`writeEntityFull` 对 Item 写 `itemId u32 + gold u32`（替代 name 字段） | 掉落物实体编解码 |
 | 事件 | `EVT_DROP=5` | 掉落物生成广播 |
+| 事件 | `EVT_SKILL_CASTING=6` | 技能**前摇开始**（wid 施法者 + skillId + 落点） |
+| 事件 | `EVT_SKILL_CANCEL=7` | 技能前摇被打断（reason：1=移动 / 2=受击） |
 
 **自动化验证**：`node scripts/items_test.mjs`（16/16 PASS）覆盖「登录属性 → 打怪掉落 → 拾取金币/物品 → 开商店 → 金币买铁剑(攻 12→17) → 穿戴 → 买血瓶 → 使用回血」全链路。
 浏览器端：`I` 背包/装备面板、`B` 商店（靠近紫色描边老板）、`E` 主动拾取、走到掉落物上自动拾取、HUD 显示 HP/MP/攻击/防御。
@@ -206,8 +216,8 @@ EvolutionWorld/
 │       └── input.js               # 键盘输入（WASD/方向键 + 空格跳跃）
 └── server/                        # ★ C++17 服务端
     ├── CMakeLists.txt / Makefile
-    ├── scripts/                   # 冒烟/防作弊/预测/AI/物品系统端到端测试脚本
-    ├── data/                      # 可选 JSON 配置：items.json / monsters.json / shop.json（缺失则内置兜底）
+    ├── scripts/                   # 冒烟/防作弊/预测/AI/物品/技能/控制台 端到端测试脚本
+    ├── data/                      # 可选 JSON 配置：items.json / monsters.json / shop.json / skills.json（缺失则内置兜底）
     └── src/
         ├── main.cpp               # 入口：装配 + 配置环境变量覆盖 + 信号处理
         ├── config.h               # 全局配置（世界/物理/防作弊/AOI 参数集中管理）
@@ -235,6 +245,43 @@ EvolutionWorld/
         └── storage-design.md      # 存储系统（MySQL+Redis 降级）设计文档
 ```
 （`server/data/users.json` 为运行时生成的账号数据，已被 .gitignore 忽略。）
+
+---
+
+## 技能系统（前摇 / 释放时间 / 范围判定）
+
+**三层范围判定（服务端权威）**
+1. **施法距离**：单目标/AOE 施法点距施法者 ≤ `range`（冲刺斩 3.5m 等）；
+2. **AOE 落点距离**：玩家点击落点需在施法范围内；
+3. **AOE 命中半径**：结算时对落点 `radius`（如烈焰冲击 4m）内怪物施加伤害/效果，半径外不受影响。
+
+**前摇与释放时间判定（castTimeMs）**
+- `SkillDef.castTimeMs`：0=瞬发（冲刺斩/雷霆一击…），>0=有前摇（烈焰冲击 600ms、冰霜新星 800ms、雷霆一击 1000ms…）；
+- 施放 → 进入「施放中」状态（`beginCast`），**立即广播 `EVT_SKILL_CASTING`**（客户端画前摇进度圈）；
+- 前摇期间技能**不生效**，**到期才结算**（`resolveCast`：扣蓝/上冷却/`EVT_SKILL`/施加效果）——被打断则完全不消耗；
+- **打断规则**：`castCancelOnMove`（移动即打断，`EVT_SKILL_CANCEL` reason=1）/ `castCancelOnHit`（受击打断，reason=2），可逐技能在 skills.json 关闭；
+- 系统调度优先级：AI(30) → **castSystem(32)** → Buff(35)，每 tick 检查移动打断与前摇到期结算。
+
+**客户端简易效果（俯视 Canvas）**
+- **前摇进度圈**：施法者身上金色/技能色圆环，弧线随释放时间 0→360° 填充；打断时红色闪圈并清除；
+- **AOE 范围圈**：半透明填充 + 技能色虚线圆 + 半径标注（米），按技能键本地即时预览落点，结算落点由 `EVT_SKILL` 广播再次绘制；
+- 单目标/自身技能仅显示前摇圈，无范围圈。
+
+## 游戏控制台
+
+服务端内置调试控制台（HTTP + WS 双通道），用于功能测试与在线调试：
+
+| 通道 | 说明 |
+|---|---|
+| HTTP | `POST /api/console`，body `{token, command}`，返回 `{ok, text}`（无 EW_DEBUG 门控） |
+| WS | C2S `CONSOLE`(0x0B) → S2C `CONSOLE`(0x93) 回显 |
+
+常用命令：`help`（列出全部）、`gold <n>`（发金币）、`level <n>`、`stat atk|def|hp|mp <n>`、`status`（查看自身属性/装备/技能）、`skill <id>`（学习技能）、`items`、`boss`、`entities`、`echo <text>`。
+
+**自动化验证脚本**（`server/scripts/`）：
+- `skills_console_test.mjs`：技能+控制台端到端 23/23（含前摇结算时序）
+- `cast_time_test.mjs`：前摇专项 14/14（反馈 castTimeMs / EVT_SKILL_CASTING / 移动打断不结算 / 完整前摇≈600ms 结算 / 瞬发无前摇）
+- `skill_fx_e2e.mjs`：浏览器端到端渲染验证（前摇进度圈 / AOE 范围圈 / 打断清除，Playwright 截图）
 
 ---
 

@@ -34,6 +34,8 @@ enum MsgType : uint8_t {
   C2S_PICKUP    = 0x07, // 拾取地面掉落物（drop wid）
   C2S_EQUIP     = 0x08, // 穿戴/卸下装备（slot 槽位值 + itemId，0=卸下）
   C2S_USE_ITEM  = 0x09, // 使用消耗品（itemId + 数量）
+  C2S_CAST_SKILL= 0x0A, // 施放技能（skillId + 目标 wid + 落点 x/z）
+  C2S_CONSOLE   = 0x0B, // 控制台命令（utf-8 文本；EW_DEBUG 或常开门控）
   // S2C
   S2C_HELLO   = 0x81, // 握手（world 参数 + 自身完整状态）
   S2C_SNAPSHOT= 0x82, // 校准快照（周期全量，自愈）
@@ -50,6 +52,10 @@ enum MsgType : uint8_t {
   S2C_INVENTORY= 0x8D, // 背包/装备/金币 全量（服务端权威）
   S2C_LOOT     = 0x8E, // 拾取反馈（获得物品/金币）
   S2C_STATS    = 0x8F, // 自身属性（血量/蓝量/攻击/防御）更新
+  S2C_SKILLS   = 0x90, // 已学技能列表 + 剩余冷却（服务端权威）
+  S2C_SKILL_CAST = 0x91, // 技能施放反馈（success + skillId + 目标 wid + 落点）
+  S2C_BUFFS    = 0x92, // 自身 Buff 列表（skillId/type/value/remain）
+  S2C_CONSOLE  = 0x93, // 控制台命令结果（utf-8 文本，逐行）
 };
 // ---------- 共享事件类型（S2C_EVENT payload 首字节） ----------
 enum EvtType : uint8_t {
@@ -58,6 +64,8 @@ enum EvtType : uint8_t {
   EVT_RESPAWN = 3,   // 复活：wid 复活实体
   EVT_SKILL   = 4,   // 范围技能：wid 施法者, b skillId, x/z 技能落点
   EVT_DROP    = 5,   // 掉落：wid 掉落物实体, b itemId, x 金币量
+  EVT_SKILL_CASTING = 6, // 技能前摇开始：wid 施法者, b skillId, x/z 施放落点（客户端画前摇圈）
+  EVT_SKILL_CANCEL   = 7, // 技能前摇被打断：wid 施法者, b skillId, x 打断原因(1移动/2受击)
 };
 // ---------- Boss 状态位（S2C_BOSS.state，与 entity.h BossState 一致） ----------
 constexpr uint8_t BOSS_IDLE = 0;
@@ -195,6 +203,10 @@ std::string inventoryFrame(const Entity& p);
 std::string statsFrame(const Entity& p);
 std::string lootFrame(bool ok, uint32_t itemId, uint16_t count, uint32_t gold);
 
+// 技能/控制台：S2C_SKILLS / S2C_SKILL_CAST / S2C_CONSOLE
+std::string skillCastFrame(bool ok, uint32_t skillId, uint32_t targetWid, int32_t x, int32_t z, uint16_t castTimeMs);
+std::string consoleFrame(const std::string& text);
+
 // ---------- C2S 解码 ----------
 struct InputMsg {
   uint32_t seq = 0;
@@ -211,6 +223,7 @@ struct ShopBuyMsg { uint32_t itemId = 0; uint16_t count = 0; };
 struct PickupMsg { uint32_t dropWid = 0; };
 struct EquipMsg { uint8_t slot = 0; uint32_t itemId = 0; };
 struct UseItemMsg { uint32_t itemId = 0; uint16_t count = 0; };
+struct CastSkillMsg { uint32_t skillId = 0; uint32_t targetWid = 0; double tx = 0, tz = 0; };
 bool decodeInput(const std::string& payload, InputMsg& out);
 bool decodeAttack(const std::string& payload, AttackMsg& out);
 bool decodeShopOpen(const std::string& payload, ShopOpenMsg& out);
@@ -218,5 +231,6 @@ bool decodeShopBuy(const std::string& payload, ShopBuyMsg& out);
 bool decodePickup(const std::string& payload, PickupMsg& out);
 bool decodeEquip(const std::string& payload, EquipMsg& out);
 bool decodeUseItem(const std::string& payload, UseItemMsg& out);
+bool decodeCastSkill(const std::string& payload, CastSkillMsg& out);
 } // namespace proto
 } // namespace ew

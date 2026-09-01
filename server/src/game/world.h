@@ -82,6 +82,57 @@ public:
   void markStatsDirty(const std::string& playerId);
   const std::unordered_set<std::string>& statsDirty() const { return statsDirty_; }
   void clearStatsDirty() { statsDirty_.clear(); }
+  // 背包/金币变化后标记，netcode 每 tick 向该玩家补发 S2C_INVENTORY
+  void markInvDirty(const std::string& playerId);
+  const std::unordered_set<std::string>& invDirty() const { return invDirty_; }
+  void clearInvDirty() { invDirty_.clear(); }
+  // ---- 技能系统（大型网游规模，数据驱动，服务端权威） ----
+  // 学习技能（写入 learnedSkills，无冷却）
+  bool learnSkill(const std::string& playerId, uint32_t skillId);
+  // 开始施放技能：校验已学/冷却/耗蓝/目标/距离 → 前摇(castTimeMs>0)或瞬发结算。
+  // 前摇由 castSystem 到期后结算；移动/受击打断（cancelCast）。返回是否成功开始施放。
+  bool beginCast(const std::string& playerId, uint32_t skillId, uint32_t targetWid, double tx, double tz);
+  // 前摇结算：扣蓝上冷却 → EVT_SKILL 广播 → 施加效果（伤害/治疗/Buff）
+  void resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz);
+  // 打断施放：reason=0 被替换 / 1 移动 / 2 受击；受击打断受 castCancelOnHit 约束
+  void cancelCast(Entity& e, uint8_t reason);
+  // 实体受击：若是施放中的玩家且技能允许受击打断 → 打断（普攻/技能/Boss AOE 共用）
+  void cancelCastOnHit(Entity& e);
+  // 挂载/移除 Buff（同技能同类型刷新，不同类型并存）
+  void applyBuff(Entity& e, uint32_t skillId, uint8_t type, double value, double durSec);
+  void removeBuffType(Entity& e, uint8_t type);
+  // 荆棘反伤：victim 有 THORNS Buff 时把 dmg×比例反弹给 attacker（返回反弹量）
+  double thornsReflect(Entity& victim, Entity& attacker, double dmg);
+  // 技能帧（S2C_SKILLS / S2C_BUFFS，供网络层下发）
+  std::string skillsFrame(const Entity& p);  // 已学技能 + 剩余冷却
+  std::string buffsFrame(const Entity& p);   // 自身 Buff
+  // 技能/冷却变化后标记，netcode 每 tick 补发 S2C_SKILLS / S2C_BUFFS
+  void markSkillsDirty(const std::string& playerId);
+  void markBuffsDirty(const std::string& playerId);
+  const std::unordered_set<std::string>& skillsDirty() const { return skillsDirty_; }
+  const std::unordered_set<std::string>& buffsDirty() const { return buffsDirty_; }
+  void clearSkillsDirty() { skillsDirty_.clear(); }
+  void clearBuffsDirty() { buffsDirty_.clear(); }
+  // ---- 控制台/调试辅助（GameConsole 与 /api/debug 复用） ----
+  // 生成一只怪物（type 见 monsters 表），返回实体；坐标非法/水面自动找干地
+  Entity* spawnMonster(const std::string& type, double x, double z);
+  // 传送玩家（含防作弊重置与客户端校正推送，供控制台/调试 API 复用）
+  bool teleportPlayer(const std::string& playerId, double x, double z);
+  // 强制击杀实体（触发掉落/死亡/复活逻辑）
+  bool killEntity(const std::string& playerId, uint32_t wid);
+  // 复活（普通怪物复活 / Boss 复活）
+  bool respawnEntity(const std::string& id);
+  // 全图怪物复活
+  void respawnAllMonsters();
+  // 发放物品/金币（控制台测试命令）
+  bool giveItem(const std::string& playerId, uint32_t itemId, uint16_t count);
+  bool giveGold(const std::string& playerId, int64_t amount);
+  // 生成地面掉落物（控制台测试命令）
+  void spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold);
+  // 世界 Boss 状态摘要（控制台查看）
+  Json bossesStatus() const;
+  // 视野内/全图实体摘要（控制台查看，limit 限制数量）
+  Json entitiesStatus(double px, double pz, double range, int limit) const;
   // 取走本 tick 产生的共享事件（netcode 全区广播用，调用后清空）
   std::vector<SharedEvent> takeSharedEvents();
   // 构建世界 Boss 全局共享状态帧（force=true 强制；false 且无变化则返回空）
@@ -101,6 +152,10 @@ private:
   void spawnDrop(double x, double z, uint32_t itemId, uint32_t gold);
   // 应用怪物类型配置属性（type 见 monsters.json / GameData 默认）
   void applyMonsterStats(Entity& m, const std::string& type);
+  // 目标死亡统一处理（Boss 复活/普通怪物失活+复活+掉落），供普攻/技能复用
+  void onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs);
+  // 技能伤害落点（含仇恨/死亡/吸血），skillFalloff=1.0 单目标、0=边缘（预留）
+  void applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd, double variance);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
   void spawnBoss(int idx, double homeX, double homeZ);
@@ -117,6 +172,11 @@ private:
   std::vector<SharedEvent> sharedEvents_;
   // 需要补发 S2C_STATS 的玩家（属性/血量/蓝量变化）
   std::unordered_set<std::string> statsDirty_;
+  // 需要补发 S2C_INVENTORY 的玩家（背包/金币变化）
+  std::unordered_set<std::string> invDirty_;
+  // 需要补发 S2C_SKILLS / S2C_BUFFS 的玩家（技能/冷却/Buff 变化）
+  std::unordered_set<std::string> skillsDirty_;
+  std::unordered_set<std::string> buffsDirty_;
   std::string bossFrame_;
   bool bossDirty_ = true;
   uint32_t aliveBoss_ = 0;

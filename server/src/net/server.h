@@ -42,6 +42,9 @@ private:
   void handleBinary(Conn& c, const std::string& payload);
   void handleInput(Conn& c, const proto::InputMsg& in);
   void broadcastTick();
+  // 游戏控制台（多通道：stdin / WS / HTTP 复用同一执行逻辑）
+  void handleStdinConsole();                       // 从 stdin 读一行并执行（输出到 stderr）
+  void handleConsoleLine(const std::string& playerId, const std::string& line); // 执行并把结果发给目标玩家
   void savePlayerToStore(const Entity& e);
   void periodicSavePlayers();
   void sendTo(Conn& c, const std::string& frame);
@@ -56,6 +59,8 @@ private:
   int listenFd_ = -1;
   int epollFd_ = -1;
   bool running_ = false;
+  bool consoleReady_ = false;   // stdin 已挂入 epoll
+  std::string stdinLine_;       // stdin 行缓冲（控制台命令）
   std::unordered_map<int, Conn> conns_;
   uint64_t nextTickMs_ = 0;
 };

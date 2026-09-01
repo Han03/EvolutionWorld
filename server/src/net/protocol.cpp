@@ -268,6 +268,23 @@ std::string lootFrame(bool ok, uint32_t itemId, uint16_t count, uint32_t gold) {
   w.u32(gold);
   return frame(S2C_LOOT, w.data());
 }
+// 技能施放反馈帧（success + skillId + 目标 wid + 落点 + 施放时间 castTimeMs）
+std::string skillCastFrame(bool ok, uint32_t skillId, uint32_t targetWid, int32_t x, int32_t z, uint16_t castTimeMs) {
+  Writer w;
+  w.u8(ok ? 1 : 0);
+  w.u32(skillId);
+  w.u32(targetWid);
+  w.i32(x);
+  w.i32(z);
+  w.u16(castTimeMs);
+  return frame(S2C_SKILL_CAST, w.data());
+}
+// 控制台命令结果帧（逐行 utf-8 文本）
+std::string consoleFrame(const std::string& text) {
+  Writer w;
+  w.str(text);
+  return frame(S2C_CONSOLE, w.data());
+}
 
 // ---------- C2S 解码 ----------
 // 世界 Boss 全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
@@ -332,6 +349,17 @@ bool decodeEquip(const std::string& payload, EquipMsg& out) {
 bool decodeUseItem(const std::string& payload, UseItemMsg& out) {
   Reader r(payload);
   return r.u32(out.itemId) && r.u16(out.count);
+}
+bool decodeCastSkill(const std::string& payload, CastSkillMsg& out) {
+  Reader r(payload);
+  uint32_t skillId, targetWid;
+  int32_t qx, qz;
+  if (!r.u32(skillId) || !r.u32(targetWid) || !r.i32(qx) || !r.i32(qz)) return false;
+  out.skillId = skillId;
+  out.targetWid = targetWid;
+  out.tx = dqAbs(qx);
+  out.tz = dqAbs(qz);
+  return true;
 }
 bool decodeAttack(const std::string& payload, AttackMsg& out) {
   Reader r(payload);

@@ -20,6 +20,8 @@ static const char* monsterTypeAt(double x, double z);
 static void inputSystem(World& w, double dt);
 static void moveSystem(World& w, double dt);
 static void aiSystem(World& w, double dt);
+static void castSystem(World& w, double dt);
+static void buffSystem(World& w, double dt);
 static void bossSystem(World& w, double dt);
 static void respawnSystem(World& w, double dt);
 static void dropSystem(World& w, double dt);
@@ -29,6 +31,8 @@ World::World(const Config& cfg)
   addSystem(10, "input", inputSystem);
   addSystem(20, "move", moveSystem);
   addSystem(30, "ai", aiSystem);
+  addSystem(32, "cast", castSystem);
+  addSystem(35, "buff", buffSystem);
   addSystem(40, "boss", bossSystem);
   addSystem(50, "respawn", respawnSystem);
   addSystem(60, "drop", dropSystem);
@@ -120,6 +124,13 @@ void World::spawnBoss(int idx, double hx, double hz) {
 Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
   Entity p = makePlayer(nextEntityId("p"), username);
   p.wid = nextWireId();
+  // 起始技能：新玩家自动习得默认技能（开箱即测）
+  for (uint32_t sid : data_.starterSkills()) {
+    if (data_.skill(sid)) {
+      p.learnedSkills.insert(sid);
+      p.skillCd[sid] = 0;
+    }
+  }
   if (spawnHint) {
     p.pos = *spawnHint;
   } else {
@@ -174,30 +185,401 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   t->aggro[p->wid] += dmg;  // 仇恨表（世界共享核心状态）
   pushEvent(proto::EVT_DAMAGE, t->wid, (uint32_t)dmg, 0, 0);
   if (t->isBoss) markBossDirty();
-  if (t->hp <= 0) {
-    t->hp = 0;
-    if (t->isBoss) {
-      t->bossState = BS_DEAD;
-      t->bossTarget = 0;
-      t->respawnAtMs = nowMs + (uint64_t)(cfg_.bossRespawnSec * 1000.0);
-      t->aggro.clear();
-      t->vel = {0, 0, 0};
-      if (aliveBoss_ > 0) aliveBoss_--;
-      pushEvent(proto::EVT_DEATH, t->wid, p->wid, 0, 0);
-      markBossDirty();
-      // Boss 也掉落（掉落表按石像鬼，掉落更丰厚）
-      rollDrops(*p, *t);
-    } else {
-      // 普通怪物死亡：失活 + 本区复活计时 + 掉落
-      rollDrops(*p, *t);
-      t->active = false;
-      t->respawnAtMs = nowMs + (uint64_t)(cfg_.monsterRespawnSec * 1000.0);
-      t->aggro.clear();
-      t->vel = {0, 0, 0};
-      pushEvent(proto::EVT_DEATH, t->wid, p->wid, 0, 0);
+  // 荆棘反伤：目标（怪物/Boss）若有 THORNS Buff，反弹部分伤害给攻击者
+  thornsReflect(*t, *p, dmg);
+  if (t->hp <= 0) onVictimDeath(*t, *p, nowMs);
+  return true;
+}
+// 目标死亡统一处理（普攻/技能共用）：Boss 复活 / 普通怪物失活+复活 + 掉落
+void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
+  victim.hp = 0;
+  if (victim.isBoss) {
+    victim.bossState = BS_DEAD;
+    victim.bossTarget = 0;
+    victim.respawnAtMs = nowMs + (uint64_t)(cfg_.bossRespawnSec * 1000.0);
+    victim.aggro.clear();
+    victim.buffs.clear();
+    victim.vel = {0, 0, 0};
+    if (aliveBoss_ > 0) aliveBoss_--;
+    pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
+    markBossDirty();
+    rollDrops(killer, victim);
+  } else {
+    // 普通怪物死亡：失活 + 本区复活计时 + 掉落
+    rollDrops(killer, victim);
+    victim.active = false;
+    victim.respawnAtMs = nowMs + (uint64_t)(cfg_.monsterRespawnSec * 1000.0);
+    victim.aggro.clear();
+    victim.buffs.clear();
+    victim.vel = {0, 0, 0};
+    pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
+  }
+}
+// ---------- 技能系统（大型网游规模，数据驱动，服务端权威） ----------
+bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return false;
+  if (!data_.skill(skillId)) return false;
+  p->learnedSkills.insert(skillId);
+  p->skillCd[skillId] = 0;  // 初始无冷却
+  markSkillsDirty(playerId);
+  return true;
+}
+// 施放技能：校验（已学/冷却/耗蓝/目标/距离）→ 扣蓝+冷却 → 施加效果 → 广播
+// 开始施放技能（两阶段：前摇 → 结算）。返回是否成功开始施放。
+//  - castTimeMs==0：瞬发，直接结算（扣蓝/冷却/效果）
+//  - castTimeMs>0 ：进入前摇（castingSkillId 置位 + 广播 EVT_SKILL_CASTING），
+//                  由 castSystem 到期后 resolveCast；移动/受击打断（cancelCast）
+bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t targetWid, double tx, double tz) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return false;
+  const SkillDef* sd = data_.skill(skillId);
+  if (!sd) return false;
+  if (!p->learnedSkills.count(skillId)) return false;  // 未学习
+  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  auto cdit = p->skillCd.find(skillId);
+  if (cdit != p->skillCd.end() && cdit->second > nowMs) return false;  // 冷却中
+  if (p->mp < sd->manaCost) return false;  // 蓝量不足
+  // 目标解析与校验
+  Entity* t = targetWid ? findByWid(targetWid) : nullptr;
+  if (sd->target == SkillTarget::ENEMY) {
+    if (!t || !t->active || t->kind != EntityKind::Monster) return false;
+    if (p->pos.dist2D(t->pos) > sd->range) return false;  // 距离
+  } else if (sd->target == SkillTarget::AOE) {
+    if (p->pos.dist2D({tx, 0, tz}) > sd->range) return false; // 落点距离
+  }
+  // 施法落点（用于广播与 AOE 判定）
+  double gx = tx, gz = tz;
+  if (sd->target == SkillTarget::ENEMY && t) { gx = t->pos.x; gz = t->pos.z; }
+  else if (sd->target == SkillTarget::SELF) { gx = p->pos.x; gz = p->pos.z; }
+  // 前摇：进入施放中状态（覆盖旧施放），广播前摇事件
+  if (sd->castTimeMs > 0) {
+    if (p->castingSkillId != 0) cancelCast(*p, 0); // 替换旧施放（reason=0 不广播取消）
+    p->castingSkillId = skillId;
+    p->castStartMs = nowMs;
+    p->castTargetWid = targetWid;
+    p->castTx = gx;
+    p->castTz = gz;
+    pushEvent(proto::EVT_SKILL_CASTING, p->wid, skillId, proto::qAbs(gx), proto::qAbs(gz));
+    return true;
+  }
+  // 瞬发：直接结算
+  resolveCast(*p, *sd, targetWid, gx, gz);
+  return true;
+}
+// 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 施加效果
+void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz) {
+  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  caster.mp -= sd.manaCost;
+  caster.skillCd[sd.id] = nowMs + (uint64_t)sd.cooldownMs;
+  if (caster.kind == EntityKind::Player) { markStatsDirty(caster.id); markSkillsDirty(caster.id); }
+  // 落点（结算时以目标当前/落点为准）
+  double gx = tx, gz = tz;
+  Entity* t = targetWid ? findByWid(targetWid) : nullptr;
+  if (sd.target == SkillTarget::ENEMY && t && t->active) { gx = t->pos.x; gz = t->pos.z; }
+  else if (sd.target == SkillTarget::SELF) { gx = caster.pos.x; gz = caster.pos.z; }
+  pushEvent(proto::EVT_SKILL, caster.wid, sd.id, proto::qAbs(gx), proto::qAbs(gz));
+  // 施加效果
+  switch (sd.effect) {
+    case SkillEffect::DAMAGE: {
+      if (sd.target == SkillTarget::ENEMY && t && t->active) {
+        applySkillDamage(caster, *t, sd, 0.9 + rng01() * 0.2);
+      } else if (sd.target == SkillTarget::AOE) {
+        for (auto& [id, e] : entities_) {
+          if (!e.active || e.kind != EntityKind::Monster) continue;
+          if (e.pos.dist2D({gx, 0, gz}) > sd.radius) continue;
+          applySkillDamage(caster, e, sd, 0.9 + rng01() * 0.2);
+        }
+      }
+      break;
+    }
+    case SkillEffect::HEAL: {
+      caster.hp = std::min(caster.maxHp, caster.hp + sd.heal);
+      if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
+      break;
+    }
+    case SkillEffect::BUFF: {
+      if (sd.target == SkillTarget::SELF) {
+        applyBuff(caster, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+      } else if (t && sd.target == SkillTarget::ENEMY) {
+        applyBuff(*t, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+      }
+      break;
+    }
+    default: break;
+  }
+}
+// 打断施放：reason=0 被替换 / 1 移动 / 2 受击（受 castCancelOnHit 约束）；广播 EVT_SKILL_CANCEL
+void World::cancelCast(Entity& e, uint8_t reason) {
+  if (e.castingSkillId == 0) return;
+  if (reason == 2) {
+    const SkillDef* sd = data_.skill(e.castingSkillId);
+    if (sd && !sd->castCancelOnHit) return; // 该技能不允许受击打断
+  }
+  uint32_t skillId = e.castingSkillId;
+  e.castingSkillId = 0;
+  e.castStartMs = 0;
+  e.castTargetWid = 0;
+  e.castTx = e.castTz = 0;
+  if (reason != 0) pushEvent(proto::EVT_SKILL_CANCEL, e.wid, skillId, reason, 0); // 被替换不打取消事件
+}
+// 实体受击：施放中的玩家且技能允许 → 打断（普攻/技能/Boss AOE 共用入口）
+void World::cancelCastOnHit(Entity& e) {
+  if (e.castingSkillId == 0 || e.kind != EntityKind::Player) return;
+  cancelCast(e, 2);
+}
+// 技能伤害落点：伤害计算 + 仇恨 + 死亡 + 吸血
+void World::applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd, double variance) {
+  double dmg = calcDamage(caster.attack * sd.dmgMul, target.defense, variance) + sd.flatDmg;
+  target.hp -= dmg;
+  target.aggro[caster.wid] += dmg;
+  pushEvent(proto::EVT_DAMAGE, target.wid, (uint32_t)dmg, 0, 0);
+  if (target.isBoss) markBossDirty();
+  // 荆棘反伤（目标有 THORNS 时反弹）
+  thornsReflect(target, caster, dmg);
+  // 吸血（治疗施法者）
+  if (sd.lifesteal > 0) {
+    caster.hp = std::min(caster.maxHp, caster.hp + dmg * sd.lifesteal);
+    if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
+  }
+  // 冰霜新星等附带减速 Buff
+  if (sd.buffType != BuffType::NONE && sd.buffDurSec > 0 && target.active) {
+    applyBuff(target, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+  }
+  if (target.hp <= 0 && target.active) {
+    uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+    onVictimDeath(target, caster, nowMs);
+  }
+}
+// 挂载 Buff：同技能同类型刷新；不同类型并存
+void World::applyBuff(Entity& e, uint32_t skillId, uint8_t type, double value, double durSec) {
+  if (durSec <= 0) return;
+  for (auto& b : e.buffs) {
+    if (b.skillId == skillId && b.type == type) {  // 刷新
+      b.value = value;
+      b.remainSec = durSec;
+      b.durationSec = durSec;
+      if (e.kind == EntityKind::Player) { markBuffsDirty(e.id); markStatsDirty(e.id); }
+      return;
     }
   }
+  e.buffs.push_back({skillId, type, value, durSec, durSec});
+  if (e.kind == EntityKind::Player) { markBuffsDirty(e.id); markStatsDirty(e.id); }
+  // 属性类 Buff 立即生效
+  if (type == (uint8_t)BuffType::ATK || type == (uint8_t)BuffType::DEF) recomputeStats(e);
+}
+void World::removeBuffType(Entity& e, uint8_t type) {
+  bool changed = false;
+  for (auto it = e.buffs.begin(); it != e.buffs.end();) {
+    if (it->type == type) { it = e.buffs.erase(it); changed = true; }
+    else ++it;
+  }
+  if (changed && e.kind == EntityKind::Player) {
+    recomputeStats(e);
+    markBuffsDirty(e.id);
+    markStatsDirty(e.id);
+  }
+}
+// 荆棘反伤：victim 有 THORNS 时按比例反弹给 attacker
+double World::thornsReflect(Entity& victim, Entity& attacker, double dmg) {
+  for (const auto& b : victim.buffs) {
+    if (b.type == (uint8_t)BuffType::THORNS && b.remainSec > 0 && dmg > 0) {
+      double reflect = dmg * b.value;
+      if (attacker.hp > 0) {
+        attacker.hp -= reflect;
+        if (attacker.kind == EntityKind::Player) markStatsDirty(attacker.id);
+        pushEvent(proto::EVT_DAMAGE, attacker.wid, (uint32_t)reflect, 0, 0);
+        cancelCastOnHit(attacker);  // 反伤视为受击：打断施法者前摇
+        if (attacker.hp <= 0) attacker.hp = 1;  // 演示保护：玩家不死亡
+      }
+      return reflect;
+    }
+  }
+  return 0;
+}
+// 已学技能 + 剩余冷却（S2C_SKILLS）
+std::string World::skillsFrame(const Entity& p) {
+  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  proto::Writer w;
+  w.u16((uint16_t)p.learnedSkills.size());
+  for (uint32_t id : p.learnedSkills) {
+    uint64_t ready = 0;
+    auto it = p.skillCd.find(id);
+    if (it != p.skillCd.end() && it->second > nowMs) ready = it->second - nowMs;
+    w.u32(id);
+    w.u32((uint32_t)ready);
+  }
+  return proto::frame(proto::S2C_SKILLS, w.data());
+}
+// 自身 Buff（S2C_BUFFS）
+std::string World::buffsFrame(const Entity& p) {
+  proto::Writer w;
+  w.u16((uint16_t)p.buffs.size());
+  for (const auto& b : p.buffs) {
+    w.u32(b.skillId);
+    w.u8(b.type);
+    w.f32((float)b.value);
+    w.f32((float)b.remainSec);
+  }
+  return proto::frame(proto::S2C_BUFFS, w.data());
+}
+void World::markSkillsDirty(const std::string& playerId) { skillsDirty_.insert(playerId); }
+void World::markBuffsDirty(const std::string& playerId) { buffsDirty_.insert(playerId); }
+// ---------- 控制台/调试辅助（GameConsole 与 /api/debug 复用） ----------
+Entity* World::spawnMonster(const std::string& type, double x, double z) {
+  const MonsterDef* def = data_.monster(type);
+  if (!def) return nullptr;
+  // 水面上自动找最近的干地
+  double sx = x, sz = z;
+  bool found = false;
+  for (double r = 0; r <= 40 && !found; r += 3) {
+    for (int k = 0; k < 16; k++) {
+      double a = (double)k / 16.0 * 6.28318;
+      double px = x + std::cos(a) * r, pz = z + std::sin(a) * r;
+      if (terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
+    }
+  }
+  Entity m = makeMonster(nextEntityId("m"), type);
+  applyMonsterStats(m, type);
+  m.pos = {sx, terrainHeight(sx, sz) + m.radius + 0.3, sz};
+  m.ai.homeX = sx;
+  m.ai.homeZ = sz;
+  m.active = true;
+  m.hp = m.maxHp;
+  std::string id = m.id;
+  addEntity(std::move(m));
+  return findEntity(id);
+}
+bool World::teleportPlayer(const std::string& playerId, double x, double z) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return false;
+  p->pos.x = x;
+  p->pos.z = z;
+  p->pos.y = terrainHeight(x, z) + p->radius + 0.3;
+  p->vel = {0, 0, 0};
+  p->grounded = true;
+  // 防作弊重置：传送属管理/调试工具，避免在途输入被轨迹校验误判
+  p->violations = 0;
+  p->acceptedInputs = 0;
+  p->rateDrops = 0;
+  p->lastSeq = 0;
   return true;
+}
+bool World::killEntity(const std::string& playerId, uint32_t wid) {
+  Entity* killer = findEntity(playerId);
+  Entity* t = findByWid(wid);
+  if (!t || !t->active || t->kind != EntityKind::Monster) return false;
+  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  onVictimDeath(*t, killer ? *killer : *t, nowMs);
+  return true;
+}
+bool World::respawnEntity(const std::string& id) {
+  Entity* e = findEntity(id);
+  if (!e) return false;
+  if (e->isBoss) {
+    e->hp = e->maxHp;
+    e->mp = e->maxMp;
+    e->bossState = BS_IDLE;
+    e->bossTarget = 0;
+    e->bossPhase = 1;
+    e->aggro.clear();
+    e->buffs.clear();
+    e->active = true;
+    e->respawnAtMs = 0;
+    aliveBoss_++;
+    pushEvent(proto::EVT_RESPAWN, e->wid, 0, 0, 0);
+    markBossDirty();
+    return true;
+  }
+  if (e->kind == EntityKind::Monster && !e->active) {
+    e->hp = e->maxHp;
+    e->mp = e->maxMp;
+    e->active = true;
+    e->respawnAtMs = 0;
+    e->buffs.clear();
+    e->pos = {e->ai.homeX, terrainHeight(e->ai.homeX, e->ai.homeZ) + e->radius + 0.3, e->ai.homeZ};
+    pushEvent(proto::EVT_RESPAWN, e->wid, 0, 0, 0);
+    return true;
+  }
+  return false;
+}
+void World::respawnAllMonsters() {
+  for (auto& [id, e] : entitiesMut()) {
+    if (e.kind != EntityKind::Monster) continue;
+    if (e.isBoss && e.active) continue;   // 存活 Boss 不动
+    respawnEntity(id);
+  }
+}
+bool World::giveItem(const std::string& playerId, uint32_t itemId, uint16_t count) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return false;
+  if (!data_.item(itemId) || count == 0) return false;
+  p->pl.inventory[itemId] += count;
+  markInvDirty(playerId);
+  markStatsDirty(playerId);
+  return true;
+}
+bool World::giveGold(const std::string& playerId, int64_t amount) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return false;
+  int64_t v = (int64_t)p->pl.gold + amount;
+  p->pl.gold = (uint32_t)std::max<int64_t>(0, v);
+  markInvDirty(playerId);
+  markStatsDirty(playerId);
+  return true;
+}
+void World::markInvDirty(const std::string& playerId) { invDirty_.insert(playerId); }
+void World::spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold) {
+  // 自动落到最近干地
+  double sx = x, sz = z;
+  bool found = false;
+  for (double r = 0; r <= 30 && !found; r += 3) {
+    for (int k = 0; k < 16; k++) {
+      double a = (double)k / 16.0 * 6.28318;
+      double px = x + std::cos(a) * r, pz = z + std::sin(a) * r;
+      if (terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
+    }
+  }
+  spawnDrop(sx, sz, itemId, gold);
+}
+Json World::bossesStatus() const {
+  Json arr = Json::array();
+  for (const auto& [id, e] : entities_) {
+    if (!e.isBoss) continue;
+    Json j = Json::object();
+    j["name"] = e.name;
+    j["wid"] = (int64_t)e.wid;
+    j["state"] = (int64_t)e.bossState;
+    j["phase"] = (int64_t)e.bossPhase;
+    j["hp"] = e.hp;
+    j["maxHp"] = e.maxHp;
+    j["active"] = e.active;
+    j["x"] = e.pos.x;
+    j["z"] = e.pos.z;
+    arr.push_back(std::move(j));
+  }
+  return arr;
+}
+Json World::entitiesStatus(double px, double pz, double range, int limit) const {
+  Json arr = Json::array();
+  int n = 0;
+  for (const auto& [id, e] : entities_) {
+    if (limit > 0 && n >= limit) break;
+    if (!e.active) continue;
+    if (range > 0 && e.pos.dist2D({px, 0, pz}) > range) continue;
+    Json j = Json::object();
+    j["id"] = id;
+    j["wid"] = (int64_t)e.wid;
+    j["kind"] = (int64_t)(int)e.kind;
+    j["name"] = e.name.empty() ? e.username : e.name;
+    j["hp"] = e.hp;
+    j["maxHp"] = e.maxHp;
+    j["x"] = e.pos.x;
+    j["z"] = e.pos.z;
+    arr.push_back(std::move(j));
+    n++;
+  }
+  return arr;
 }
 // ---------- 物品/属性/商店/掉落 实现 ----------
 // 位置哈希 → 怪物类型（确定性：复活后类型不变）
@@ -381,6 +763,11 @@ void World::recomputeStats(Entity& p) {
     atk += it->attackBonus;
     def += it->defenseBonus;
   }
+  // 属性类 Buff（战吼 +攻 / 防御增益）叠加
+  for (const auto& b : p.buffs) {
+    if (b.type == (uint8_t)BuffType::ATK) atk += b.value;
+    else if (b.type == (uint8_t)BuffType::DEF) def += b.value;
+  }
   p.maxHp = maxHp;
   p.maxMp = maxMp;
   p.attack = atk;
@@ -468,6 +855,59 @@ static void moveSystem(World& w, double dt) {
     if (e.kind == EntityKind::Player || !e.active) continue;
     w.physics().setHorizontalVelocity(e, e.ai.targetVX, e.ai.targetVZ, dt);
     w.physics().step(e, dt);
+  }
+}
+// 施放系统：推进前摇。前摇到期 → 结算；前摇期间移动意图 → 打断（大型网游标配）
+static void castSystem(World& w, double dt) {
+  (void)dt;
+  uint64_t nowMs = w.tickCount() * (uint64_t)w.config().tickMs;
+  for (auto& [id, e] : w.entitiesMut()) {
+    (void)id;
+    if (!e.active || e.castingSkillId == 0) continue;
+    const SkillDef* sd = w.data().skill(e.castingSkillId);
+    if (!sd) { e.castingSkillId = 0; continue; }
+    // 移动打断：玩家按了移动键（目标速度非零）即取消
+    if (sd->castCancelOnMove &&
+        (std::fabs(e.input.targetVX) > 0.01 || std::fabs(e.input.targetVZ) > 0.01)) {
+      w.cancelCast(e, 1);
+      continue;
+    }
+    // 前摇到期 → 结算
+    if (nowMs >= e.castStartMs + (uint64_t)sd->castTimeMs) {
+      uint32_t skillId = e.castingSkillId;
+      uint32_t twid = e.castTargetWid;
+      double tx = e.castTx, tz = e.castTz;
+      e.castingSkillId = 0;
+      const SkillDef* s2 = w.data().skill(skillId);
+      if (s2) w.resolveCast(e, *s2, twid, tx, tz);
+    }
+  }
+}
+// Buff 系统：每 tick 衰减剩余时长 + 持续效果（REGEN 回血），过期移除并重算属性
+static void buffSystem(World& w, double dt) {
+  for (auto& [id, e] : w.entitiesMut()) {
+    (void)id;
+    if (!e.active || e.buffs.empty()) continue;
+    bool expired = false;
+    for (auto it = e.buffs.begin(); it != e.buffs.end();) {
+      it->remainSec -= dt;
+      // 持续回血（REGEN）：每秒恢复 value 点
+      if (it->type == (uint8_t)BuffType::REGEN && it->remainSec > 0 && e.hp > 0) {
+        double before = std::floor(e.hp);
+        e.hp = std::min(e.maxHp, e.hp + it->value * dt);
+        if (std::floor(e.hp) != before && e.kind == EntityKind::Player) w.markStatsDirty(e.id);
+      }
+      if (it->remainSec <= 0) { it = e.buffs.erase(it); expired = true; }
+      else ++it;
+    }
+    if (expired) {
+      // 属性类 Buff 失效需重算派生属性
+      w.recomputeStats(e);
+      if (e.kind == EntityKind::Player) {
+        w.markBuffsDirty(e.id);
+        w.markStatsDirty(e.id);
+      }
+    }
   }
 }
 // 生物/NPC AI：大规模调度（AOI 激活 + 时间片轮转 + 距离分级）→ 状态机

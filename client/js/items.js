@@ -54,3 +54,21 @@ export function itemDesc(id) {
   if (d.restoreMp) parts.push(`恢复${d.restoreMp}法力`);
   return parts.length ? parts.join(' ') : '任务道具';
 }
+/** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示） */
+export const SKILL_DEFS = {
+  // castMs=前摇毫秒, radius=AOE半径(0=单目标/自身)，与服务端 skills.json 对齐
+  1001: { name: '冲刺斩', icon: '⚔️', color: '#ff6b35', desc: '220% 攻击伤害', key: '1', castMs: 0, radius: 0 },
+  1002: { name: '烈焰冲击', icon: '🔥', color: '#ff3d2e', desc: '150% AOE 伤害', key: '2', castMs: 600, radius: 4 },
+  1003: { name: '治疗之光', icon: '✨', color: '#7ef9ff', desc: '恢复 60 生命', key: '3', castMs: 500, radius: 0 },
+  1004: { name: '冰霜新星', icon: '❄️', color: '#6dd5ff', desc: '120% AOE + 减速', key: '4', castMs: 800, radius: 4 },
+  1005: { name: '战吼', icon: '📢', color: '#ffd166', desc: '攻击 +8（10s）', key: '5', castMs: 400, radius: 0 },
+  1006: { name: '雷霆一击', icon: '⚡', color: '#fff35b', desc: '300% 单体伤害', key: '6', castMs: 1000, radius: 0 },
+  1007: { name: '吸血打击', icon: '🩸', color: '#c44dff', desc: '180% + 吸血 35%', key: '7', castMs: 300, radius: 0 },
+  1008: { name: '荆棘护体', icon: '🌵', color: '#6bd968', desc: '反弹伤害 20%（8s）', key: '8', castMs: 600, radius: 0 },
+};
+export function skillDef(id) {
+  return SKILL_DEFS[id] || { name: `技能#${id}`, icon: '❔', color: '#aaa', desc: '', key: '' };
+}
+export function skillName(id) {
+  return skillDef(id).name;
+}

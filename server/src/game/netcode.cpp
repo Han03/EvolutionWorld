@@ -109,9 +109,18 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
     buf += sharedSuffix; // 全区共享状态（事件 + Boss 血量/状态）
     // 玩家自身属性/资源变化（战斗掉血/回血/回蓝）：补发 S2C_STATS
     if (w_.statsDirty().count(player->id)) buf += proto::statsFrame(*player);
+    // 背包/金币变化（控制台/调试发放）：补发 S2C_INVENTORY
+    if (w_.invDirty().count(player->id)) buf += proto::inventoryFrame(*player);
+    // 技能/冷却变化：补发 S2C_SKILLS
+    if (w_.skillsDirty().count(player->id)) buf += w_.skillsFrame(*player);
+    // Buff 变化：补发 S2C_BUFFS
+    if (w_.buffsDirty().count(player->id)) buf += w_.buffsFrame(*player);
     if (!buf.empty()) out_[player->id] = std::move(buf);
   }
   w_.clearStatsDirty();
+  w_.clearInvDirty();
+  w_.clearSkillsDirty();
+  w_.clearBuffsDirty();
   return out_;
 }
 } // namespace ew

@@ -3,6 +3,7 @@
 #include "websocket.h"
 #include "http.h"
 #include "net/protocol.h"
+#include "game/console.h"
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
@@ -52,6 +53,16 @@ bool GameServer::start() {
   ev.data.fd = listenFd_;
   epoll_ctl(epollFd_, EPOLL_CTL_ADD, listenFd_, &ev);
 
+  // 游戏控制台：stdin 挂入 epoll（单线程内处理，不额外起线程）
+  // 非 TTY（如后台运行/CI）时 fd 0 可能关闭，注册失败不影响服务
+  int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+  if (flags >= 0) {
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    ev.events = EPOLLIN;
+    ev.data.fd = STDIN_FILENO;
+    if (epoll_ctl(epollFd_, EPOLL_CTL_ADD, STDIN_FILENO, &ev) == 0) consoleReady_ = true;
+  }
+
   running_ = true;
   nextTickMs_ = steadyMs();
   return true;
@@ -83,6 +94,10 @@ void GameServer::run() {
       int fd = events[i].data.fd;
       if (fd == listenFd_) {
         acceptNew();
+        continue;
+      }
+      if (fd == STDIN_FILENO) {  // 游戏控制台（stdin）
+        handleStdinConsole();
         continue;
       }
       auto it = conns_.find(fd);
@@ -299,6 +314,8 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         // 物品系统：登录即下发背包/装备/金币 + 自身属性（服务端权威）
         enqueue(c, wsEncodeFrame(WS_BINARY, proto::inventoryFrame(*player)));
         enqueue(c, wsEncodeFrame(WS_BINARY, proto::statsFrame(*player)));
+        // 技能系统：登录即下发已学技能 + 冷却（服务端权威）
+        enqueue(c, wsEncodeFrame(WS_BINARY, world_.skillsFrame(*player)));
         return;
       }
     }
@@ -375,6 +392,36 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     r["tick"] = (int64_t)world_.tickCount();
     r["players"] = arr;
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+
+  // 游戏控制台 HTTP 通道：POST /api/console {token, command}
+  // 与 stdin / WS 通道共用 consoleExecute，便于脚本化功能测试（curl）
+  if (path == "/api/console" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      Entity* p = username.empty() ? nullptr : world_.findPlayerByUsername(username);
+      if (!p) { r["error"] = "no player"; code = 401; }
+      else {
+        std::string cmd = in.at("command").asString();
+        ConsoleCtx ctx;
+        ctx.world = &world_;
+        ctx.playerId = p->id;
+        std::string all;
+        ctx.out = [&](const std::string& s) { all += s; all += "\n"; };
+        bool known = consoleExecute(ctx, cmd);
+        if (!known) all += "未知命令，输入 help 查看帮助\n";
+        r["ok"] = true;
+        r["output"] = all;
+        code = 200;
+      }
+    } catch (const std::exception& e) { r["error"] = "bad request"; code = 400; }
+    catch (...) { r["error"] = "bad request"; code = 400; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
     c.closeAfterFlush = true;
     return;
   }
@@ -610,6 +657,24 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
         }
         break;
       }
+      case proto::C2S_CAST_SKILL: {
+        proto::CastSkillMsg m;
+        if (proto::decodeCastSkill(f.payload, m)) {
+          // 服务端权威施放（校验已学/冷却/耗蓝/目标/距离 + 前摇/施放时间判定）
+          bool ok = world_.beginCast(c.playerId, m.skillId, m.targetWid, m.tx, m.tz);
+          const SkillDef* sd = world_.data().skill(m.skillId);
+          uint16_t ctm = sd ? (uint16_t)sd->castTimeMs : 0;
+          sendTo(c, proto::skillCastFrame(ok, m.skillId, m.targetWid,
+                                          proto::qAbs(m.tx), proto::qAbs(m.tz), ctm));
+        }
+        break;
+      }
+      case proto::C2S_CONSOLE: {
+        std::string cmd;
+        proto::Reader r(f.payload);
+        if (r.str(cmd)) handleConsoleLine(c.playerId, cmd);
+        break;
+      }
       default:
         return;
     }
@@ -643,6 +708,47 @@ void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
   if (getenv("EW_DEBUG")) {
     fprintf(stderr, "[AC] %s reason=%s %s\n", p->id.c_str(), res.reason.c_str(),
             res.accepted ? "accepted" : "rejected");
+  }
+}
+// 游戏控制台：执行一行命令并把逐行结果发给目标玩家（WS/HTTP 通道）
+void GameServer::handleConsoleLine(const std::string& playerId, const std::string& line) {
+  ConsoleCtx ctx;
+  ctx.world = &world_;
+  ctx.playerId = playerId;
+  std::vector<std::string> lines;
+  ctx.out = [&](const std::string& s) { lines.push_back(s); };
+  bool known = consoleExecute(ctx, line);
+  if (!known) lines.push_back("未知命令，输入 help 查看帮助");
+  // 汇总逐行结果（UTF-8）→ 一条 S2C_CONSOLE 帧
+  std::string all;
+  for (auto& s : lines) { all += s; all += "\n"; }
+  int fd = fdOfPlayer(playerId);
+  if (fd >= 0) {
+    auto it = conns_.find(fd);
+    if (it != conns_.end()) sendTo(it->second, proto::consoleFrame(all));
+  } else if (!playerId.empty()) {
+    fprintf(stderr, "[console] %s -> %s\n", playerId.c_str(), all.c_str());
+  }
+}
+// 游戏控制台（stdin 通道）：读一行执行，结果打印到 stderr（不干扰 HTTP/WS 输出）
+void GameServer::handleStdinConsole() {
+  char buf[1024];
+  ssize_t n;
+  while ((n = read(STDIN_FILENO, buf, sizeof(buf) - 1)) > 0) {
+    for (ssize_t i = 0; i < n; i++) {
+      if (buf[i] == '\n' || buf[i] == '\r') {
+        if (!stdinLine_.empty()) {
+          ConsoleCtx ctx;
+          ctx.world = &world_;
+          ctx.out = [](const std::string& s) { fprintf(stderr, "[console] %s\n", s.c_str()); };
+          bool known = consoleExecute(ctx, stdinLine_);
+          if (!known) fprintf(stderr, "[console] 未知命令：%s（help 查看帮助）\n", stdinLine_.c_str());
+          stdinLine_.clear();
+        }
+      } else {
+        stdinLine_.push_back(buf[i]);
+      }
+    }
   }
 }
 void GameServer::sendTo(Conn& c, const std::string& frame) {

@@ -3,7 +3,7 @@
  * 数据传输方案：二进制帧 + 量化坐标 + AOI 进出 + 增量更新 + 校准快照
  * 扩展：输入上报携带预测位置 px/py/pz（防作弊校验），处理 SELF（回退）与 KICK。
  */
-import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, parseS2C, MSG } from './protocol.js';
+import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, MSG } from './protocol.js';
 export class NetworkClient {
   constructor() {
     this.ws = null;
@@ -27,6 +27,10 @@ export class NetworkClient {
     this.onInventory = null; // 背包/装备/金币（S2C_INVENTORY）
     this.onLoot = null;      // 拾取反馈（S2C_LOOT）
     this.onStats = null;     // 自身属性（S2C_STATS）
+    this.onSkills = null;    // 已学技能 + 冷却（S2C_SKILLS）
+    this.onSkillCast = null; // 技能施放反馈（S2C_SKILL_CAST）
+    this.onBuffs = null;     // 自身 Buff（S2C_BUFFS）
+    this.onConsole = null;   // 控制台结果（S2C_CONSOLE）
     // 协议透传转换监控：每次二进制帧解码为可读对象后触发（dir: 's2c' | 'c2s'，obj 为解码结果）
     this.onProtocol = null;
     // 自身预测位置（解码相对坐标用参考）
@@ -139,6 +143,18 @@ export class NetworkClient {
         case MSG.S2C_STATS:
           if (this.onStats) this.onStats(msg);
           break;
+        case MSG.S2C_SKILLS:
+          if (this.onSkills) this.onSkills(msg);
+          break;
+        case MSG.S2C_SKILL_CAST:
+          if (this.onSkillCast) this.onSkillCast(msg);
+          break;
+        case MSG.S2C_BUFFS:
+          if (this.onBuffs) this.onBuffs(msg);
+          break;
+        case MSG.S2C_CONSOLE:
+          if (this.onConsole) this.onConsole(msg);
+          break;
         case MSG.S2C_ERROR:
           console.error('[net]', msg.code, msg.msg);
           break;
@@ -193,6 +209,18 @@ export class NetworkClient {
     if (!this.connected || !itemId) return;
     this.ws.send(encodeUseItem(itemId, count));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'USE_ITEM', itemId, count });
+  }
+  /** 施放技能（技能系统） */
+  sendCastSkill(skillId, targetWid = 0, tx = 0, tz = 0) {
+    if (!this.connected || !skillId) return;
+    this.ws.send(encodeCastSkill(skillId, targetWid, tx, tz));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'CAST_SKILL', skillId, targetWid, tx, tz });
+  }
+  /** 控制台命令（功能测试） */
+  sendConsole(cmd) {
+    if (!this.connected) return;
+    this.ws.send(encodeConsole(cmd));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'CONSOLE', cmd });
   }
   close() {
     this.connected = false;

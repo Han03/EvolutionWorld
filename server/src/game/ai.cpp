@@ -23,6 +23,14 @@ Entity* pickAggroTarget(World& w, Entity& e) {
   return best ? w.findByWid(best) : nullptr;
 }
 
+// 应用减速 Buff（MOVE_SLOW 比例 0..1，多 Buff 取最大减速）
+static double slowedSpeed(const Entity& e, double base) {
+  double slow = 0;
+  for (const auto& b : e.buffs)
+    if (b.type == (uint8_t)BuffType::MOVE_SLOW && b.remainSec > 0) slow = std::max(slow, b.value);
+  return base * (1.0 - slow);
+}
+
 bool moveToward(Entity& e, const Vec3& t, double speed, double arriveDist) {
   double dx = t.x - e.pos.x, dz = t.z - e.pos.z;
   double d = std::hypot(dx, dz);
@@ -96,19 +104,21 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         target->lastDamageMs = nowMs;
         w.pushEvent(proto::EVT_DAMAGE, target->wid, (uint32_t)dmg, 0, 0);
         w.markStatsDirty(target->id);
+        w.thornsReflect(*target, e, dmg); // 荆棘反伤（玩家有 THORNS Buff 时反弹给怪物）
+        w.cancelCastOnHit(*target);        // 受击打断玩家前摇
         if (target->hp <= 0) target->hp = 1; // 玩家不死亡（演示保护）
       }
     } else {
       // 追击
       ai.aiState = AS_CHASE;
-      moveToward(e, target->pos, ai.speed * 1.8, cfg.monsterAttackRange);
+      moveToward(e, target->pos, slowedSpeed(e, ai.speed * 1.8), cfg.monsterAttackRange);
     }
     return;
   }
   // 无仇恨：远离出生点 → 回巢；否则巡逻
   if (homeD > cfg.monsterPatrolRadius) {
     ai.aiState = AS_RETURN;
-    moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, ai.speed, cfg.monsterPatrolRadius * 0.5);
+    moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, slowedSpeed(e, ai.speed), cfg.monsterPatrolRadius * 0.5);
     return;
   }
   ai.aiState = AS_PATROL;
@@ -120,7 +130,7 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
   }
   if (homeD > cfg.monsterPatrolRadius * 0.6) {
     // 巡逻越界微回拉
-    moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, ai.speed * 0.6, 2.0);
+    moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, slowedSpeed(e, ai.speed * 0.6), 2.0);
   } else {
     ai.targetVX = ai.dirX * ai.speed;
     ai.targetVZ = ai.dirZ * ai.speed;
@@ -147,7 +157,7 @@ void tickNpcAi(World& w, Entity& e, double dt) {
   if (ai.aiState == AS_WANDER) {
     double homeD = std::hypot(e.pos.x - ai.homeX, e.pos.z - ai.homeZ);
     if (homeD > 6.0) {
-      moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, ai.speed * 0.5, 1.0);
+      moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, slowedSpeed(e, ai.speed * 0.5), 1.0);
     } else {
       ai.targetVX = ai.dirX * ai.speed * 0.4;
       ai.targetVZ = ai.dirZ * ai.speed * 0.4;
@@ -215,7 +225,7 @@ void tickBossAi(World& w, Entity& e, double dt) {
   double dist = e.pos.dist2D(target->pos);
   if (dist > cfg.bossAttackRange) {
     e.ai.aiState = AS_CHASE;
-    moveToward(e, target->pos, cfg.bossChaseSpeed, cfg.bossAttackRange);
+    moveToward(e, target->pos, slowedSpeed(e, cfg.bossChaseSpeed), cfg.bossAttackRange);
   } else {
     e.ai.aiState = AS_ATTACK;
     e.ai.targetVX = e.ai.targetVZ = 0;
@@ -227,6 +237,8 @@ void tickBossAi(World& w, Entity& e, double dt) {
       e.aggro[target->wid] -= dmg * 0.3; // 被攻击目标仇恨衰减
       w.pushEvent(proto::EVT_DAMAGE, target->wid, (uint32_t)dmg, 0, 0);
       w.markStatsDirty(target->id);
+      w.thornsReflect(*target, e, dmg); // 荆棘反伤
+      w.cancelCastOnHit(*target);        // 受击打断玩家前摇
       if (target->hp <= 0) target->hp = 1;
       // 范围技能（周期性 AOE，全区广播）
       e.bossSkillCd -= dt;
@@ -242,6 +254,8 @@ void tickBossAi(World& w, Entity& e, double dt) {
             pl->lastDamageMs = nowMs;
             w.pushEvent(proto::EVT_DAMAGE, pl->wid, (uint32_t)sdmg, 0, 0);
             w.markStatsDirty(pl->id);
+            w.thornsReflect(*pl, e, sdmg); // 荆棘反伤
+            w.cancelCastOnHit(*pl);      // 受击打断玩家前摇
             if (pl->hp <= 0) pl->hp = 1;
           }
         }

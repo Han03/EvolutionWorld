@@ -71,6 +71,11 @@ const std::vector<ShopEntry>* GameData::shopEntries(uint32_t shopId) const {
   const ShopDef* s = shop(shopId);
   return s ? &s->entries : nullptr;
 }
+// ---------- 技能表 ----------
+const SkillDef* GameData::skill(uint32_t id) const {
+  auto it = skills_.find(id);
+  return it == skills_.end() ? nullptr : &it->second;
+}
 
 // ---------- 内置默认数据（兜底；可在 data/*.json 覆盖） ----------
 void GameData::addDefaultItem(uint32_t id, const char* name, const char* desc, const char* icon,
@@ -91,6 +96,24 @@ void GameData::addDefaultMonster(const char* type, const char* name, int level, 
   d.hp = hp; d.mp = mp; d.attack = atk; d.defense = def;
   d.goldMin = gMin; d.goldMax = gMax;
   monsters_[type] = d;
+}
+void GameData::addDefaultSkill(uint32_t id, const char* name, const char* desc, const char* icon,
+                               SkillTarget target, SkillEffect effect, double mana, uint32_t cdMs,
+                               double range, double radius, double dmgMul, double flatDmg, double heal,
+                               BuffType buffType, double buffValue, double buffDur, double lifesteal,
+                               uint16_t castTimeMs, bool cancelOnMove, bool cancelOnHit) {
+  SkillDef s;
+  s.id = id; s.name = name; s.desc = desc; s.icon = icon;
+  s.target = target; s.effect = effect;
+  s.manaCost = mana; s.cooldownMs = cdMs;
+  s.range = range; s.radius = radius;
+  s.dmgMul = dmgMul; s.flatDmg = flatDmg; s.heal = heal;
+  s.buffType = buffType; s.buffValue = buffValue; s.buffDurSec = buffDur;
+  s.lifesteal = lifesteal;
+  s.castTimeMs = castTimeMs;
+  s.castCancelOnMove = cancelOnMove;
+  s.castCancelOnHit = cancelOnHit;
+  skills_[id] = s;
 }
 void GameData::loadDefaults() {
   // ---- 装备：6 槽位各 2 档（新手/精良） ----
@@ -147,6 +170,41 @@ void GameData::loadDefaults() {
     {2001, 5, 0}, {2002, 15, 0}, {2101, 5, 0}, {2102, 15, 0},
   };
   shops_[1] = shop;
+  // ---- 技能表（大型网游规模：单目标/AOE/治疗/Buff，数据驱动） ----
+  // 1001 冲刺斩：单目标物理伤害（起始技）
+  addDefaultSkill(1001, "冲刺斩", "迅猛突进的一击，造成 220% 攻击伤害", "s1",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 8, 3000, 3.5, 0, 2.2, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 0);  // 瞬发
+  // 1002 烈焰冲击：区域火伤（起始技）
+  addDefaultSkill(1002, "烈焰冲击", "向目标区域喷吐烈焰，对 4m 内敌人造成 150% 攻击伤害", "s2",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 15, 6000, 8, 4, 1.5, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 600);  // 前摇 0.6s
+  // 1003 治疗之光：恢复自身生命（起始技）
+  addDefaultSkill(1003, "治疗之光", "凝聚圣光治疗自身，恢复 60 点生命", "s3",
+                  SkillTarget::SELF, SkillEffect::HEAL, 15, 8000, 0, 0, 0, 0, 60,
+                  BuffType::NONE, 0, 0, 0, 500);  // 前摇 0.5s
+  // 1004 冰霜新星：区域伤害 + 减速
+  addDefaultSkill(1004, "冰霜新星", "冰霜爆发，对 4m 内敌人造成 120% 伤害并减速 40%（3 秒）", "s4",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 18, 10000, 8, 4, 1.2, 0, 0,
+                  BuffType::MOVE_SLOW, 0.4, 3.0, 0, 800);  // 前摇 0.8s
+  // 1005 战吼：自身攻击增益
+  addDefaultSkill(1005, "战吼", "咆哮鼓舞，攻击力 +8（10 秒）", "s5",
+                  SkillTarget::SELF, SkillEffect::BUFF, 10, 12000, 0, 0, 0, 0, 0,
+                  BuffType::ATK, 8, 10.0, 0, 400);  // 前摇 0.4s
+  // 1006 雷霆一击：单目标高伤害
+  addDefaultSkill(1006, "雷霆一击", "召唤雷电轰击单体，造成 300% 攻击伤害", "s6",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 25, 12000, 4.5, 0, 3.0, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 1000);  // 前摇 1.0s
+  // 1007 吸血打击：单目标伤害 + 吸血
+  addDefaultSkill(1007, "吸血打击", "吸取目标生命，造成 180% 伤害并恢复 35% 伤害量", "s7",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 12, 6000, 3.5, 0, 1.8, 0, 0,
+                  BuffType::NONE, 0, 0, 0.35, 300);  // 前摇 0.3s
+  // 1008 荆棘护体：反弹伤害 Buff
+  addDefaultSkill(1008, "荆棘护体", "周身环绕荆棘，受到伤害时反弹 20%（8 秒）", "s8",
+                  SkillTarget::SELF, SkillEffect::BUFF, 12, 15000, 0, 0, 0, 0, 0,
+                  BuffType::THORNS, 0.2, 8.0, 0, 600);  // 前摇 0.6s
+  // 新玩家自动习得：冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
+  starterSkills_ = {1001, 1002, 1003};
 }
 
 // ---------- JSON 覆盖加载 ----------
@@ -255,6 +313,46 @@ bool GameData::loadFromJson(const std::string& dir) {
         }
       } catch (const std::exception& e) {
         fprintf(stderr, "[gamedata] shop.json 解析失败（用默认）: %s\n", e.what());
+      }
+    }
+  }
+  // skills.json
+  {
+    std::string content = readFile(dir + sep + "skills.json");
+    if (!content.empty()) {
+      try {
+        Json arr = Json::parse(content);
+        if (arr.type() == Json::Type::Array) {
+          for (const auto& j : arr.asArray()) {
+            SkillDef s;
+            s.id = (uint32_t)j.at("id").asInt();
+            if (s.id == 0) continue;
+            s.name = j.at("name").asString();
+            s.desc = j.at("desc").asString();
+            s.icon = j.at("icon").asString();
+            s.target = SkillDef::targetFromStr(j.at("target").asString());
+            s.effect = SkillDef::effectFromStr(j.at("effect").asString());
+            s.manaCost = j.at("mana").asNumber();
+            s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
+            s.range = j.at("range").asNumber();
+            s.radius = j.at("radius").asNumber();
+            s.dmgMul = j.at("dmgMul").asNumber();
+            s.flatDmg = j.at("flatDmg").asNumber();
+            s.heal = j.at("heal").asNumber();
+            s.buffType = SkillDef::buffFromStr(j.at("buffType").asString());
+            s.buffValue = j.at("buffValue").asNumber();
+            s.buffDurSec = j.at("buffDur").asNumber();
+            s.lifesteal = j.at("lifesteal").asNumber();
+            s.castTimeMs = (uint16_t)(j.has("castTimeMs") ? j.at("castTimeMs").asInt() : 0);
+            s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
+            s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
+            skills_[s.id] = s;
+          }
+          any = true;
+          fprintf(stderr, "[gamedata] 加载 skills.json: %zu 个技能\n", skills_.size());
+        }
+      } catch (const std::exception& e) {
+        fprintf(stderr, "[gamedata] skills.json 解析失败（用默认）: %s\n", e.what());
       }
     }
   }

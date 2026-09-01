@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 #include "util/json.h"
+#include "skills.h"
 #include <cmath>
 
 namespace ew {
@@ -90,6 +91,11 @@ public:
   const std::unordered_map<uint32_t, ShopDef>& shops() const { return shops_; }
   // 商店条目（用于 S2C_SHOP 编码）
   const std::vector<ShopEntry>* shopEntries(uint32_t shopId) const;
+  // ---- 技能表（技能系统，数据驱动）----
+  const SkillDef* skill(uint32_t id) const;
+  const std::unordered_map<uint32_t, SkillDef>& skills() const { return skills_; }
+  // 默认起始技能（新玩家自动习得，用于开箱即测）
+  const std::vector<uint32_t>& starterSkills() const { return starterSkills_; }
 
   // 槽位工具
   static const char* slotName(EquipSlot s);    // "头盔/上衣/…"
@@ -106,9 +112,16 @@ private:
                       double rHp, double rMp, uint32_t price, uint32_t stack = 99);
   void addDefaultMonster(const char* type, const char* name, int level, double hp, double mp,
                          double atk, double def, uint32_t gMin, uint32_t gMax);
+  void addDefaultSkill(uint32_t id, const char* name, const char* desc, const char* icon,
+                       SkillTarget target, SkillEffect effect, double mana, uint32_t cdMs,
+                       double range, double radius, double dmgMul, double flatDmg, double heal,
+                       BuffType buffType, double buffValue, double buffDur, double lifesteal,
+                       uint16_t castTimeMs = 0, bool cancelOnMove = true, bool cancelOnHit = true);
   std::unordered_map<uint32_t, ItemDef> items_;
   std::unordered_map<std::string, MonsterDef> monsters_;
   std::unordered_map<uint32_t, ShopDef> shops_;
+  std::unordered_map<uint32_t, SkillDef> skills_;
+  std::vector<uint32_t> starterSkills_;
 };
 
 } // namespace ew

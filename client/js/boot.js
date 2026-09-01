@@ -7,7 +7,8 @@ import { InputState } from './input.js';
 import { createRenderer } from './renderer.js';
 import { EntityViewManager } from './entities.js';
 import { Predictor } from './predict.js';
-import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME } from './items.js';
+import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME, skillDef, skillName } from './items.js';
+import { EVT } from './protocol.js';
 
 const $ = (id) => document.getElementById(id);
 const overlay = $('login-overlay');
@@ -47,6 +48,12 @@ let equip = {};       // 槽位值 -> itemId
 let gold = 0;
 let shopData = null;  // {shopId, name, entries[]}
 let toastTimer = null;
+// 技能系统状态（服务端权威，S2C_SKILLS/S2C_BUFFS 刷新）
+let learnedSkills = [];   // [{id, cdMs}] 已学技能 + 剩余冷却（ms）
+let myBuffs = [];         // [{skillId, type, value, remainSec}]
+let skillCastFeedback = null; // 最近一次技能施放反馈（用于日志/提示）
+// 技能栏展示映射：slot(1-8) -> skillId（按技能 ID 升序填槽）
+let skillBar = [];        // skillId 数组（与技能栏 UI 顺序一致）
 // 渲染器物品名映射（renderer.js 读取）
 window.__itemNames = {};
 for (const [id, d] of Object.entries(ITEM_DEFS)) window.__itemNames[id] = d.name;
@@ -155,6 +162,7 @@ async function enterWorld(token, username, worldMeta) {
     entities.setSelf(net.hello.self.x, net.hello.self.y, net.hello.self.z);
   }
   window.__ewPredictor = predictor; // 测试/调试钩子
+  window.__ewFx = () => renderer.fxSnapshot(); // 测试/调试钩子：技能效果快照
   $('loading-text').textContent = '接收世界数据…';
 
   // 二进制协议：AOI 进出 + 增量 + 校准快照 + 预测回退
@@ -174,6 +182,26 @@ async function enterWorld(token, username, worldMeta) {
     if (ev.evtType === 2 && ev.wid === net.selfWid) {
       $('hud-conn').textContent = '你被击倒了（已回血保护）';
       $('hud-conn').className = 'hud-chip warn';
+    }
+    // 技能简易效果（前摇圈 / AOE 范围圈 / 打断闪红）
+    if (ev.evtType === EVT.SKILL_CASTING) {
+      const sd = skillDef(ev.b);
+      renderer.addSkillEffect({
+        kind: 'cast', wid: ev.wid, x: ev.x, z: ev.z,
+        color: sd.color, durMs: Math.max(200, sd.castMs),
+      });
+    } else if (ev.evtType === EVT.SKILL_CANCEL) {
+      renderer.clearCasting(ev.wid);
+      // 打断闪红（定位施法者当前位置）
+      const ent = findEntityByWid(ev.wid);
+      if (ent) {
+        renderer.addSkillEffect({ kind: 'cancel', wid: ev.wid, x: ent.x, z: ent.z, durMs: 260 });
+      }
+    } else if (ev.evtType === EVT.SKILL) {
+      const sd = skillDef(ev.b);
+      if (sd.radius > 0) { // 仅 AOE 画范围圈（结算落点）
+        renderer.addSkillEffect({ kind: 'aoe', x: ev.x, z: ev.z, radius: sd.radius, color: sd.color, durMs: 900 });
+      }
     }
   };
 
@@ -200,6 +228,40 @@ async function enterWorld(token, username, worldMeta) {
   net.onLoot = (msg) => {
     if (msg.ok) toast('拾取成功', 'ok');
     else toast('拾取失败');
+  };
+
+  // 技能系统：已学技能 + 冷却（服务端权威）
+  net.onSkills = (msg) => {
+    learnedSkills = msg.skills;
+    skillBar = msg.skills.map((s) => s.id).sort((a, b) => a - b);
+    renderSkillBar();
+  };
+  // 技能施放反馈
+  net.onSkillCast = (msg) => {
+    skillCastFeedback = msg;
+    const sd = skillDef(msg.skillId);
+    if (msg.ok) {
+      toast(`释放【${sd.name}】`, 'ok');
+      // 有前摇：本地立即画自身前摇圈（服务器 EVT_SKILL_CASTING 随后到达，同 wid 去重）
+      if (msg.castTimeMs > 0) {
+        renderer.addSkillEffect({
+          kind: 'cast', wid: net.selfWid, x: msg.x, z: msg.z,
+          color: sd.color, durMs: msg.castTimeMs,
+        });
+      }
+    } else {
+      toast(`【${sd.name}】施放失败（冷却/蓝量/距离）`);
+    }
+    renderSkillBar();
+  };
+  // 自身 Buff 列表
+  net.onBuffs = (msg) => {
+    myBuffs = msg.buffs;
+    renderBuffBar();
+  };
+  // 控制台结果（S2C_CONSOLE）：展示到右下角日志区
+  net.onConsole = (msg) => {
+    protocolLog('s2c', { type: 'CONSOLE', text: msg.text });
   };
 
   net.onSelf = (msg) => {
@@ -247,7 +309,7 @@ function protocolLog(dir, msg) {
     case 'ATTACK': detail = `targetWid=${msg.targetWid} slot=${msg.slot}` + (msg.note ? ` ${msg.note}` : ''); break;
     case 'BOSS': detail = `wid=${msg.wid} ${msg.name} hp=${Math.round(msg.hp)}/${Math.round(msg.maxHp)} state=${msg.state} phase=${msg.phase} target=${msg.target}`; break;
     case 'EVENT': {
-      const names = { 1: '伤害', 2: '死亡', 3: '复活', 4: '范围技能', 5: '掉落' };
+      const names = { 1: '伤害', 2: '死亡', 3: '复活', 4: '范围技能', 5: '掉落', 6: '技能前摇', 7: '技能打断' };
       detail = `${names[msg.evtType] || msg.evtType} wid=${msg.wid} b=${msg.b}`;
       break;
     }
@@ -260,6 +322,11 @@ function protocolLog(dir, msg) {
     case 'PICKUP': detail = `dropWid=${msg.dropWid}`; break;
     case 'EQUIP': detail = `slot=${msg.slot} itemId=${msg.itemId}`; break;
     case 'USE_ITEM': detail = `itemId=${msg.itemId} count=${msg.count}`; break;
+    case 'CAST_SKILL': detail = `skillId=${msg.skillId} target=${msg.targetWid} at(${msg.tx},${msg.tz})`; break;
+    case 'CONSOLE': detail = `cmd=${msg.cmd || ''}${msg.text ? ' → ' + msg.text.replace(/\n/g, ' | ') : ''}`; break;
+    case 'SKILLS': detail = `已学=${msg.skills.length} ${msg.skills.map((s) => `${skillName(s.id)}${s.cdMs ? '(cd' + (s.cdMs / 1000).toFixed(0) + 's)' : ''}`).join(' ')}`; break;
+    case 'SKILL_CAST': detail = `ok=${msg.ok} skill=${skillName(msg.skillId)} target=${msg.targetWid}`; break;
+    case 'BUFFS': detail = `buffs=${msg.buffs.length} ${msg.buffs.map((b) => `#${b.skillId}@${b.value.toFixed(1)}(${b.remainSec.toFixed(1)}s)`).join(' ')}`; break;
     default: detail = JSON.stringify(msg).slice(0, 80); break;
   }
   line.textContent = `[${dir === 's2c' ? '↓S2C' : '↑C2S'}] ${t} ${detail}`;
@@ -418,6 +485,86 @@ function renderEquip() {
   }
 }
 
+// ---------------- 技能系统 UI（技能栏 + Buff 栏） ----------------
+function renderSkillBar() {
+  const bar = $('skill-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const now = performance.now();
+  // 从服务端冷却（cdMs 剩余毫秒）倒计时展示
+  const cdMap = {};
+  for (const s of learnedSkills) cdMap[s.id] = s.cdMs || 0;
+  skillBar.forEach((id, idx) => {
+    const sd = skillDef(id);
+    const cell = document.createElement('div');
+    const cdLeft = cdMap[id] || 0;
+    const onCd = cdLeft > 0;
+    cell.className = 'skill-cell' + (onCd ? ' cd' : '');
+    cell.innerHTML = `
+      <div class="skill-icon">${sd.icon}</div>
+      <div class="skill-key">${idx + 1}</div>
+      <div class="skill-name">${sd.name}</div>
+      <div class="skill-cd">${onCd ? (cdLeft / 1000).toFixed(1) + 's' : ''}</div>`;
+    cell.addEventListener('click', () => {
+      const sid = skillBar[idx];
+      if (sid) castSkillNow(sid);
+    });
+    bar.appendChild(cell);
+  });
+  if (!skillBar.length) {
+    bar.innerHTML = '<div class="skill-cell empty">未习得技能（控制台 skill 1001 学习）</div>';
+  }
+}
+function renderBuffBar() {
+  const bar = $('buff-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const buffNameMap = { 1: '攻击↑', 2: '防御↑', 3: '减速', 4: '回血', 5: '反伤' };
+  for (const b of myBuffs) {
+    const cell = document.createElement('div');
+    cell.className = 'buff-cell';
+    cell.innerHTML = `<span>${buffNameMap[b.type] || '#' + b.type}</span><span class="buff-t">${b.remainSec.toFixed(0)}s</span>`;
+    bar.appendChild(cell);
+  }
+}
+/** 施放技能：自动选取目标（单目标 → 最近怪物；AOE/自身 → 落点在自身位置） */
+function castSkillNow(skillId) {
+  if (!net || !predictor) return;
+  const selfPos = predictor.predicted();
+  const sd = skillDef(skillId);
+  // 单目标技能：找最近的可攻击怪物（范围由服务端权威校验）
+  let targetWid = 0;
+  const isEnemy = [1001, 1006, 1007].includes(skillId); // 镜像：单目标伤害技能
+  if (isEnemy) {
+    let best = null, bestD = 6;
+    for (const e of entities.forRender()) {
+      if (e.kind !== 'monster') continue;
+      const d = Math.hypot(e.x - selfPos.x, e.z - selfPos.z);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    if (best) targetWid = best.wid;
+  }
+  // AOE 技能：本地预览落点范围圈（对准最近怪物，无则自身前方）
+  if (sd.radius > 0) {
+    let ax = selfPos.x, az = selfPos.z;
+    let best = null, bestD = sd.radius + 1;
+    for (const e of entities.forRender()) {
+      if (e.kind !== 'monster') continue;
+      const d = Math.hypot(e.x - selfPos.x, e.z - selfPos.z);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    if (best) { ax = best.x; az = best.z; }
+    renderer.showAoePreview(ax, az, sd.radius, sd.color);
+  }
+  net.sendCastSkill(skillId, targetWid, selfPos.x, selfPos.z);
+}
+// 按 wid 查找可见实体（技能效果定位用）
+function findEntityByWid(wid) {
+  for (const e of entities.forRender()) {
+    if (e.wid === wid) return e;
+  }
+  return null;
+}
 // ---------------- 世界Boss HUD（全区共享血量条） ----------------
 function updateBossHud() {
   const bar = $('boss-bar');
@@ -472,6 +619,14 @@ function loop(now) {
     if (target) net.sendAttack(target.wid);
     else protocolLog('c2s', { type: 'ATTACK', targetWid: 0, slot: 0, note: '范围内无目标' });
   }
+  // 技能系统：数字键 1-8 → 技能栏对应技能（服务端权威校验）
+  const slot = input.takeSkillSlot();
+  if (slot >= 1 && slot <= skillBar.length) {
+    castSkillNow(skillBar[slot - 1]);
+  }
+  // 冷却倒计时/Buff 展示刷新（20Hz 足够，避免高刷）
+  renderSkillBar();
+  renderBuffBar();
   // 物品系统交互（selfPos 已就绪）
   if (input.takeInvToggle()) toggleInventoryPanel();
   if (input.takeShop()) {

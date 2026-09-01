@@ -26,6 +26,34 @@ export function createRenderer(container) {
 
   // 运行时状态（每帧由 boot 同步）
   const state = { selfX: 0, selfZ: 0, self: null, entities: [] };
+  // 技能简易效果（前摇进度圈 / AOE 范围圈 / 打断闪红）：
+  //   {kind:'cast'|'aoe'|'cancel', wid, x, z, radius, color, startMs, durMs}
+  const effects = [];
+  /** 添加技能效果（boot.js 由 EVT_SKILL_CASTING/EVT_SKILL/EVT_SKILL_CANCEL 与本地施放触发） */
+  function addSkillEffect(eff) {
+    // 同一施法者的前摇圈去重（重复施放刷新）
+    if (eff.kind === 'cast') {
+      for (let i = effects.length - 1; i >= 0; i--) {
+        if (effects[i].kind === 'cast' && effects[i].wid === eff.wid) effects.splice(i, 1);
+      }
+    }
+    effects.push(Object.assign({ startMs: performance.now(), durMs: 800, color: '#ffd166', radius: 0 }, eff));
+    // 上限保护
+    if (effects.length > 64) effects.splice(0, effects.length - 64);
+  }
+  /** 移除某施法者的前摇圈（打断时由 boot.js 调用） */
+  function clearCasting(wid) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      if (effects[i].kind === 'cast' && effects[i].wid === wid) effects.splice(i, 1);
+    }
+  }
+  /** 本地 AOE 落点预览（按技能键即显示，不等服务器往返） */
+  function showAoePreview(x, z, radius, color) {
+    effects.push({
+      kind: 'aoe', wid: -1, x, z, radius,
+      color: color || '#ff6b35', startMs: performance.now(), durMs: 1200,
+    });
+  }
   // 世界 Boss 共享状态（来自 S2C_BOSS，血量/阶段/状态；位置走 AOI 实体插值）
   const bossHp = new Map(); // wid -> {hp,maxHp,state,phase,name}
 
@@ -104,8 +132,12 @@ export function createRenderer(container) {
       ctx.drawImage(c.canvas, px, py, chunkPx, chunkPx);
     }
 
+    // 1.5) 技能效果：AOE 范围圈（地面层，画在实体之下）
+    drawAoeEffects(performance.now());
     // 2) 实体（俯视投影圆球）
     for (const e of state.entities) drawEntity(e);
+    // 2.5) 技能效果：前摇进度圈 + 打断闪红（画在实体之上，叠在施法者身上）
+    drawCastEffects(performance.now());
 
     // 3) 自身（橙色 + 半透明白色描边）
     if (state.self) {
@@ -136,6 +168,82 @@ export function createRenderer(container) {
     ctx.stroke();
   }
 
+  // ---- 技能效果绘制 ----
+  // AOE 范围圈：半透明填充 + 高亮边缘，随剩余时间淡出
+  function drawAoeEffects(now) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const ef = effects[i];
+      if (ef.kind !== 'aoe') continue;
+      const life = (now - ef.startMs) / ef.durMs;
+      if (life >= 1) { effects.splice(i, 1); continue; }
+      const x = sx(ef.x), y = sy(ef.z);
+      const R = Math.max(4, ef.radius * CAM_SCALE);
+      const alpha = Math.max(0, 1 - life) * 0.9;
+      ctx.beginPath();
+      ctx.arc(x, y, R, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(ef.color, 0.16 * alpha);
+      ctx.fill();
+      ctx.strokeStyle = hexToRgba(ef.color, 0.85 * alpha);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 半径标注（米）
+      if (ef.radius >= 2) {
+        ctx.fillStyle = hexToRgba(ef.color, 0.9 * alpha);
+        ctx.font = '10px "PingFang SC",sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${ef.radius}m`, x, y + 3.5);
+      }
+    }
+  }
+  // 前摇进度圈：围绕施法者，弧线随时间填充（0→360°，代表释放时间进度）
+  function drawCastEffects(now) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const ef = effects[i];
+      if (ef.kind === 'cast') {
+        const life = (now - ef.startMs) / ef.durMs;
+        if (life >= 1) { effects.splice(i, 1); continue; }
+        const x = sx(ef.x), y = sy(ef.z);
+        const R = Math.max(16, 1.6 * CAM_SCALE);
+        ctx.beginPath();
+        ctx.arc(x, y, R, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        // 进度弧（顺时针填充）
+        ctx.beginPath();
+        ctx.arc(x, y, R, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, life));
+        ctx.strokeStyle = ef.color || '#ffd166';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+        // 中心小点（施法者正在吟唱）
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = hexToRgba(ef.color || '#ffd166', 0.9);
+        ctx.fill();
+      } else if (ef.kind === 'cancel') {
+        const life = (now - ef.startMs) / ef.durMs;
+        if (life >= 1) { effects.splice(i, 1); continue; }
+        const x = sx(ef.x), y = sy(ef.z);
+        const R = Math.max(16, 1.6 * CAM_SCALE);
+        ctx.beginPath();
+        ctx.arc(x, y, R, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(248,113,113,${0.9 * (1 - life)})`;
+        ctx.lineWidth = 5;
+        ctx.stroke();
+      }
+    }
+  }
+  // 简易 hex -> rgba（含透明度）
+  function hexToRgba(hex, a) {
+    let h = hex.replace('#', '');
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    const n = parseInt(h, 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
   // 物品名映射（由 boot.js 填充，来自商店/背包/掉落的 itemId）
   const ITEM_NAMES = (typeof window !== 'undefined' && window.__itemNames) || {};
   function drawEntity(e) {
@@ -220,5 +328,12 @@ export function createRenderer(container) {
     bossHp.set(b.wid, { hp: b.hp, maxHp: b.maxHp, state: b.state, phase: b.phase, name: b.name });
   }
 
-  return { canvas, ctx, updateTerrain, setSelf, setEntities, setBossState, draw, resize };
+  // 调试/测试钩子：返回当前效果快照（供浏览器 E2E 断言）
+  function fxSnapshot() {
+    return effects.map((e) => ({ kind: e.kind, x: +e.x.toFixed(1), z: +e.z.toFixed(1), radius: e.radius, color: e.color, durMs: e.durMs }));
+  }
+  return {
+    canvas, ctx, updateTerrain, setSelf, setEntities, setBossState, draw, resize,
+    addSkillEffect, clearCasting, showAoePreview, fxSnapshot,
+  };
 }
