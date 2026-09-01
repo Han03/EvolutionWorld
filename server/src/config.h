@@ -1,5 +1,6 @@
 // config.h - 全局配置（世界/物理/防作弊参数集中管理）
 #pragma once
+#include <cstdint>
 #include <string>
 
 namespace ew {

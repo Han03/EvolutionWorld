@@ -20,8 +20,21 @@ file(GLOB SERVER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/auth/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/anticheat/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/net/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/store/*.cpp
 )
 
 add_executable(evolution_server ${SERVER_SOURCES})
 target_include_directories(evolution_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(evolution_server PRIVATE OpenSSL::Crypto)
+
+# 可选 MySQL 后端：检测到 mysql.h + libmysqlclient 则启用真实后端，否则编译空实现（纯内存）
+find_path(MYSQL_INCLUDE_DIR mysql.h PATH_SUFFIXES mysql)
+find_library(MYSQL_LIBRARY NAMES mysqlclient)
+if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
+  add_compile_definitions(EW_HAVE_MYSQL=1)
+  target_include_directories(evolution_server PRIVATE ${MYSQL_INCLUDE_DIR})
+  target_link_libraries(evolution_server PRIVATE ${MYSQL_LIBRARY})
+  message(STATUS "MySQL backend enabled: ${MYSQL_INCLUDE_DIR} ${MYSQL_LIBRARY}")
+else()
+  message(STATUS "MySQL backend disabled (no mysql.h/libmysqlclient found) - pure memory mode")
+endif()
