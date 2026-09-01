@@ -8,6 +8,7 @@
 #include "chunk.h"
 #include "physics.h"
 #include "aoi.h"
+#include "items.h"
 #include "util/random.h"
 #include "../config.h"
 namespace ew {
@@ -57,9 +58,30 @@ public:
   Physics& physics() { return physics_; }
   ChunkManager& chunks() { return chunks_; }
   uint64_t tickCount() const { return tick_; }
-  // ---- 世界怪物 & 世界 Boss 状态共享 ----
-  // 玩家攻击世界实体（服务端权威校验 + 伤害/仇恨/死亡/复活）
+  // ---- 物品/属性/商店/掉落（大型网游规模） ----
+  GameData& data() { return data_; }
+  const GameData& data() const { return data_; }
+  const ItemDef* itemDef(uint32_t id) const { return data_.item(id); }
+  // 玩家攻击世界实体（服务端权威校验 + 伤害/仇恨/死亡/复活/掉落）
   bool playerAttack(const std::string& playerId, uint32_t targetWid, uint8_t slot);
+  // 拾取地面掉落物（金币/物品进背包）
+  bool playerPickup(const std::string& playerId, uint32_t dropWid);
+  // 移除地面掉落物（拾取/超时消失）
+  void despawnDrop(const std::string& id);
+  // 穿戴/卸下装备（slot 槽位值 1..6，itemId=0 卸下）
+  bool equipItem(const std::string& playerId, uint8_t slot, uint32_t itemId);
+  // 使用消耗品
+  bool useItem(const std::string& playerId, uint32_t itemId, uint16_t count);
+  // 打开商店（校验与商店 NPC 距离）
+  bool openShop(const std::string& playerId, uint32_t npcWid);
+  // 购买物品（金币扣减 + 进背包）
+  bool buyItem(const std::string& playerId, uint32_t itemId, uint16_t count);
+  // 根据基础属性 + 装备加成重算派生属性（maxHp/maxMp/attack/defense）
+  void recomputeStats(Entity& p);
+  // 玩家属性/资源变化后标记，netcode 每 tick 向该玩家补发 S2C_STATS
+  void markStatsDirty(const std::string& playerId);
+  const std::unordered_set<std::string>& statsDirty() const { return statsDirty_; }
+  void clearStatsDirty() { statsDirty_.clear(); }
   // 取走本 tick 产生的共享事件（netcode 全区广播用，调用后清空）
   std::vector<SharedEvent> takeSharedEvents();
   // 构建世界 Boss 全局共享状态帧（force=true 强制；false 且无变化则返回空）
@@ -74,10 +96,16 @@ public:
   void addAliveBoss(int d) { aliveBoss_ = (uint32_t)((int)aliveBoss_ + d); }
 private:
   void addEntity(Entity&& e);
+  // 怪物死亡掉落：金币 + 按概率表掉物品（生成地面掉落物实体）
+  void rollDrops(Entity& killer, Entity& victim);
+  void spawnDrop(double x, double z, uint32_t itemId, uint32_t gold);
+  // 应用怪物类型配置属性（type 见 monsters.json / GameData 默认）
+  void applyMonsterStats(Entity& m, const std::string& type);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
   void spawnBoss(int idx, double homeX, double homeZ);
   const Config& cfg_;
+  GameData data_;
   Physics physics_;
   ChunkManager chunks_;
   AoiGrid aoi_;
@@ -87,6 +115,8 @@ private:
   std::vector<std::pair<int, std::pair<std::string, SystemFn>>> systems_;
   // 世界共享状态（Boss 全局广播 + 战斗事件队列）
   std::vector<SharedEvent> sharedEvents_;
+  // 需要补发 S2C_STATS 的玩家（属性/血量/蓝量变化）
+  std::unordered_set<std::string> statsDirty_;
   std::string bossFrame_;
   bool bossDirty_ = true;
   uint32_t aliveBoss_ = 0;

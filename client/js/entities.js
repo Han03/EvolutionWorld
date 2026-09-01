@@ -6,7 +6,7 @@
  * 仅管理数据 + 位置插值，渲染由 renderer（Canvas2D）完成。
  */
 import { KIND } from './protocol.js';
-const KIND_NAME = { [KIND.PLAYER]: 'player', [KIND.MONSTER]: 'monster', [KIND.NPC]: 'npc' };
+const KIND_NAME = { [KIND.PLAYER]: 'player', [KIND.MONSTER]: 'monster', [KIND.NPC]: 'npc', [KIND.ITEM]: 'item' };
 export class EntityViewManager {
   constructor(selfWid) {
     this.selfWid = selfWid;

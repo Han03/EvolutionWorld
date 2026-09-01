@@ -18,6 +18,9 @@
 
 namespace ew {
 
+// 物品系统持久化辅助（定义见文件后部）
+static void applySaveItems(World& w, Entity& p, const PlayerSave& ps);
+
 uint64_t GameServer::steadyMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -279,8 +282,13 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         if (hasSave) {
           player->hp = ps.hp > 0 && ps.hp <= player->maxHp ? ps.hp : player->maxHp;
           player->level = ps.level;
-          fprintf(stderr, "[save] %s 从存档恢复位置 (%.1f,%.1f,%.1f) hp=%.0f\n",
-                  username.c_str(), ps.x, ps.y, ps.z, ps.hp);
+          player->pl.gold = ps.gold;
+          applySaveItems(world_, *player, ps); // 恢复背包/装备（JSON）
+          world_.recomputeStats(*player);
+          fprintf(stderr, "[save] %s 从存档恢复位置 (%.1f,%.1f,%.1f) hp=%.0f gold=%u\n",
+                  username.c_str(), ps.x, ps.y, ps.z, ps.hp, ps.gold);
+        } else {
+          world_.recomputeStats(*player); // 初始化派生属性（基础 + 空装备）
         }
         c.playerId = player->id;
         c.phase = Conn::Ws;
@@ -288,6 +296,9 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         // 先回 101，再发二进制 HELLO 帧（顺序必须如此）
         enqueue(c, httpBuildUpgrade(wsAcceptKey(keyIt->second)));
         enqueue(c, wsEncodeFrame(WS_BINARY, netcode_.helloFor(*player)));
+        // 物品系统：登录即下发背包/装备/金币 + 自身属性（服务端权威）
+        enqueue(c, wsEncodeFrame(WS_BINARY, proto::inventoryFrame(*player)));
+        enqueue(c, wsEncodeFrame(WS_BINARY, proto::statsFrame(*player)));
         return;
       }
     }
@@ -542,6 +553,63 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
         }
         break;
       }
+      case proto::C2S_SHOP_OPEN: {
+        proto::ShopOpenMsg m;
+        if (proto::decodeShopOpen(f.payload, m) && world_.openShop(c.playerId, m.npcWid)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (p && p->pl.openShopId) {
+            const ShopDef* shop = world_.data().shop(p->pl.openShopId);
+            if (shop) sendTo(c, proto::shopFrame(*shop));
+          }
+        }
+        break;
+      }
+      case proto::C2S_SHOP_BUY: {
+        proto::ShopBuyMsg m;
+        if (proto::decodeShopBuy(f.payload, m) && world_.buyItem(c.playerId, m.itemId, m.count)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (p) {
+            sendTo(c, proto::inventoryFrame(*p));   // 金币/背包更新
+            sendTo(c, proto::statsFrame(*p));       // 属性（无变化也刷一次，简单一致）
+          }
+        }
+        break;
+      }
+      case proto::C2S_PICKUP: {
+        proto::PickupMsg m;
+        if (proto::decodePickup(f.payload, m) && world_.playerPickup(c.playerId, m.dropWid)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (p) {
+            Entity* drop = world_.findByWid(m.dropWid); // 已被拾取销毁，drop=null
+            (void)drop;
+            sendTo(c, proto::lootFrame(true, 0, 0, 0));
+            sendTo(c, proto::inventoryFrame(*p));
+          }
+        }
+        break;
+      }
+      case proto::C2S_EQUIP: {
+        proto::EquipMsg m;
+        if (proto::decodeEquip(f.payload, m) && world_.equipItem(c.playerId, m.slot, m.itemId)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (p) {
+            sendTo(c, proto::inventoryFrame(*p));
+            sendTo(c, proto::statsFrame(*p));
+          }
+        }
+        break;
+      }
+      case proto::C2S_USE_ITEM: {
+        proto::UseItemMsg m;
+        if (proto::decodeUseItem(f.payload, m) && world_.useItem(c.playerId, m.itemId, m.count)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (p) {
+            sendTo(c, proto::inventoryFrame(*p));
+            sendTo(c, proto::statsFrame(*p));
+          }
+        }
+        break;
+      }
       default:
         return;
     }
@@ -587,12 +655,59 @@ int GameServer::fdOfPlayer(const std::string& playerId) const {
   return -1;
 }
 // 每 tick：为每个在线玩家构建并下发二进制缓冲（AOI 进出 + 增量 + 校准快照）
+// 物品系统持久化：装备槽 -> JSON {"helm":1001,...}
+static std::string serializeEquip(const std::array<uint32_t, 6>& equip) {
+  Json o = Json::object();
+  for (int i = 0; i < (int)equip.size(); i++) {
+    if (!equip[i]) continue;
+    o[GameData::slotKey(ew::GameData::indexSlot(i))] = (int64_t)equip[i];
+  }
+  return o.dump();
+}
+// 背包 itemId->数量 -> JSON {"2001":5,...}
+static std::string serializeInventory(const std::unordered_map<uint32_t, uint32_t>& inv) {
+  Json o = Json::object();
+  for (const auto& [id, cnt] : inv) o[std::to_string(id)] = (int64_t)cnt;
+  return o.dump();
+}
+// 从存档 JSON 恢复玩家背包/装备
+void applySaveItems(World& w, Entity& p, const PlayerSave& ps) {
+  try {
+    if (!ps.equipJson.empty()) {
+      Json eq = Json::parse(ps.equipJson);
+      if (eq.type() == Json::Type::Object) {
+        for (auto& [key, v] : eq.asObject()) {
+          int idx;
+          EquipSlot slot = GameData::slotFromJson(Json(key), EquipSlot::WEAPON);
+          if (GameData::slotIndex(slot, idx)) p.pl.equip[idx] = (uint32_t)v.asInt();
+        }
+      }
+    }
+    if (!ps.inventoryJson.empty()) {
+      Json inv = Json::parse(ps.inventoryJson);
+      if (inv.type() == Json::Type::Object) {
+        for (auto& [idStr, cnt] : inv.asObject()) {
+          uint32_t id = (uint32_t)atoi(idStr.c_str());
+          uint32_t n = (uint32_t)cnt.asInt();
+          if (id && n) p.pl.inventory[id] = n;
+        }
+      }
+    }
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[save] 恢复背包失败: %s\n", e.what());
+  }
+  (void)w;
+}
+
 void GameServer::savePlayerToStore(const Entity& e) {
   PlayerSave ps;
   ps.username = e.username;
   ps.x = (float)e.pos.x; ps.y = (float)e.pos.y; ps.z = (float)e.pos.z;
   ps.hp = (float)e.hp;
   ps.level = e.level;
+  ps.gold = e.pl.gold;
+  ps.equipJson = serializeEquip(e.pl.equip);
+  ps.inventoryJson = serializeInventory(e.pl.inventory);
   ps.updatedAtMs = world_.tickCount() * (uint64_t)cfg_.tickMs;
   store_.savePlayer(ps);
 }

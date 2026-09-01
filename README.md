@@ -2,11 +2,12 @@
 
 一个可扩展的 **空壳（Shell）网络游戏服务端 + 网页测试客户端**：
 HTTP 账号密码登录 → 进入**固定俯视角无缝世界**（高度场地形）→ 实时操控角色移动/跳跃，内置
-**服务端权威 + 防作弊系统**、**大型网游规模的数据传输方案**、**世界怪物/Boss 状态共享** 与
-**生物/NPC/Boss AI 整体框架**，并预留了清晰的系统扩展框架。
+**服务端权威 + 防作弊系统**、**大型网游规模的数据传输方案**、**世界怪物/Boss 状态共享**、
+**生物/NPC/Boss AI 整体框架**、**MySQL+Redis 存储**，以及**物品/属性/商店/配置四系统**，
+并预留了清晰的系统扩展框架。
 
-> 当前为可运行演示版本：核心系统 + 世界 Boss + 大规模 AI 已落地；任务、聊天、持久化 DB 等
-> 玩法系统通过统一框架预留扩展位。
+> 当前为可运行演示版本：核心系统 + 世界 Boss + 大规模 AI + 物品经济 + 存储已落地；任务、聊天、
+> 副本等玩法系统通过统一框架预留扩展位。
 
 ---
 
@@ -44,6 +45,9 @@ python3 scripts/ws_smoke_test.py --jump       # 跳跃：高度场碰撞与预�
 python3 scripts/ws_smoke_test.py --boss       # 世界 Boss 共享状态（攻击/死亡/复活/新客户端一致）
 node scripts/prediction_test.mjs              # 预测轨迹 vs 服务端权威轨迹一致性
 node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇、追击、攻击
+node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇、追击、攻击
+node scripts/items_test.mjs                   # 物品/属性/商店端到端：掉落/拾取/购买/穿戴/使用（16/16）
+
 ```
 
 ---
@@ -65,6 +69,11 @@ node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇�
 | **操作** | WASD / 方向键移动、空格跳跃（固定俯视角，无自由镜头） |
 | **世界怪物/Boss 状态共享** | 3 只全区共享世界 Boss（荒原巨兽/深渊领主/冰霜女王），服务端单点权威：HP/仇恨/阶段/生死，`S2C_BOSS` 全局广播（dirty 去重）+ 加入即一致的 HELLO 帧 + 共享事件队列（伤害/死亡/复活/技能，全区每 tick 广播） |
 | **生物/NPC/Boss AI 框架** | `ai.h/cpp` 状态机（8 态）+ 大规模调度：AOI 激活、时间片轮转、距离分级（LOD）；怪物入仇/追击/近战/脱战回巢/巡逻；NPC 低频游走（预留交互态）；Boss 脱战回血/仇恨侦测/阶段切换(≤65%/≤35%)/追击/普攻/AOE 技能/死亡复活 |
+| **物品系统** | 装备/消耗品/任务道具三类物品，`ItemDef` 按 ID 管理（名称/描述/缩略图/类型/穿戴属性）；怪物死亡随机掉落物品 + 金币（金币也是物品，`itemId=0`）；地面掉落物 60s 过期，2m 拾取 |
+| **属性系统** | 玩家/怪物/ Boss 血量、蓝量、攻击力、防御力；6 槽位装备（头盔/上衣/裤子/手套/鞋子/武器）穿戴影响派生属性；伤害公式 `atk×var×100/(100+def)`（防御减伤，最低 1 点） |
+| **商店系统** | 商店 NPC「商店老板·全能杂货铺」固定 (6,6)，4m 内可打开，出售全部物品；`stock=0` 表示无限库存；金币购买，背包/金币同步（S2C_INVENTORY） |
+| **配置系统** | `data/items.json|monsters.json|shop.json` 可热配置：怪物属性与掉落概率（`DropEntry`）、NPC 商店售价/库存、按 ID 管理物品；未提供配置时内置 `loadDefaults()` 兜底 |
+| **预置测试物品** | 20 件默认物品：铁剑/烈焰剑等武器、皮帽/铁盔/锁子甲等防具、小血瓶/大血瓶消耗品、任务道具（可卖金币） |
 
 ---
 
@@ -83,12 +92,20 @@ node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇�
 | `SELF`(0x86) | 预测回退校正（服务端权威位置） |
 | `EVENT`(0x87) / `PING`(0x88) / `KICK`(0x89) / `ERROR`(0x8A) | 共享事件（伤害/死亡/复活/技能）/ 心跳 / 踢出 / 错误 |
 | `BOSS`(0x8B) | 世界 Boss 全局共享状态（HP/状态/阶段/仇恨目标） |
+| `SHOP`(0x8C) | 商店列表（商店名 + 条目{itemId,price,stock}） |
+| `INVENTORY`(0x8D) | 背包/金币/装备全量（登录即下发 + 变更后同步） |
+| `LOOT`(0x8E) | 拾取反馈（成功/失败） |
+| `STATS`(0x8F) | 自身属性（HP/MP/攻击/防御，穿戴后重算下发） |
 ### 上行消息（C2S）
 | 消息 | 作用 |
 |---|---|
 | `INPUT`(0x01) | 输入 + 预测位置（防作弊校验依据），20Hz |
 | `EVENT`(0x02) / `PONG`(0x03) | 事件 / 心跳 |
 | `ATTACK`(0x04) | 攻击世界实体：目标 wid + 技能槽（服务端权威校验伤害/仇恨/死亡/复活） |
+| `SHOP_OPEN`(0x05) / `SHOP_BUY`(0x06) | 打开商店 / 金币购买（服务端校验距离/金币/库存） |
+| `PICKUP`(0x07) | 拾取地面掉落物（服务端校验 2m） |
+| `EQUIP`(0x08) | 穿戴/卸下装备（6 槽位，重算派生属性） |
+| `USE_ITEM`(0x09) | 使用消耗品（如血瓶回血） |
 ### AOI + 增量 + LOD
 - **AOI 空间网格**（`aoi.cpp`，cell 25m）+ 距离过滤：只向玩家广播其兴趣集内实体
 - **LOD 分级**：近 25m 每 tick、中 50m 每 2 tick、远每 4 tick 更新
@@ -130,6 +147,47 @@ node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇�
 详见 `server/docs/storage-design.md`。
 
 
+## 物品 / 属性 / 商店 / 配置系统（大型网游规模）
+`server/src/game/items.h/cpp` 实现四系统核心数据与逻辑，`GameData` 单例持有三张表（物品/怪物/商店），
+服务端权威计算，客户端仅做展示（`client/js/items.js` 为默认物品的展示镜像）。
+
+### 1. 物品系统（装备 / 消耗品 / 任务道具 + 掉落金币）
+- **物品类型** `ItemType`：`Equip`（可穿戴）/ `Consumable`（使用消耗）/ `Quest`（任务道具）/ `Gold`（金币，`itemId=0`）。
+- **物品定义** `ItemDef`：`id / type / name / desc / icon(emoji 缩略图) / slot / price / sell / stats{hp,mp,atk,def} / stackable`。
+- **掉落**：怪物死亡 `rollDrops` 按 `DropEntry{prob,min,max}` 概率表掷物品 + 金币区间；掉落物以 `EntityKind::Item` 实体落在地面（金色菱形=物品 / 黄点=金币），`dropLifetimeSec(60s)` 过期由 `dropSystem` 清理。
+- **拾取**：`playerPickup` 2m 距离校验；金币直接入 `gold`，物品入背包（可堆叠）。`S2C_LOOT` 反馈 + `S2C_INVENTORY` 全量同步。
+- **使用/丢弃**：消耗品 `useItem`（如血瓶回血），背包上限扩展位预留。
+
+### 2. 属性系统（血量 / 蓝量 / 攻击 / 防御 + 6 槽位穿戴）
+- **基础属性**：玩家 `hp/mp/attack/defense`（默认 100/50/12/3），怪物/Boss 由 `MonsterDef` 配置（`applyMonsterStats`）。
+- **6 槽位装备**：`EquipSlot` 枚举 `Head/Chest/Legs/Hands/Feet/Weapon`，玩家 `pl.equip[6]` 存 itemId。
+- **派生属性**：`recomputeStats` 派生 = 基础 + 装备加成（`ItemDef.stats`），穿戴/卸下即时重算并下发 `S2C_STATS`。
+- **伤害公式**：`calcDamage(atk, def, variance) = max(1, atk × variance × 100 / (100 + def))`——防御按比例减伤、最低 1 点；Boss 额外有 `bossDefense/bossMp`。
+
+### 3. 商店系统（商店 NPC 出售全部物品）
+- **商店 NPC**：`seedWorld` 固定生成「商店老板·全能杂货铺」锚点 (6,6)、`shopId=1`、`aiState=0` 守店不游走（紫色描边）。
+- **打开**：`openShop` 校验玩家与商店 4m（`shopOpenRangeM`）内，`S2C_SHOP` 下发商店名 + 全部条目。
+- **购买**：`buyItem` 服务端校验 `openShopId`、金币、库存；`stock=0` 无限；成功扣金币 + 入背包 + 下发 `INVENTORY/STATS`。
+- **金币**：玩家 `pl.gold`，掉落/出售/购买共用同一货币（金币本身是物品，`itemId=0`）。
+
+### 4. 配置系统（JSON 热配置 + 内置兜底）
+- `data/items.json`：物品表（`id/name/desc/icon/type/slot/stats/price/sell`）。
+- `data/monsters.json`：怪物表（`type/name/level/hp/mp/atk/def/aggroRange/leashRange` + `drops[{itemId,prob,min,max}]` 掉落概率）。
+- `data/shop.json`：商店表（`shopId/name/npc{x,z}/entries[{itemId,price,stock}]`）。
+- 启动加载 `loadFromJson(dataDir)`，任一文件缺失/解析失败仅告警并回退内置 `loadDefaults()`——**不影响功能**（与存储层降级同理）。
+- 怪物按位置哈希 8m 格分配类型（wolf/goblin/skeleton/gargoyle），`monsterTypeAt` 确定性可复现。
+
+### 协议扩展（物品/属性/商店）
+| 方向 | 消息 | 作用 |
+|---|---|---|
+| C2S | `SHOP_OPEN`(0x05) / `SHOP_BUY`(0x06) / `PICKUP`(0x07) / `EQUIP`(0x08) / `USE_ITEM`(0x09) | 开商店 / 购买 / 拾取 / 穿戴卸下 / 使用消耗品 |
+| S2C | `SHOP`(0x8C) / `INVENTORY`(0x8D) / `LOOT`(0x8E) / `STATS`(0x8F) | 商店列表 / 背包+金币+装备 / 拾取反馈 / 自身属性 |
+| 实体 | `KIND_ITEM=4`，`writeEntityFull` 对 Item 写 `itemId u32 + gold u32`（替代 name 字段） | 掉落物实体编解码 |
+| 事件 | `EVT_DROP=5` | 掉落物生成广播 |
+
+**自动化验证**：`node scripts/items_test.mjs`（16/16 PASS）覆盖「登录属性 → 打怪掉落 → 拾取金币/物品 → 开商店 → 金币买铁剑(攻 12→17) → 穿戴 → 买血瓶 → 使用回血」全链路。
+浏览器端：`I` 背包/装备面板、`B` 商店（靠近紫色描边老板）、`E` 主动拾取、走到掉落物上自动拾取、HUD 显示 HP/MP/攻击/防御。
+
 ## 项目结构
 ```
 EvolutionWorld/
@@ -137,7 +195,8 @@ EvolutionWorld/
 │   ├── index.html                 # 登录页 + HUD + 协议透传监控面板
 │   ├── css/style.css
 │   └── js/
-│       ├── boot.js                # 入口：登录流程 + 主循环 + 预测/回退接线 + 协议透传展示
+│       ├── boot.js                # 入口：登录流程 + 主循环 + 预测/回退接线 + 物品/商店/背包 UI
+│       ├── items.js               # 默认物品展示镜像（ITEM_DEFS，名称/描述/图标/穿戴属性）
 │       ├── predict.js             # ★ 客户端预测器（与服务端物理/地形逐位一致）
 │       ├── terrain.js             # ★ 高度场地形数据（与服务端 terrain.cpp 逐位一致）
 │       ├── renderer.js            # Canvas 2D 俯视角渲染：区块地形 + 水面 + 实体圆球
@@ -147,7 +206,8 @@ EvolutionWorld/
 │       └── input.js               # 键盘输入（WASD/方向键 + 空格跳跃）
 └── server/                        # ★ C++17 服务端
     ├── CMakeLists.txt / Makefile
-    ├── scripts/                   # 冒烟/防作弊/预测/浏览器验证脚本
+    ├── scripts/                   # 冒烟/防作弊/预测/AI/物品系统端到端测试脚本
+    ├── data/                      # 可选 JSON 配置：items.json / monsters.json / shop.json（缺失则内置兜底）
     └── src/
         ├── main.cpp               # 入口：装配 + 配置环境变量覆盖 + 信号处理
         ├── config.h               # 全局配置（世界/物理/防作弊/AOI 参数集中管理）
@@ -168,6 +228,7 @@ EvolutionWorld/
             ├── chunk.h/cpp        # 区块加载 + ★ 高度场数据存储
             ├── aoi.h/cpp          # ★ AOI 空间网格
             ├── ai.h/cpp           # ★ 生物/NPC/Boss AI 框架（状态机 + 三级调度）
+            ├── items.h/cpp        # ★ 物品/属性/商店/配置四系统（ItemDef/MonsterDef/DropEntry/ShopDef/GameData）
             └── netcode.h/cpp      # ★ 每玩家兴趣集 + 增量/LOD/校准快照 + Boss 全局广播
     └── docs/
         ├── world-shared-state.md  # 世界怪物/Boss 状态共享方案设计文档

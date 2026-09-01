@@ -91,10 +91,11 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
       ai.targetVX = ai.targetVZ = 0;
       if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.monsterAttackCdSec * 1000.0)) {
         e.lastAttackMs = nowMs;
-        double dmg = e.attack * (0.9 + rng01() * 0.2);
+        double dmg = calcDamage(e.attack, target->defense, 0.9 + rng01() * 0.2);
         target->hp -= dmg;
         target->lastDamageMs = nowMs;
         w.pushEvent(proto::EVT_DAMAGE, target->wid, (uint32_t)dmg, 0, 0);
+        w.markStatsDirty(target->id);
         if (target->hp <= 0) target->hp = 1; // 玩家不死亡（演示保护）
       }
     } else {
@@ -220,11 +221,12 @@ void tickBossAi(World& w, Entity& e, double dt) {
     e.ai.targetVX = e.ai.targetVZ = 0;
     if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.bossAttackCdSec * 1000.0)) {
       e.lastAttackMs = nowMs;
-      double dmg = e.attack * (0.9 + rng01() * 0.2);
+      double dmg = calcDamage(e.attack, target->defense, 0.9 + rng01() * 0.2);
       target->hp -= dmg;
       target->lastDamageMs = nowMs;
       e.aggro[target->wid] -= dmg * 0.3; // 被攻击目标仇恨衰减
       w.pushEvent(proto::EVT_DAMAGE, target->wid, (uint32_t)dmg, 0, 0);
+      w.markStatsDirty(target->id);
       if (target->hp <= 0) target->hp = 1;
       // 范围技能（周期性 AOE，全区广播）
       e.bossSkillCd -= dt;
@@ -235,10 +237,11 @@ void tickBossAi(World& w, Entity& e, double dt) {
           Entity* pl = w.findEntity(pid);
           if (!pl || pl->hp <= 0) continue;
           if (pl->pos.dist2D(e.pos) <= cfg.bossSkillRange) {
-            double sdmg = e.attack * 0.8;
+            double sdmg = calcDamage(e.attack * 0.8, pl->defense, 1.0);
             pl->hp -= sdmg;
             pl->lastDamageMs = nowMs;
             w.pushEvent(proto::EVT_DAMAGE, pl->wid, (uint32_t)sdmg, 0, 0);
+            w.markStatsDirty(pl->id);
             if (pl->hp <= 0) pl->hp = 1;
           }
         }

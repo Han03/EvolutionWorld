@@ -107,8 +107,11 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       v.forceSnap = false;
     }
     buf += sharedSuffix; // 全区共享状态（事件 + Boss 血量/状态）
+    // 玩家自身属性/资源变化（战斗掉血/回血/回蓝）：补发 S2C_STATS
+    if (w_.statsDirty().count(player->id)) buf += proto::statsFrame(*player);
     if (!buf.empty()) out_[player->id] = std::move(buf);
   }
+  w_.clearStatsDirty();
   return out_;
 }
 } // namespace ew

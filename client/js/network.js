@@ -3,7 +3,7 @@
  * 数据传输方案：二进制帧 + 量化坐标 + AOI 进出 + 增量更新 + 校准快照
  * 扩展：输入上报携带预测位置 px/py/pz（防作弊校验），处理 SELF（回退）与 KICK。
  */
-import { encodeInput, encodeAttack, parseS2C, MSG } from './protocol.js';
+import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, parseS2C, MSG } from './protocol.js';
 export class NetworkClient {
   constructor() {
     this.ws = null;
@@ -23,6 +23,10 @@ export class NetworkClient {
     this.onDisconnect = null;
     this.onBoss = null;      // 世界 Boss 全局共享状态（S2C_BOSS）
     this.onEvent = null;     // 战斗/世界共享事件（S2C_EVENT）
+    this.onShop = null;      // 商店列表（S2C_SHOP）
+    this.onInventory = null; // 背包/装备/金币（S2C_INVENTORY）
+    this.onLoot = null;      // 拾取反馈（S2C_LOOT）
+    this.onStats = null;     // 自身属性（S2C_STATS）
     // 协议透传转换监控：每次二进制帧解码为可读对象后触发（dir: 's2c' | 'c2s'，obj 为解码结果）
     this.onProtocol = null;
     // 自身预测位置（解码相对坐标用参考）
@@ -123,6 +127,18 @@ export class NetworkClient {
         case MSG.S2C_EVENT:
           if (this.onEvent) this.onEvent(msg);
           break;
+        case MSG.S2C_SHOP:
+          if (this.onShop) this.onShop(msg);
+          break;
+        case MSG.S2C_INVENTORY:
+          if (this.onInventory) this.onInventory(msg);
+          break;
+        case MSG.S2C_LOOT:
+          if (this.onLoot) this.onLoot(msg);
+          break;
+        case MSG.S2C_STATS:
+          if (this.onStats) this.onStats(msg);
+          break;
         case MSG.S2C_ERROR:
           console.error('[net]', msg.code, msg.msg);
           break;
@@ -147,6 +163,36 @@ export class NetworkClient {
     if (!this.connected || !targetWid) return;
     this.ws.send(encodeAttack(targetWid, slot));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'ATTACK', targetWid, slot });
+  }
+  /** 打开商店（target 为商店 NPC wid） */
+  sendShopOpen(npcWid) {
+    if (!this.connected || !npcWid) return;
+    this.ws.send(encodeShopOpen(npcWid));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'SHOP_OPEN', npcWid });
+  }
+  /** 购买物品 */
+  sendShopBuy(itemId, count = 1) {
+    if (!this.connected || !itemId) return;
+    this.ws.send(encodeShopBuy(itemId, count));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'SHOP_BUY', itemId, count });
+  }
+  /** 拾取地面掉落物 */
+  sendPickup(dropWid) {
+    if (!this.connected || !dropWid) return;
+    this.ws.send(encodePickup(dropWid));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'PICKUP', dropWid });
+  }
+  /** 穿戴/卸下装备 */
+  sendEquip(slot, itemId) {
+    if (!this.connected) return;
+    this.ws.send(encodeEquip(slot, itemId));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'EQUIP', slot, itemId });
+  }
+  /** 使用消耗品 */
+  sendUseItem(itemId, count = 1) {
+    if (!this.connected || !itemId) return;
+    this.ws.send(encodeUseItem(itemId, count));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'USE_ITEM', itemId, count });
   }
   close() {
     this.connected = false;

@@ -8,6 +8,9 @@ export class InputState {
     this.keys = new Set();
     this.jumpQueued = false; // 边沿触发，发送后清除
     this.attackQueued = false; // J：攻击世界实体（世界怪物/Boss）
+    this.shopQueued = false;   // B：附近商店 NPC 打开商店
+    this.invToggleQueued = false; // I：切换背包/装备面板
+    this.pickupQueued = false; // E：主动拾取
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space') {
         this.jumpQueued = true;
@@ -15,6 +18,15 @@ export class InputState {
       }
       if (e.code === 'KeyJ') {
         this.attackQueued = true;
+      }
+      if (e.code === 'KeyB') {
+        this.shopQueued = true;
+      }
+      if (e.code === 'KeyI') {
+        this.invToggleQueued = true;
+      }
+      if (e.code === 'KeyE') {
+        this.pickupQueued = true;
       }
       this.keys.add(e.code);
       // 阻止方向键滚动页面
@@ -58,5 +70,23 @@ export class InputState {
     const a = this.attackQueued;
     this.attackQueued = false;
     return a;
+  }
+  /** 消费打开商店信号（B） */
+  takeShop() {
+    const s = this.shopQueued;
+    this.shopQueued = false;
+    return s;
+  }
+  /** 消费背包面板切换信号（I） */
+  takeInvToggle() {
+    const s = this.invToggleQueued;
+    this.invToggleQueued = false;
+    return s;
+  }
+  /** 消费主动拾取信号（E） */
+  takePickup() {
+    const s = this.pickupQueued;
+    this.pickupQueued = false;
+    return s;
   }
 }

@@ -1,6 +1,7 @@
 // protocol.cpp - 二进制协议编解码实现
 #include "protocol.h"
 #include "config.h"
+#include "game/items.h"
 #include <cstring>
 #include <cmath>
 namespace ew {
@@ -115,6 +116,7 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
   switch (e.kind) {
     case EntityKind::Player: w.u8(KIND_PLAYER); break;
     case EntityKind::Monster: w.u8(KIND_MONSTER); break;
+    case EntityKind::Item: w.u8(KIND_ITEM); break;
     default: w.u8(KIND_NPC); break;
   }
   w.u8(entityState(e));
@@ -123,8 +125,15 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
   w.i16(qRel(e.pos.z, ref.z));
   w.i16(qVel(e.vel.x));
   w.i16(qVel(e.vel.z));
-  if (e.kind == EntityKind::Player) w.str(e.username);
-  else w.str(e.name.empty() ? (e.kind == EntityKind::Monster ? "Monster" : "NPC") : e.name);
+  if (e.kind == EntityKind::Item) {
+    // 掉落物：itemId(0=纯金币) + gold 数量
+    w.u32(e.dropItemId);
+    w.u32(e.dropGold);
+  } else if (e.kind == EntityKind::Player) {
+    w.str(e.username);
+  } else {
+    w.str(e.name.empty() ? (e.kind == EntityKind::Monster ? "Monster" : "NPC") : e.name);
+  }
 }
 static std::string entityListToPayload(const std::vector<const Entity*>& ents, const Vec3& ref) {
   Writer w;
@@ -209,6 +218,57 @@ std::string error(uint8_t code, const std::string& msg) {
   w.str(msg);
   return frame(S2C_ERROR, w.data());
 }
+// ---------- 物品/属性/商店 编码 ----------
+// 商店列表帧：shopId + 名称 + 商品条目（itemId/price/stock）
+std::string shopFrame(const ::ew::ShopDef& shop) {
+  Writer w;
+  w.u32(shop.shopId);
+  w.str(shop.name);
+  w.u16((uint16_t)shop.entries.size());
+  for (const auto& e : shop.entries) {
+    w.u32(e.itemId);
+    w.u32(e.price);
+    w.u16((uint16_t)e.stock);
+  }
+  return frame(S2C_SHOP, w.data());
+}
+// 背包/装备/金币全量帧（服务端权威，客户端据此重建）
+std::string inventoryFrame(const Entity& p) {
+  Writer w;
+  w.u32(p.pl.gold);
+  w.u8((uint8_t)p.pl.equip.size());
+  for (int i = 0; i < (int)p.pl.equip.size(); i++) {
+    w.u8((uint8_t)(::ew::GameData::indexSlot(i))); // 槽位值 1..6
+    w.u32(p.pl.equip[i]);
+  }
+  w.u16((uint16_t)p.pl.inventory.size());
+  for (const auto& [id, cnt] : p.pl.inventory) {
+    w.u32(id);
+    w.u16((uint16_t)cnt);
+  }
+  return frame(S2C_INVENTORY, w.data());
+}
+// 自身属性帧（血量/蓝量/攻击/防御）
+std::string statsFrame(const Entity& p) {
+  Writer w;
+  w.u32((uint32_t)p.maxHp);
+  w.u32((uint32_t)p.maxMp);
+  w.u32((uint32_t)p.attack);
+  w.u32((uint32_t)p.defense);
+  w.u32((uint32_t)p.hp);
+  w.u32((uint32_t)p.mp);
+  return frame(S2C_STATS, w.data());
+}
+// 拾取反馈帧
+std::string lootFrame(bool ok, uint32_t itemId, uint16_t count, uint32_t gold) {
+  Writer w;
+  w.u8(ok ? 1 : 0);
+  w.u32(itemId);
+  w.u16(count);
+  w.u32(gold);
+  return frame(S2C_LOOT, w.data());
+}
+
 // ---------- C2S 解码 ----------
 // 世界 Boss 全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
 std::string bossState(const Entity& boss) {
@@ -252,6 +312,26 @@ bool decodeInput(const std::string& payload, InputMsg& out) {
   out.py = dqAbs(py);
   out.pz = dqAbs(pz);
   return true;
+}
+bool decodeShopOpen(const std::string& payload, ShopOpenMsg& out) {
+  Reader r(payload);
+  return r.u32(out.npcWid);
+}
+bool decodeShopBuy(const std::string& payload, ShopBuyMsg& out) {
+  Reader r(payload);
+  return r.u32(out.itemId) && r.u16(out.count);
+}
+bool decodePickup(const std::string& payload, PickupMsg& out) {
+  Reader r(payload);
+  return r.u32(out.dropWid);
+}
+bool decodeEquip(const std::string& payload, EquipMsg& out) {
+  Reader r(payload);
+  return r.u8(out.slot) && r.u32(out.itemId);
+}
+bool decodeUseItem(const std::string& payload, UseItemMsg& out) {
+  Reader r(payload);
+  return r.u32(out.itemId) && r.u16(out.count);
 }
 bool decodeAttack(const std::string& payload, AttackMsg& out) {
   Reader r(payload);

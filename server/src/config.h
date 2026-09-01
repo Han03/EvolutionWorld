@@ -11,6 +11,7 @@ struct Config {
   std::string host = "0.0.0.0";
   std::string clientDir = "../client";   // 相对服务端运行目录，或绝对路径
   std::string userDbFile = "data/users.json";
+  std::string dataDir = "data";      // 物品/怪物/商店配置目录（items.json/monsters.json/shop.json）
   int sessionTtlSec = 24 * 3600;
 
   // ---- 世界 ----
@@ -35,6 +36,9 @@ struct Config {
   float playerAttackRange = 3.2f;    // 玩家攻击判定范围
   float playerAttackCdSec = 0.5f;    // 玩家攻击冷却（秒）
   float playerRegenPerSec = 3.0f;    // 玩家脱战回血/秒
+  float playerMpRegenPerSec = 1.5f;  // 玩家脱战回蓝/秒
+  double bossDefense = 12.0;         // 世界 Boss 防御力
+  double bossMp = 200.0;             // 世界 Boss 蓝量
 
   // ---- AI（大型网游规模：状态机 + 时间片/距离分级调度）----
   float monsterAggroRange = 10.0f;   // 怪物仇恨侦测范围
@@ -78,6 +82,11 @@ struct Config {
   int seqJumpWindow = 80;        // 序号跳变容忍（允许前进的 seq 数）
   int graceInputs = 5;           // 出生后前 N 个输入免轨迹校验（允许初始误差）
   int maxInputBodyLen = 1024;    // 输入消息最大长度（防止超大包）
+
+  // ---- 物品/掉落/商店 ----
+  float dropLifetimeSec = 60.0f;     // 地面掉落物存活时间（秒），超时消失
+  float pickupRangeM = 2.0f;         // 拾取判定半径（米）
+  float shopOpenRangeM = 4.0f;       // 商店 NPC 交互距离（米）
 };
 
 } // namespace ew

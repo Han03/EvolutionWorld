@@ -32,6 +32,10 @@ struct PlayerSave {
   float hp = 100;
   int level = 1;
   uint64_t updatedAtMs = 0; // 服务端单调时钟（写回时间戳）
+  // 物品系统扩展：金币 + 装备(槽位->itemId 的 JSON) + 背包(itemId->数量 的 JSON)
+  uint32_t gold = 0;
+  std::string equipJson;    // 例如 {"helm":1001,"weapon":1501} 或空
+  std::string inventoryJson;// 例如 {"2001":5,"3001":3} 或空
 };
 
 // 存储后端抽象

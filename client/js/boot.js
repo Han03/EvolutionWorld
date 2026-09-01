@@ -7,6 +7,7 @@ import { InputState } from './input.js';
 import { createRenderer } from './renderer.js';
 import { EntityViewManager } from './entities.js';
 import { Predictor } from './predict.js';
+import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME } from './items.js';
 
 const $ = (id) => document.getElementById(id);
 const overlay = $('login-overlay');
@@ -17,6 +18,10 @@ const net = new NetworkClient();
 // 全局错误展示（便于排查与用户反馈）
 window.addEventListener('error', (e) => {
   $('loading-text').textContent = '客户端错误：' + (e.message || 'unknown');
+  try {
+    const st = (e.error && e.error.stack || '').split('\n');
+    protocolLog('ERR', { msg: e.message || 'unknown', at: st[1] ? st[1].trim() : '' });
+  } catch (_) {}
   console.error(e.error || e);
 });
 window.addEventListener('unhandledrejection', (e) => {
@@ -35,6 +40,16 @@ let fpsCount = 0;
 let inputAcc = 0;
 let bossStates = new Map(); // wid -> 世界Boss共享状态（S2C_BOSS 最新）
 let bossDisplay = null;     // HUD 顶栏展示的 Boss
+// 物品系统状态（服务端权威，S2C_INVENTORY/S2C_STATS 刷新）
+let playerStats = { maxHp: 100, maxMp: 50, attack: 12, defense: 3, hp: 100, mp: 50 };
+let inventory = {};   // itemId -> 数量
+let equip = {};       // 槽位值 -> itemId
+let gold = 0;
+let shopData = null;  // {shopId, name, entries[]}
+let toastTimer = null;
+// 渲染器物品名映射（renderer.js 读取）
+window.__itemNames = {};
+for (const [id, d] of Object.entries(ITEM_DEFS)) window.__itemNames[id] = d.name;
 
 // ---------------- 登录 UI ----------------
 
@@ -162,6 +177,31 @@ async function enterWorld(token, username, worldMeta) {
     }
   };
 
+  // 物品系统：背包/装备/金币（服务端权威全量）
+  net.onInventory = (msg) => {
+    inventory = msg.inventory;
+    equip = msg.equip;
+    gold = msg.gold;
+    renderInventory();
+    renderEquip();
+    renderHud();
+  };
+  // 自身属性：血量/蓝量/攻击/防御
+  net.onStats = (msg) => {
+    playerStats = msg;
+    renderHud();
+  };
+  // 商店列表
+  net.onShop = (msg) => {
+    shopData = msg;
+    openShopPanel();
+  };
+  // 拾取反馈
+  net.onLoot = (msg) => {
+    if (msg.ok) toast('拾取成功', 'ok');
+    else toast('拾取失败');
+  };
+
   net.onSelf = (msg) => {
     // 服务端后校验不通过 → 回退到权威位置
     predictor.correction(msg.x, msg.y, msg.z);
@@ -207,10 +247,19 @@ function protocolLog(dir, msg) {
     case 'ATTACK': detail = `targetWid=${msg.targetWid} slot=${msg.slot}` + (msg.note ? ` ${msg.note}` : ''); break;
     case 'BOSS': detail = `wid=${msg.wid} ${msg.name} hp=${Math.round(msg.hp)}/${Math.round(msg.maxHp)} state=${msg.state} phase=${msg.phase} target=${msg.target}`; break;
     case 'EVENT': {
-      const names = { 1: '伤害', 2: '死亡', 3: '复活', 4: '范围技能' };
+      const names = { 1: '伤害', 2: '死亡', 3: '复活', 4: '范围技能', 5: '掉落' };
       detail = `${names[msg.evtType] || msg.evtType} wid=${msg.wid} b=${msg.b}`;
       break;
     }
+    case 'SHOP': detail = `shopId=${msg.shopId} ${msg.name} 商品=${msg.entries.length}`; break;
+    case 'INVENTORY': detail = `金币=${msg.gold} 装备=${Object.keys(msg.equip).length} 背包=${Object.keys(msg.inventory).length}`; break;
+    case 'STATS': detail = `hp=${msg.hp}/${msg.maxHp} mp=${msg.mp}/${msg.maxMp} 攻=${msg.attack} 防=${msg.defense}`; break;
+    case 'LOOT': detail = `ok=${msg.ok} item=${msg.itemId} count=${msg.count} gold=${msg.gold}`; break;
+    case 'SHOP_OPEN': detail = `npcWid=${msg.npcWid}`; break;
+    case 'SHOP_BUY': detail = `itemId=${msg.itemId} count=${msg.count}`; break;
+    case 'PICKUP': detail = `dropWid=${msg.dropWid}`; break;
+    case 'EQUIP': detail = `slot=${msg.slot} itemId=${msg.itemId}`; break;
+    case 'USE_ITEM': detail = `itemId=${msg.itemId} count=${msg.count}`; break;
     default: detail = JSON.stringify(msg).slice(0, 80); break;
   }
   line.textContent = `[${dir === 's2c' ? '↓S2C' : '↑C2S'}] ${t} ${detail}`;
@@ -231,6 +280,144 @@ function findNearestAttackable(px, pz) {
   }
   return best;
 }
+// ---------------- 物品系统 UI（背包/装备/商店/属性） ----------------
+function toast(text, cls) {
+  const el = $('toast');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'toast show' + (cls ? ' ' + cls : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = 'toast'; }, 1800);
+}
+function renderHud() {
+  const hpPct = playerStats.maxHp ? Math.max(0, Math.min(100, (playerStats.hp / playerStats.maxHp) * 100)) : 0;
+  const mpPct = playerStats.maxMp ? Math.max(0, Math.min(100, (playerStats.mp / playerStats.maxMp) * 100)) : 0;
+  const hf = $('hp-fill'), mf = $('mp-fill');
+  if (hf) { hf.style.width = hpPct + '%'; $('hp-text').textContent = `${Math.round(playerStats.hp)}/${Math.round(playerStats.maxHp)}`; }
+  if (mf) { mf.style.width = mpPct + '%'; $('mp-text').textContent = `${Math.round(playerStats.mp)}/${Math.round(playerStats.maxMp)}`; }
+  const g = $('hud-gold');
+  if (g) g.textContent = gold;
+  const sa = $('stat-attack'), sd = $('stat-defense');
+  if (sa) sa.textContent = Math.round(playerStats.attack);
+  if (sd) sd.textContent = Math.round(playerStats.defense);
+}
+function findNearbyShopNpc(px, pz, range) {
+  let best = null, bestD = range;
+  for (const e of entities.forRender()) {
+    if (e.kind !== 'npc' || !(e.name && e.name.indexOf('商店') !== -1)) continue;
+    const d = Math.hypot(e.x - px, e.z - pz);
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return best;
+}
+function nearbyDrops(px, pz, range) {
+  const out = [];
+  for (const e of entities.forRender()) {
+    if (e.kind !== 'item') continue;
+    if (Math.hypot(e.x - px, e.z - pz) <= range) out.push(e);
+  }
+  return out;
+}
+function autoPickup(px, pz, range) {
+  if (!entities || !net) return;
+  for (const e of nearbyDrops(px, pz, range)) net.sendPickup(e.wid);
+}
+function pickupNearbyDrops(px, pz, range) {
+  const drops = nearbyDrops(px, pz, range);
+  if (!drops.length) { toast('附近没有可拾取的掉落物'); return; }
+  for (const e of drops) net.sendPickup(e.wid);
+}
+function toggleInventoryPanel() {
+  const p = $('inventory-panel');
+  if (!p) return;
+  const hidden = p.classList.contains('hidden');
+  p.classList.toggle('hidden', !hidden);
+  if (!hidden) { closeShopPanel(); }
+  if (p.classList.contains('hidden') === false) renderInventory();
+}
+function openShopPanel() {
+  if (!shopData) return;
+  const p = $('shop-panel');
+  if (!p) return;
+  closeInventoryPanel();
+  p.classList.remove('hidden');
+  $('shop-title').textContent = shopData.name || '商店';
+  const list = $('shop-list');
+  list.innerHTML = '';
+  for (const e of shopData.entries) {
+    const d = itemDef(e.itemId);
+    const row = document.createElement('div');
+    row.className = 'shop-item';
+    row.innerHTML =
+      `<span class="item-icon">${d.icon}</span>
+       <span class="item-name">${d.name}</span>
+       <span class="item-sub">${typeName(d.type)}${d.slot ? '·' + (SLOT_NAME[d.slot] || '') : ''}</span>
+       <span class="item-desc">${itemDesc(e.itemId)}</span>
+       <button class="buy-btn" data-id="${e.itemId}" data-price="${e.price}">${e.price}💰 购买</button>`;
+    row.querySelector('.buy-btn').addEventListener('click', () => {
+      if (gold < e.price) { toast('金币不足'); return; }
+      net.sendShopBuy(e.itemId, 1);
+    });
+    list.appendChild(row);
+  }
+}
+function closeShopPanel() { const p = $('shop-panel'); if (p) p.classList.add('hidden'); }
+function closeInventoryPanel() { const p = $('inventory-panel'); if (p) p.classList.add('hidden'); }
+function renderInventory() {
+  const grid = $('inv-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const ids = Object.keys(inventory).map(Number).sort((a, b) => a - b);
+  if (!ids.length) {
+    grid.innerHTML = '<div class="inv-empty">背包空空如也（击杀怪物拾取掉落物）</div>';
+  }
+  for (const id of ids) {
+    const cnt = inventory[id];
+    const d = itemDef(id);
+    const cell = document.createElement('div');
+    cell.className = 'inv-cell';
+    cell.innerHTML = `
+      <div class="item-icon">${d.icon}</div>
+      <div class="item-cnt">×${cnt}</div>
+      <div class="item-name">${d.name}</div>
+      <div class="item-sub">${typeName(d.type)}${d.slot ? '·' + (SLOT_NAME[d.slot] || '') : ''}</div>
+      <div class="item-actions">
+        ${d.type === 'equip' ? `<button class="act-btn" data-act="equip" data-slot="${d.slot}" data-id="${id}">穿戴</button>` : ''}
+        ${d.type === 'consumable' ? `<button class="act-btn" data-act="use" data-id="${id}">使用</button>` : ''}
+      </div>`;
+    const act = cell.querySelector('.act-btn');
+    if (act) {
+      act.addEventListener('click', () => {
+        const a = act.dataset.act;
+        if (a === 'equip') { net.sendEquip(Number(act.dataset.slot), Number(act.dataset.id)); toast('装备中…'); }
+        else if (a === 'use') { net.sendUseItem(Number(act.dataset.id), 1); toast('使用中…'); }
+      });
+    }
+    grid.appendChild(cell);
+  }
+}
+function renderEquip() {
+  const list = $('equip-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (let slot = 1; slot <= 6; slot++) {
+    const itemId = equip[slot] || 0;
+    const d = itemDef(itemId);
+    const row = document.createElement('div');
+    row.className = 'equip-row' + (itemId ? ' filled' : '');
+    row.innerHTML = `
+      <span class="equip-slot">${SLOT_NAME[slot] || slot}</span>
+      <span class="item-icon">${itemId ? d.icon : '—'}</span>
+      <span class="equip-name">${itemId ? d.name : '（空）'}</span>
+      ${itemId ? `<button class="act-btn" data-slot="${slot}">卸下</button>` : ''}`;
+    const btn = row.querySelector('.act-btn');
+    if (btn) {
+      btn.addEventListener('click', () => { net.sendEquip(slot, 0); toast('已卸下'); });
+    }
+    list.appendChild(row);
+  }
+}
+
 // ---------------- 世界Boss HUD（全区共享血量条） ----------------
 function updateBossHud() {
   const bar = $('boss-bar');
@@ -274,17 +461,35 @@ function loop(now) {
     net.sendInput(mv.x, mv.z, jump, pred);
   }
 
+  // 2) 推进预测（内部按 50ms 步进；用真实 dt 保持与服务端实时同步），插值位置驱动自身渲染
+  const selfPos = predictor.step(rawDt);
+  net.setRef(selfPos.x, selfPos.y, selfPos.z); // 二进制相对坐标解码基准
+  entities.setSelf(selfPos.x, selfPos.y, selfPos.z);
+
   // 攻击：J 键 → 攻击范围内最近的世界怪物/Boss（服务端权威校验）
   if (input.takeAttack()) {
     const target = findNearestAttackable(selfPos.x, selfPos.z);
     if (target) net.sendAttack(target.wid);
     else protocolLog('c2s', { type: 'ATTACK', targetWid: 0, slot: 0, note: '范围内无目标' });
   }
-
-  // 2) 推进预测（内部按 50ms 步进；用真实 dt 保持与服务端实时同步），插值位置驱动自身渲染
-  const selfPos = predictor.step(rawDt);
-  net.setRef(selfPos.x, selfPos.y, selfPos.z); // 二进制相对坐标解码基准
-  entities.setSelf(selfPos.x, selfPos.y, selfPos.z);
+  // 物品系统交互（selfPos 已就绪）
+  if (input.takeInvToggle()) toggleInventoryPanel();
+  if (input.takeShop()) {
+    const npc = findNearbyShopNpc(selfPos.x, selfPos.z, 4);
+    if (npc) net.sendShopOpen(npc.wid);
+    else {
+      toast('附近没有商店 NPC（走接近紫色描边的商店老板）');
+      // 调试：列出视野内 NPC
+      for (const e of entities.forRender()) {
+        if (e.kind === 'npc') {
+          protocolLog('c2s', { type: 'DBG_NPC', wid: e.wid, name: e.name, d: Math.hypot(e.x - selfPos.x, e.z - selfPos.z).toFixed(1), pos: `${e.x.toFixed(1)},${e.z.toFixed(1)}` });
+        }
+      }
+    }
+  }
+  if (input.takePickup()) pickupNearbyDrops(selfPos.x, selfPos.z, 2.2);
+  // 自动拾取：走到掉落物上自动捡起（服务端校验距离）
+  autoPickup(selfPos.x, selfPos.z, 1.9);
 
   // 3) 其他实体插值
   entities.update(dt);
@@ -312,6 +517,12 @@ function loop(now) {
 }
 
 // 供自动化测试暂停/恢复渲染（不影响正常用户）
+// 面板关闭按钮
+window.addEventListener('DOMContentLoaded', () => {
+  const ic = $('inv-close'); if (ic) ic.addEventListener('click', closeInventoryPanel);
+  const sc = $('shop-close'); if (sc) sc.addEventListener('click', closeShopPanel);
+});
+
 window.__ewPause = () => {
   running = false;
 };

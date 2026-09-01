@@ -53,7 +53,10 @@ bool MysqlStore::init() {
       " z DOUBLE NOT NULL DEFAULT 0,"
       " hp DOUBLE NOT NULL DEFAULT 100,"
       " level INT NOT NULL DEFAULT 1,"
-      " updated_at BIGINT NOT NULL DEFAULT 0"
+      " updated_at BIGINT NOT NULL DEFAULT 0,"
+      " gold INT NOT NULL DEFAULT 0,"
+      " equip_json TEXT,"
+      " inventory_json TEXT"
       ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
   if (mysql_query(m.conn, kTables) != 0) {
     fprintf(stderr, "[store] MySQL 建表失败: %s —— 降级到内存存储\n", mysql_error(m.conn));
@@ -164,12 +167,14 @@ bool MysqlStore::savePlayer(const PlayerSave& s) {
   if (!available()) return false;
   MYSQL_STMT* st = mysql_stmt_init(impl_->conn);
   if (!st) return false;
-  const char* sql = "INSERT INTO player_saves(username,x,y,z,hp,level,updated_at) VALUES(?,?,?,?,?,?,?) "
-                    "ON DUPLICATE KEY UPDATE x=VALUES(x),y=VALUES(y),z=VALUES(z),hp=VALUES(hp),level=VALUES(level),updated_at=VALUES(updated_at)";
+  const char* sql = "INSERT INTO player_saves(username,x,y,z,hp,level,updated_at,gold,equip_json,inventory_json) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) "
+                    "ON DUPLICATE KEY UPDATE x=VALUES(x),y=VALUES(y),z=VALUES(z),hp=VALUES(hp),level=VALUES(level),"
+                    "updated_at=VALUES(updated_at),gold=VALUES(gold),equip_json=VALUES(equip_json),inventory_json=VALUES(inventory_json)";
   bool ok = false;
   if (mysql_stmt_prepare(st, sql, (unsigned long)strlen(sql)) == 0) {
-    MYSQL_BIND b[7]; memset(b,0,sizeof(b));
-    unsigned long ul = s.username.size();
+    MYSQL_BIND b[10]; memset(b,0,sizeof(b));
+    unsigned long ul = s.username.size(), el = s.equipJson.size(), il = s.inventoryJson.size();
     b[0].buffer_type=MYSQL_TYPE_STRING; b[0].buffer=(void*)s.username.data(); b[0].buffer_length=(unsigned long)s.username.size(); b[0].length=&ul;
     b[1].buffer_type=MYSQL_TYPE_DOUBLE; b[1].buffer=(void*)&s.x;
     b[2].buffer_type=MYSQL_TYPE_DOUBLE; b[2].buffer=(void*)&s.y;
@@ -177,6 +182,9 @@ bool MysqlStore::savePlayer(const PlayerSave& s) {
     b[4].buffer_type=MYSQL_TYPE_DOUBLE; b[4].buffer=(void*)&s.hp;
     b[5].buffer_type=MYSQL_TYPE_LONG;   b[5].buffer=(void*)&s.level;
     b[6].buffer_type=MYSQL_TYPE_LONGLONG; b[6].buffer=(void*)&s.updatedAtMs;
+    b[7].buffer_type=MYSQL_TYPE_LONG;   b[7].buffer=(void*)&s.gold;
+    b[8].buffer_type=MYSQL_TYPE_STRING; b[8].buffer=(void*)s.equipJson.data(); b[8].buffer_length=(unsigned long)s.equipJson.size(); b[8].length=&el;
+    b[9].buffer_type=MYSQL_TYPE_STRING; b[9].buffer=(void*)s.inventoryJson.data(); b[9].buffer_length=(unsigned long)s.inventoryJson.size(); b[9].length=&il;
     if (mysql_stmt_bind_param(st, b) == 0 && mysql_stmt_execute(st) == 0) ok = true;
   }
   mysql_stmt_close(st);
@@ -187,7 +195,7 @@ bool MysqlStore::loadPlayer(const std::string& username, PlayerSave& out) {
   if (!available()) return false;
   MYSQL_STMT* st = mysql_stmt_init(impl_->conn);
   if (!st) return false;
-  const char* sql = "SELECT username,x,y,z,hp,level,updated_at FROM player_saves WHERE username=?";
+  const char* sql = "SELECT username,x,y,z,hp,level,updated_at,gold,equip_json,inventory_json FROM player_saves WHERE username=?";
   bool found = false;
   if (mysql_stmt_prepare(st, sql, (unsigned long)strlen(sql)) == 0) {
     MYSQL_BIND pb; memset(&pb,0,sizeof(pb));
@@ -196,7 +204,10 @@ bool MysqlStore::loadPlayer(const std::string& username, PlayerSave& out) {
     if (mysql_stmt_bind_param(st, &pb) == 0 && mysql_stmt_execute(st) == 0) {
       char name[128]={0}; unsigned long nameLen=0;
       double x=0,y=0,z=0,hp=100; int level=1; long long upd=0;
-      MYSQL_BIND rb[7]; memset(rb,0,sizeof(rb));
+      long long gold=0;
+      char eq[1024]={0}, inv[4096]={0};
+      unsigned long eqLen=0, invLen=0;
+      MYSQL_BIND rb[10]; memset(rb,0,sizeof(rb));
       rb[0].buffer_type=MYSQL_TYPE_STRING; rb[0].buffer=name; rb[0].buffer_length=sizeof(name); rb[0].length=&nameLen;
       rb[1].buffer_type=MYSQL_TYPE_DOUBLE; rb[1].buffer=&x;
       rb[2].buffer_type=MYSQL_TYPE_DOUBLE; rb[2].buffer=&y;
@@ -204,11 +215,17 @@ bool MysqlStore::loadPlayer(const std::string& username, PlayerSave& out) {
       rb[4].buffer_type=MYSQL_TYPE_DOUBLE; rb[4].buffer=&hp;
       rb[5].buffer_type=MYSQL_TYPE_LONG; rb[5].buffer=&level;
       rb[6].buffer_type=MYSQL_TYPE_LONGLONG; rb[6].buffer=&upd;
+      rb[7].buffer_type=MYSQL_TYPE_LONG; rb[7].buffer=&gold;
+      rb[8].buffer_type=MYSQL_TYPE_STRING; rb[8].buffer=eq; rb[8].buffer_length=sizeof(eq); rb[8].length=&eqLen;
+      rb[9].buffer_type=MYSQL_TYPE_STRING; rb[9].buffer=inv; rb[9].buffer_length=sizeof(inv); rb[9].length=&invLen;
       if (mysql_stmt_bind_result(st, rb) == 0 && mysql_stmt_store_result(st) == 0 &&
           mysql_stmt_fetch(st) == 0) {
         out.username = username;
         out.x=(float)x; out.y=(float)y; out.z=(float)z; out.hp=(float)hp; out.level=level;
         out.updatedAtMs=(uint64_t)upd;
+        out.gold=(uint32_t)gold;
+        out.equipJson.assign(eq, eqLen);
+        out.inventoryJson.assign(inv, invLen);
         found = true;
       }
     }

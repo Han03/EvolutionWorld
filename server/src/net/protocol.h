@@ -29,6 +29,11 @@ enum MsgType : uint8_t {
   C2S_EVENT = 0x02,   // 通用事件（预留：聊天/技能/交互…）
   C2S_PONG  = 0x03,   // 心跳应答
   C2S_ATTACK= 0x04,   // 攻击世界实体（目标 wid + 技能槽）
+  C2S_SHOP_OPEN = 0x05, // 打开商店（目标 NPC wid）
+  C2S_SHOP_BUY  = 0x06, // 购买物品（itemId + 数量）
+  C2S_PICKUP    = 0x07, // 拾取地面掉落物（drop wid）
+  C2S_EQUIP     = 0x08, // 穿戴/卸下装备（slot 槽位值 + itemId，0=卸下）
+  C2S_USE_ITEM  = 0x09, // 使用消耗品（itemId + 数量）
   // S2C
   S2C_HELLO   = 0x81, // 握手（world 参数 + 自身完整状态）
   S2C_SNAPSHOT= 0x82, // 校准快照（周期全量，自愈）
@@ -41,6 +46,10 @@ enum MsgType : uint8_t {
   S2C_KICK    = 0x89, // 踢出
   S2C_ERROR   = 0x8A, // 错误
   S2C_BOSS    = 0x8B, // 世界 Boss 全局共享状态（血量/阶段/状态/目标/位置）
+  S2C_SHOP     = 0x8C, // 商店列表（shopId/名称/商品条目）
+  S2C_INVENTORY= 0x8D, // 背包/装备/金币 全量（服务端权威）
+  S2C_LOOT     = 0x8E, // 拾取反馈（获得物品/金币）
+  S2C_STATS    = 0x8F, // 自身属性（血量/蓝量/攻击/防御）更新
 };
 // ---------- 共享事件类型（S2C_EVENT payload 首字节） ----------
 enum EvtType : uint8_t {
@@ -48,6 +57,7 @@ enum EvtType : uint8_t {
   EVT_DEATH   = 2,   // 死亡：wid 死亡者, b 击杀者 wid
   EVT_RESPAWN = 3,   // 复活：wid 复活实体
   EVT_SKILL   = 4,   // 范围技能：wid 施法者, b skillId, x/z 技能落点
+  EVT_DROP    = 5,   // 掉落：wid 掉落物实体, b itemId, x 金币量
 };
 // ---------- Boss 状态位（S2C_BOSS.state，与 entity.h BossState 一致） ----------
 constexpr uint8_t BOSS_IDLE = 0;
@@ -64,6 +74,7 @@ enum Flags : uint8_t {
 constexpr uint8_t KIND_PLAYER = 1;
 constexpr uint8_t KIND_MONSTER = 2;
 constexpr uint8_t KIND_NPC = 3;
+constexpr uint8_t KIND_ITEM = 4;   // 地面掉落物（物品/金币）
 
 // ---------- 实体状态位 ----------
 constexpr uint8_t ST_MOVING  = 0x01;
@@ -178,6 +189,12 @@ std::string error(uint8_t code, const std::string& msg);
 std::string bossState(const Entity& boss);
 std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z);
 
+// 世界共享状态编码：S2C_SHOP / S2C_INVENTORY / S2C_STATS / S2C_LOOT
+std::string shopFrame(const struct ShopDef& shop);
+std::string inventoryFrame(const Entity& p);
+std::string statsFrame(const Entity& p);
+std::string lootFrame(bool ok, uint32_t itemId, uint16_t count, uint32_t gold);
+
 // ---------- C2S 解码 ----------
 struct InputMsg {
   uint32_t seq = 0;
@@ -189,7 +206,17 @@ struct AttackMsg {
   uint32_t targetWid = 0;
   uint8_t slot = 0;   // 0=普攻，1..=技能（预留）
 };
+struct ShopOpenMsg { uint32_t npcWid = 0; };
+struct ShopBuyMsg { uint32_t itemId = 0; uint16_t count = 0; };
+struct PickupMsg { uint32_t dropWid = 0; };
+struct EquipMsg { uint8_t slot = 0; uint32_t itemId = 0; };
+struct UseItemMsg { uint32_t itemId = 0; uint16_t count = 0; };
 bool decodeInput(const std::string& payload, InputMsg& out);
 bool decodeAttack(const std::string& payload, AttackMsg& out);
+bool decodeShopOpen(const std::string& payload, ShopOpenMsg& out);
+bool decodeShopBuy(const std::string& payload, ShopBuyMsg& out);
+bool decodePickup(const std::string& payload, PickupMsg& out);
+bool decodeEquip(const std::string& payload, EquipMsg& out);
+bool decodeUseItem(const std::string& payload, UseItemMsg& out);
 } // namespace proto
 } // namespace ew

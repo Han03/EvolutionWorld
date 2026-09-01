@@ -136,13 +136,26 @@ export function createRenderer(container) {
     ctx.stroke();
   }
 
+  // 物品名映射（由 boot.js 填充，来自商店/背包/掉落的 itemId）
+  const ITEM_NAMES = (typeof window !== 'undefined' && window.__itemNames) || {};
   function drawEntity(e) {
     const x = sx(e.x), y = sy(e.z);
     const boss = bossHp.get(e.wid);
     let color, r = 7;
+    if (e.kind === 'npc' && e.name && e.name.indexOf('商店') !== -1) {
+      // 商店 NPC：紫色描边 + 钱袋角标
+      ctx.strokeStyle = '#c084fc';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     if (boss) { color = '#7f1d1d'; r = 14; }                 // 世界 Boss：暗红大圆
     else if (e.kind === 'player') { color = '#34d399'; r = 7; }   // 绿色
     else if (e.kind === 'npc') { color = '#60a5fa'; r = 6; } // 蓝色
+    else if (e.kind === 'item') {                            // 掉落物：物品=金色菱形 / 金币=黄色圆点
+      color = e.itemId ? '#fbbf24' : '#fde047';
+      r = 5;
+    }
     else { color = '#f87171'; r = 6; }                        // 红色（怪物）
     // 影子（俯视投影）
     ctx.beginPath();
@@ -178,6 +191,13 @@ export function createRenderer(container) {
       ctx.font = 'bold 10px "PingFang SC","Microsoft YaHei",sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(`${boss.name || 'Boss'} Lv.${boss.phase} ${Math.round(boss.hp)}/${Math.round(boss.maxHp)}`, x, by - 4);
+    } else if (e.kind === 'item') {
+      // 掉落物：显示物品名/金币数量（闪烁提示）
+      const label = e.itemId ? (ITEM_NAMES[e.itemId] || '物品') : `${e.gold} 金币`;
+      ctx.fillStyle = 'rgba(253,224,71,0.95)';
+      ctx.font = 'bold 10px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, x, y - 12);
     } else if (e.name) {
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.font = '10px "PingFang SC","Microsoft YaHei",sans-serif';

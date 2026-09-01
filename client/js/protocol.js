@@ -6,18 +6,21 @@
 export const MSG = {
   // C2S
   C2S_INPUT: 0x01, C2S_EVENT: 0x02, C2S_PONG: 0x03, C2S_ATTACK: 0x04,
+  C2S_SHOP_OPEN: 0x05, C2S_SHOP_BUY: 0x06, C2S_PICKUP: 0x07,
+  C2S_EQUIP: 0x08, C2S_USE_ITEM: 0x09,
   // S2C
   S2C_HELLO: 0x81, S2C_SNAPSHOT: 0x82, S2C_ENTER: 0x83,
   S2C_LEAVE: 0x84, S2C_UPDATE: 0x85, S2C_SELF: 0x86,
   S2C_EVENT: 0x87, S2C_PING: 0x88, S2C_KICK: 0x89, S2C_ERROR: 0x8A,
   S2C_BOSS: 0x8B,
+  S2C_SHOP: 0x8C, S2C_INVENTORY: 0x8D, S2C_LOOT: 0x8E, S2C_STATS: 0x8F,
 };
 // 世界共享事件类型（S2C_EVENT 首字节）
-export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4 };
+export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5 };
 // Boss 状态（S2C_BOSS.state）
 export const BOSS_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
 export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04 };
-export const KIND = { PLAYER: 1, MONSTER: 2, NPC: 3 };
+export const KIND = { PLAYER: 1, MONSTER: 2, NPC: 3, ITEM: 4 };
 export const ST = { MOVING: 0x01, GROUNDED: 0x02 };
 
 const SCALE = 100;    // 位置 0.01m
@@ -107,6 +110,36 @@ export function encodeAttack(targetWid, slot = 0) {
   w.u32(targetWid >>> 0).u8(slot & 0xFF);
   return makeFrame(MSG.C2S_ATTACK, w.finish());
 }
+/** 打开商店：目标商店 NPC wid */
+export function encodeShopOpen(npcWid) {
+  const w = new Writer();
+  w.u32(npcWid >>> 0);
+  return makeFrame(MSG.C2S_SHOP_OPEN, w.finish());
+}
+/** 购买物品：itemId + 数量 */
+export function encodeShopBuy(itemId, count = 1) {
+  const w = new Writer();
+  w.u32(itemId >>> 0).u16(count & 0xFFFF);
+  return makeFrame(MSG.C2S_SHOP_BUY, w.finish());
+}
+/** 拾取地面掉落物：drop wid */
+export function encodePickup(dropWid) {
+  const w = new Writer();
+  w.u32(dropWid >>> 0);
+  return makeFrame(MSG.C2S_PICKUP, w.finish());
+}
+/** 穿戴/卸下装备：槽位值(1..6) + itemId（0=卸下） */
+export function encodeEquip(slot, itemId) {
+  const w = new Writer();
+  w.u8(slot & 0xFF).u32(itemId >>> 0);
+  return makeFrame(MSG.C2S_EQUIP, w.finish());
+}
+/** 使用消耗品：itemId + 数量 */
+export function encodeUseItem(itemId, count = 1) {
+  const w = new Writer();
+  w.u32(itemId >>> 0).u16(count & 0xFFFF);
+  return makeFrame(MSG.C2S_USE_ITEM, w.finish());
+}
 // ---------------- S2C 解码（返回已解实体描述） ----------------
 export function decodeEntityFull(r, refX, refY, refZ) {
   const wid = r.u32();
@@ -114,12 +147,19 @@ export function decodeEntityFull(r, refX, refY, refZ) {
   const state = r.u8();
   const dx = r.i16(), dy = r.i16(), dz = r.i16();
   const vx = r.i16(), vz = r.i16();
-  const name = r.str();
+  let itemId = 0, gold = 0, name = '';
+  if (kind === KIND.ITEM) {
+    itemId = r.u32();
+    gold = r.u32();
+    name = '';
+  } else {
+    name = r.str();
+  }
   return {
     wid, kind, state,
     x: dq(dx) + refX, y: dq(dy) + refY, z: dq(dz) + refZ,
     vx: dq(vx), vz: dq(vz),
-    name,
+    name, itemId, gold,
   };
 }
 /** 解析一个 S2C 消息，返回 {type, ...}；ref = 自身预测位置 */
@@ -207,6 +247,50 @@ export function parseS2C(type, payload, refX, refY, refZ) {
       const z = dq(r.i32());
       const name = r.str();
       return { type, wid, state, phase, hp, maxHp, target, x, y, z, name };
+    }
+    case MSG.S2C_SHOP: {
+      const shopId = r.u32();
+      const name = r.str();
+      const count = r.u16();
+      const entries = [];
+      for (let i = 0; i < count; i++) {
+        entries.push({ itemId: r.u32(), price: r.u32(), stock: r.u16() });
+      }
+      return { type, shopId, name, entries };
+    }
+    case MSG.S2C_INVENTORY: {
+      const gold = r.u32();
+      const equipCount = r.u8();
+      const equip = {};
+      for (let i = 0; i < equipCount; i++) {
+        const slot = r.u8();
+        const itemId = r.u32();
+        if (itemId) equip[slot] = itemId;
+      }
+      const invCount = r.u16();
+      const inventory = {};
+      for (let i = 0; i < invCount; i++) {
+        const itemId = r.u32();
+        const cnt = r.u16();
+        inventory[itemId] = cnt;
+      }
+      return { type, gold, equip, inventory };
+    }
+    case MSG.S2C_LOOT: {
+      const ok = r.u8();
+      const itemId = r.u32();
+      const count = r.u16();
+      const gold = r.u32();
+      return { type, ok, itemId, count, gold };
+    }
+    case MSG.S2C_STATS: {
+      const maxHp = r.u32();
+      const maxMp = r.u32();
+      const attack = r.u32();
+      const defense = r.u32();
+      const hp = r.u32();
+      const mp = r.u32();
+      return { type, maxHp, maxMp, attack, defense, hp, mp };
     }
     case MSG.S2C_EVENT: {
       const evtType = r.u8();
