@@ -10,7 +10,7 @@
  *  - 收到服务端 correction 时把预测状态硬回退（rollback）到权威位置。
  *  - 渲染层在两帧预测状态之间线性插值，保证 60fps 视觉平滑。
  */
-import { terrainHeight } from './glsl.js';
+import { terrainHeight } from './terrain.js';
 
 const CFG = {
   GRAVITY: -9.81,

@@ -14,7 +14,7 @@
   <div id="login-overlay" class="overlay">
     <div class="login-card">
       <h1 class="title">EVOLUTION<span>WORLD</span></h1>
-      <p class="subtitle">无缝世界 · SDF 体积地形 · 空壳网络游戏服务端</p>
+      <p class="subtitle">无缝世界 · 固定俯视角大型MMO · 空壳网络游戏服务端</p>
       <form id="login-form" autocomplete="off">
         <label>账号</label>
         <input id="username" type="text" placeholder="2-16 位字母/数字/中文" maxlength="16" />
@@ -26,7 +26,7 @@
           <button type="submit" id="btn-login" class="btn btn-primary">登录</button>
         </div>
       </form>
-      <div class="hint">登录后将以 <b>橙色球体</b> 进入无缝世界<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC</div>
+      <div class="hint">登录后将以 <b>橙色球体</b> 进入无缝世界（固定俯视角）<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC</div>
     </div>
   </div>
 
@@ -50,18 +50,16 @@
       </div>
       <div class="hud-controls">
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
-        <div><kbd>Space</kbd> 跳跃 &nbsp;·&nbsp; <kbd>鼠标拖拽</kbd> 旋转视角</div>
+        <div><kbd>Space</kbd> 跳跃 · 固定俯视角</div>
       </div>
     </div>
   </div>
+  <!-- 协议透传转换监控：二进制帧 → 可读对象 实时解码展示 -->
+  <div id="proto-panel">
+    <div class="proto-head">协议透传 <span id="proto-bps">-</span></div>
+    <div id="proto-log"></div>
+  </div>
 
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "./vendor/three.module.js"
-    }
-  }
-  </script>
   <script type="module" src="./js/boot.js"></script>
 </body>
 </html>

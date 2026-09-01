@@ -17,6 +17,7 @@ enum class EntityKind { Player, Monster, Npc };
 
 struct Entity {
   std::string id;
+  uint32_t wid = 0;   // 线上实体 ID（二进制协议使用，u32）
   EntityKind kind = EntityKind::Monster;
   Vec3 pos;
   Vec3 vel;

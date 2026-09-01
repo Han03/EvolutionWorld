@@ -16,12 +16,18 @@ struct Config {
   int worldSeed = 20260901;
   float viewRangeM = 100.0f;   // 可见/加载范围（半径，米）
   float chunkSizeM = 50.0f;    // 区块边长
+  int terrainGridPoints = 33;  // 区块高度场数据每边采样点数（世界地图数据存储粒度）
   int monsterCount = 24;
   int npcCount = 12;
 
   // ---- 模拟 ----
   float tickRateHz = 20.0f;
   float tickMs = 50.0f;
+  // ---- 大规模传输方案（AOI / 增量 / LOD / 校准快照）----
+  float aoiCellSizeM = 25.0f;      // AOI 空间网格边长
+  float aoiNearM = 25.0f;          // 近距：每 tick 更新
+  float aoiMidM = 50.0f;           // 中距：每 2 tick
+  int snapshotIntervalTicks = 30;  // 校准全量快照周期（30 tick = 1.5s）
 
   // ---- 物理 ----
   float gravity = -9.81f;

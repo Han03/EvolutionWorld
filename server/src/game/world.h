@@ -7,6 +7,7 @@
 #include "entity.h"
 #include "chunk.h"
 #include "physics.h"
+#include "aoi.h"
 #include "util/random.h"
 #include "../config.h"
 
@@ -35,8 +36,17 @@ public:
   // 内部系统遍历用（非 const）
   std::unordered_map<std::string, Entity>& entitiesMut() { return entities_; }
 
-  // 快照（100m 可见范围）
+  // 快照（100m 可见范围，JSON 调试用）
   Json buildSnapshot(const Entity& player);
+  // AOI 兴趣网格（大规模传输用）
+  AoiGrid& aoi() { return aoi_; }
+  const AoiGrid& aoi() const { return aoi_; }
+  // 按线上 wid 查实体
+  Entity* findByWid(uint32_t wid) {
+    auto it = widToId_.find(wid);
+    return it == widToId_.end() ? nullptr : findEntity(it->second);
+  }
+  uint32_t nextWireId() { return (uint32_t)++wireSeq_; }
 
   // 系统注册（可扩展）
   using SystemFn = std::function<void(World&, double)>;
@@ -55,11 +65,14 @@ private:
   const Config& cfg_;
   Physics physics_;
   ChunkManager chunks_;
+  AoiGrid aoi_;
   std::unordered_map<std::string, Entity> entities_;
   std::unordered_set<std::string> players_;
+  std::unordered_map<uint32_t, std::string> widToId_;
   std::vector<std::pair<int, std::pair<std::string, SystemFn>>> systems_;
   uint64_t tick_ = 0;
   int64_t entitySeq_ = 0;
+  int64_t wireSeq_ = 0;
   Mulberry32 rng_;
 };
 

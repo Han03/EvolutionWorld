@@ -102,3 +102,20 @@ kbd {
   background: rgba(8,20,34,.7); border: 1px solid rgba(120,200,255,.3); border-bottom-width: 2px;
   border-radius: 4px; color: #dbeafe;
 }
+
+/* ---------- 协议透传转换监控面板 ---------- */
+#proto-panel {
+  position: fixed; right: 14px; bottom: 14px; width: 300px; z-index: 30;
+  pointer-events: none; user-select: none;
+  background: rgba(8,20,34,.55); border: 1px solid rgba(120,200,255,.2); border-radius: 10px;
+  overflow: hidden; font-size: 11px; color: rgba(190,215,240,.8);
+}
+.proto-head {
+  padding: 6px 10px; font-weight: 700; letter-spacing: 1px;
+  border-bottom: 1px solid rgba(120,200,255,.15); color: #93c5fd;
+}
+.proto-head span { font-weight: 400; color: #6ee7b7; margin-left: 8px; }
+#proto-log { max-height: 150px; overflow: hidden; padding: 4px 8px; }
+.proto-line { line-height: 1.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proto-line.s2c { color: #93c5fd; }
+.proto-line.c2s { color: #fcd34d; }

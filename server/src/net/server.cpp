@@ -1,7 +1,8 @@
-// server.cpp - epoll 事件循环实现（单线程：HTTP + WebSocket + 游戏 tick）
+// server.cpp - epoll 事件循环实现（单线程：HTTP + WebSocket(二进制) + 游戏 tick）
 #include "server.h"
 #include "websocket.h"
 #include "http.h"
+#include "net/protocol.h"
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
@@ -115,7 +116,7 @@ void GameServer::run() {
         }
       }
       world_.tick();
-      broadcastSnapshots();
+      broadcastTick();
       nextTickMs_ += (uint64_t)cfg_.tickMs;
       // 仅当真正落后超过一个 tick 时才重同步（防止无符号减法下溢造成空转）
       uint64_t sNow = steadyMs();
@@ -152,6 +153,7 @@ void GameServer::closeConn(int fd) {
     if (!c.playerId.empty()) {
       Entity* e = world_.findEntity(c.playerId);
       if (e) ac_.reset(*e);
+      netcode_.resetPlayer(c.playerId);
       world_.despawnPlayer(c.playerId);
     }
     epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
@@ -265,20 +267,9 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         c.playerId = player->id;
         c.phase = Conn::Ws;
         c.inBuf.clear();
-        // 先回 101，再发 welcome 帧（顺序必须如此）
+        // 先回 101，再发二进制 HELLO 帧（顺序必须如此）
         enqueue(c, httpBuildUpgrade(wsAcceptKey(keyIt->second)));
-        Json w = Json::object();
-        w["type"] = "welcome";
-        w["entityId"] = player->id;
-        w["username"] = player->username;
-        Json wc = Json::object();
-        wc["seed"] = cfg_.worldSeed;
-        wc["viewRange"] = cfg_.viewRangeM;
-        wc["chunkSize"] = cfg_.chunkSizeM;
-        wc["tickRate"] = cfg_.tickRateHz;
-        w["world"] = wc;
-        w["you"] = player->serialize();
-        enqueue(c, wsEncodeFrame(WS_TEXT, w.dump()));
+        enqueue(c, wsEncodeFrame(WS_BINARY, netcode_.helloFor(*player)));
         return;
       }
     }
@@ -358,6 +349,30 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     return;
   }
 
+  // 地形高度场数据接口：按区块坐标返回存储的高度场网格（世界地图数据存储层）
+  if (path == "/api/terrain/chunk" && req.method == "GET") {
+    int64_t cx = 0, cz = 0;
+    try { cx = std::stoll(urlDecode(queryParam(req.query, "x"))); } catch (...) {}
+    try { cz = std::stoll(urlDecode(queryParam(req.query, "z"))); } catch (...) {}
+    const ChunkTerrainData* d = world_.chunks().getTerrainData(cx, cz);
+    if (!d) {
+      enqueue(c, httpBuildResponse(404, "Not Found", "application/json", "{\"error\":\"chunk\"}"));
+      c.closeAfterFlush = true;
+      return;
+    }
+    Json arr = Json::array();
+    for (size_t i = 0; i < d->heights.size(); i++) arr.push_back((double)d->heights[i]);
+    Json r = Json::object();
+    r["cx"] = d->cx; r["cz"] = d->cz;
+    r["grid"] = d->grid;
+    r["step"] = d->step;
+    r["waterLevel"] = kWaterLevel;
+    r["heights"] = arr;
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+
   // ---- 静态资源（客户端） ----
   if (req.method == "GET") {
     std::string rel = urlDecode(path);
@@ -402,7 +417,8 @@ void GameServer::handleWsFrame(Conn& c, bool fin, int opcode, const std::string&
     case WS_TEXT:
     case WS_BINARY:
       if (fin) {
-        handleWsMessage(c, payload);
+        if (opcode == WS_BINARY) handleBinary(c, payload);
+        else handleBinary(c, payload); // 文本同样按二进制帧解析（兼容/容错）
       } else {
         c.wsPartial = payload;
         c.wsFragmented = true;
@@ -415,7 +431,7 @@ void GameServer::handleWsFrame(Conn& c, bool fin, int opcode, const std::string&
           std::string msg = c.wsPartial;
           c.wsPartial.clear();
           c.wsFragmented = false;
-          handleWsMessage(c, msg);
+          handleBinary(c, msg);
         }
       }
       return;
@@ -424,67 +440,91 @@ void GameServer::handleWsFrame(Conn& c, bool fin, int opcode, const std::string&
   }
 }
 
-void GameServer::handleWsMessage(Conn& c, const std::string& msg) {
-  if (msg.size() > (size_t)cfg_.maxInputBodyLen) return;
-  Json j;
-  try {
-    j = Json::parse(msg);
-  } catch (...) {
+void GameServer::handleBinary(Conn& c, const std::string& payload) {
+  size_t off = 0;
+  proto::Frame f;
+  while (true) {
+    size_t consumed = 0;
+    if (!proto::parseFrame(payload, off, consumed, f)) break;
+    off = consumed;
+    switch (f.type) {
+      case proto::C2S_INPUT: {
+        proto::InputMsg in;
+        if (proto::decodeInput(f.payload, in)) handleInput(c, in);
+        break;
+      }
+      case proto::C2S_PONG:
+        return; // 心跳应答（TCP 已可靠，暂不统计）
+      case proto::C2S_EVENT:
+        return; // 预留：通用事件
+      default:
+        return;
+    }
+  }
+}
+void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
+  Entity* p = world_.findEntity(c.playerId);
+  if (!p) return;
+  // 构造防作弊所需的输入描述（复用现有 AntiCheat 校验逻辑）
+  Json j = Json::object();
+  j["type"] = "input";
+  j["seq"] = (int64_t)in.seq;
+  j["moveX"] = in.moveX;
+  j["moveZ"] = in.moveZ;
+  j["jump"] = in.jump;
+  j["px"] = in.px;
+  j["py"] = in.py;
+  j["pz"] = in.pz;
+  AntiCheatResult res = ac_.process(*p, j, steadyMs());
+  if (res.kick) {
+    sendTo(c, proto::kick(res.reason));
+    enqueue(c, wsEncodeFrame(WS_CLOSE, ""));
+    c.closeAfterFlush = true;
     return;
   }
-  std::string type = j.at("type").isNull() ? "" : j.at("type").asString();
-  if (type == "input") {
-    Entity* p = world_.findEntity(c.playerId);
-    if (!p) return;
-    AntiCheatResult res = ac_.process(*p, j, steadyMs());
-    if (res.kick) {
-      Json k = Json::object();
-      k["type"] = "kick";
-      k["reason"] = res.reason;
-      sendTo(c, k);
-      enqueue(c, wsEncodeFrame(WS_CLOSE, ""));
-      c.closeAfterFlush = true;
-      return;
-    }
-    if (res.correction) {
-      // 服务端后校验不通过 → 回退：把客户端拉回服务端权威位置
-      Json corr = Json::object();
-      corr["type"] = "correction";
-      corr["reason"] = res.reason;
-      corr["x"] = p->pos.x;
-      corr["y"] = p->pos.y;
-      corr["z"] = p->pos.z;
-      sendTo(c, corr);
-    }
-    if (getenv("EW_DEBUG")) {
-      fprintf(stderr, "[AC] %s reason=%s %s\n", p->id.c_str(), res.reason.c_str(),
-              res.accepted ? "accepted" : "rejected");
-    }
+  if (res.correction) {
+    // 服务端后校验不通过 → 回退：拉回服务端权威位置 + 强制校准快照重锚定
+    sendTo(c, netcode_.correctionFrame(*p, res.reason, (uint32_t)world_.tickCount()));
+    netcode_.requestResync(p->id);
+  }
+  if (getenv("EW_DEBUG")) {
+    fprintf(stderr, "[AC] %s reason=%s %s\n", p->id.c_str(), res.reason.c_str(),
+            res.accepted ? "accepted" : "rejected");
   }
 }
-
-void GameServer::sendTo(Conn& c, const Json& j) {
-  enqueue(c, wsEncodeFrame(WS_TEXT, j.dump()));
+void GameServer::sendTo(Conn& c, const std::string& frame) {
+  enqueue(c, wsEncodeFrame(WS_BINARY, frame));
 }
-
 int GameServer::fdOfPlayer(const std::string& playerId) const {
   for (const auto& [fd, c] : conns_) {
     if (c.playerId == playerId) return fd;
   }
   return -1;
 }
-
-void GameServer::broadcastSnapshots() {
-  for (const auto& pid : world_.players()) {
-    const Entity* player = world_.findEntity(pid);
-    if (!player) continue;
-    int fd = fdOfPlayer(player->id);
+// 每 tick：为每个在线玩家构建并下发二进制缓冲（AOI 进出 + 增量 + 校准快照）
+void GameServer::broadcastTick() {
+  const auto& out = netcode_.tickBroadcast();
+  for (const auto& [pid, buf] : out) {
+    int fd = fdOfPlayer(pid);
     if (fd < 0) continue;
     auto it = conns_.find(fd);
     if (it == conns_.end() || it->second.phase != Conn::Ws) continue;
-    Json snap = world_.buildSnapshot(*player);
-    enqueue(it->second, wsEncodeFrame(WS_TEXT, snap.dump()));
+    enqueue(it->second, wsEncodeFrame(WS_BINARY, buf));
+  }
+  if (getenv("EW_NETDBG")) {
+    static uint64_t lastLog = 0;
+    static uint64_t accBytes = 0, accFrames = 0, accTicks = 0;
+    uint64_t now = steadyMs();
+    for (const auto& [pid, buf] : out) { (void)pid; accBytes += buf.size(); accFrames++; }
+    accTicks++;
+    if (lastLog == 0) lastLog = now;
+    if (now - lastLog >= 2000) {
+      double s = (double)(now - lastLog) / 1000.0;
+      fprintf(stderr, "[NET] down=%.1f KB/s frames=%llu ticks=%llu conns=%zu\n",
+              (double)accBytes / 1024.0 / s,
+              (unsigned long long)accFrames, (unsigned long long)accTicks, conns_.size());
+      lastLog = now; accBytes = 0; accFrames = 0; accTicks = 0;
+    }
   }
 }
-
 } // namespace ew

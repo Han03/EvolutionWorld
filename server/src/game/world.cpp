@@ -16,7 +16,8 @@ static void moveSystem(World& w, double dt);
 static void aiSystem(World& w, double dt);
 
 World::World(const Config& cfg)
-    : cfg_(cfg), physics_(cfg), chunks_(*this, cfg), rng_((uint32_t)cfg.worldSeed ^ 0x51ab) {
+    : cfg_(cfg), physics_(cfg), chunks_(*this, cfg),
+      aoi_(cfg.aoiCellSizeM), rng_((uint32_t)cfg.worldSeed ^ 0x51ab) {
   addSystem(10, "input", inputSystem);
   addSystem(20, "move", moveSystem);
   addSystem(30, "ai", aiSystem);
@@ -34,8 +35,11 @@ std::string World::nextEntityId(const char* prefix) {
 
 void World::addEntity(Entity&& e) {
   std::string id = e.id;
+  if (e.wid == 0) e.wid = nextWireId();
+  widToId_[e.wid] = id;
   entities_[id] = std::move(e);
   chunks_.updateEntityChunk(entities_[id]);
+  aoi_.move(entities_[id].wid, entities_[id].pos.x, entities_[id].pos.z);
 }
 
 void World::seedWorld() {
@@ -61,6 +65,7 @@ void World::seedWorld() {
 
 Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
   Entity p = makePlayer(nextEntityId("p"), username);
+  p.wid = nextWireId();
   if (spawnHint) {
     p.pos = *spawnHint;
   } else {
@@ -70,8 +75,10 @@ Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
     p.pos = {x, terrainHeight(x, z) + p.radius + 0.3, z};
   }
   std::string id = p.id; // 移动前保存 id
+  widToId_[p.wid] = id;
   entities_[id] = std::move(p);
   chunks_.updateEntityChunk(entities_[id]);
+  aoi_.move(entities_[id].wid, entities_[id].pos.x, entities_[id].pos.z);
   players_.insert(id);
   return &entities_[id];
 }
@@ -79,6 +86,8 @@ Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
 void World::despawnPlayer(const std::string& id) {
   auto it = entities_.find(id);
   if (it != entities_.end()) {
+    widToId_.erase(it->second.wid);
+    aoi_.remove(it->second.wid);
     chunks_.removeEntity(it->second);
     entities_.erase(it);
   }
@@ -156,10 +165,11 @@ void World::tick() {
   tick_++;
   updateSystems(dt);
 
-  // 同步实体区块归属
+  // 同步实体区块归属 + AOI 网格（仅跨格时更新）
   for (auto& [id, e] : entities_) {
     (void)id;
     chunks_.updateEntityChunk(e);
+    aoi_.move(e.wid, e.pos.x, e.pos.z);
   }
   // 更新各玩家加载集合
   for (const auto& pid : players_) {

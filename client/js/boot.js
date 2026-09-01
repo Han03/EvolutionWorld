@@ -7,7 +7,6 @@ import { InputState } from './input.js';
 import { createRenderer } from './renderer.js';
 import { EntityViewManager } from './entities.js';
 import { Predictor } from './predict.js';
-import * as THREE from 'three';
 
 const $ = (id) => document.getElementById(id);
 const overlay = $('login-overlay');
@@ -83,9 +82,9 @@ async function enterWorld(token, username, worldMeta) {
 
   try {
     // 先挂回调，再建立连接（welcome 可能立刻到达）
-    net.onWelcome = (msg) => {
+    net.onHello = (msg) => {
       hud.classList.remove('hidden');
-      $('hud-user').textContent = msg.username;
+      $('hud-user').textContent = net.selfName;
       $('hud-conn').textContent = '已连接';
       $('hud-conn').className = 'hud-chip on';
     };
@@ -101,11 +100,11 @@ async function enterWorld(token, username, worldMeta) {
     return;
   }
 
-  // 等待 welcome（拿到 selfId）
-  if (!net.welcome) {
+  // 等待 hello（拿到 selfWid 与世界参数）
+  if (!net.hello) {
     await new Promise((resolve) => {
-      const old = net.onWelcome;
-      net.onWelcome = (msg) => {
+      const old = net.onHello;
+      net.onHello = (msg) => {
         old && old(msg);
         resolve();
       };
@@ -114,25 +113,40 @@ async function enterWorld(token, username, worldMeta) {
   $('loading-text').textContent = '初始化渲染器…';
 
   // 初始化 3D
-  renderer = createRenderer($('app'));
+  try {
+    renderer = createRenderer($('app'));
+  } catch (e) {
+    $('loading-text').textContent = '渲染器错误：' + (e && e.message ? e.message : e);
+    console.error(e);
+    throw e;
+  }
   $('loading-text').textContent = '创建实体管理器…';
-  entities = new EntityViewManager(renderer.scene, net.selfId);
+  try {
+    entities = new EntityViewManager(net.selfWid);
+  } catch (e) {
+    $('loading-text').textContent = '实体管理器错误：' + (e && e.message ? e.message : e);
+    console.error(e);
+    throw e;
+  }
   window.__ewEntities = entities; // 测试/调试钩子
-  input = new InputState(renderer.renderer.domElement);
+  input = new InputState(renderer.canvas);
   window.__ewInput = input;
-  // 本地预测器：从 welcome 位置起步
+  // 本地预测器：从 hello 位置起步
   predictor = new Predictor();
-  if (net.welcome && net.welcome.you) {
-    predictor.setPosition(net.welcome.you.x, net.welcome.you.y, net.welcome.you.z);
+  if (net.hello && net.hello.self) {
+    predictor.setPosition(net.hello.self.x, net.hello.self.y, net.hello.self.z);
+    entities.setSelf(net.hello.self.x, net.hello.self.y, net.hello.self.z);
   }
   window.__ewPredictor = predictor; // 测试/调试钩子
   $('loading-text').textContent = '接收世界数据…';
 
-  net.onSnapshot = (snap) => {
-    entities.applySnapshot(snap.entities);
-  };
+  // 二进制协议：AOI 进出 + 增量 + 校准快照 + 预测回退
+  net.onEnter = (ents) => entities.applyEnter(ents);
+  net.onLeave = (wids) => entities.applyLeave(wids);
+  net.onUpdate = (ups) => entities.applyUpdate(ups);
+  net.onSnapshot = (snap) => entities.applySnapshot(snap.entities);
 
-  net.onCorrection = (msg) => {
+  net.onSelf = (msg) => {
     // 服务端后校验不通过 → 回退到权威位置
     predictor.correction(msg.x, msg.y, msg.z);
     entities.setSelf(msg.x, msg.y, msg.z);
@@ -145,6 +159,11 @@ async function enterWorld(token, username, worldMeta) {
     running = false;
     net.close();
   };
+  // 协议透传转换：把每次二进制帧解码结果实时投递到监控面板
+  net.onProtocol = (dir, msg) => protocolLog(dir, msg);
+  net.onBytes = (n) => {
+    window.__ewBytes = (window.__ewBytes || 0) + n;
+  };
 
   $('loading-text').textContent = '进入世界…';
   loading.classList.add('hidden');
@@ -152,6 +171,31 @@ async function enterWorld(token, username, worldMeta) {
   lastT = performance.now();
   requestAnimationFrame(loop);
 }
+// ---------------- 协议透传转换监控（二进制 ↔ 可读对象 实时解码展示） ----------------
+function protocolLog(dir, msg) {
+  const box = $('proto-log');
+  if (!box) return;
+  const line = document.createElement('div');
+  line.className = 'proto-line ' + dir;
+  const t = msg.type;
+  let detail = '';
+  switch (t) {
+    case 'HELLO': detail = `wid=${msg.self.wid} pos=(${msg.self.x.toFixed(1)},${msg.self.y.toFixed(1)},${msg.self.z.toFixed(1)}) seed=${msg.seed}`; break;
+    case 'ENTER': detail = `count=${msg.entities.length}`; break;
+    case 'LEAVE': detail = `wids=[${msg.wids.join(',')}]`; break;
+    case 'UPDATE': detail = `count=${msg.updates.length}`; break;
+    case 'SNAPSHOT': detail = `tick=${msg.tick} count=${msg.entities.length}`; break;
+    case 'SELF': detail = `reason=${msg.reason} pos=(${msg.x.toFixed(1)},${msg.y.toFixed(1)},${msg.z.toFixed(1)})`; break;
+    case 'KICK': detail = `reason=${msg.reason}`; break;
+    case 'INPUT': detail = `seq=${msg.seq} mv=(${msg.moveX},${msg.moveZ}) jump=${msg.jump}`; break;
+    default: detail = JSON.stringify(msg).slice(0, 80); break;
+  }
+  line.textContent = `[${dir === 's2c' ? '↓S2C' : '↑C2S'}] ${t} ${detail}`;
+  box.appendChild(line);
+  while (box.childNodes.length > 40) box.removeChild(box.firstChild);
+}
+// 供测试/调试挂载协议监控（渲染启动后设置）
+window.__ewProtocolLog = protocolLog;
 
 // ---------------- 主循环 ----------------
 
@@ -175,16 +219,16 @@ function loop(now) {
 
   // 2) 推进预测（内部按 50ms 步进；用真实 dt 保持与服务端实时同步），插值位置驱动自身渲染
   const selfPos = predictor.step(rawDt);
+  net.setRef(selfPos.x, selfPos.y, selfPos.z); // 二进制相对坐标解码基准
   entities.setSelf(selfPos.x, selfPos.y, selfPos.z);
 
-  // 3) 其他实体插值 + 相机跟随
+  // 3) 其他实体插值
   entities.update(dt);
-  const target = new THREE.Vector3(selfPos.x, selfPos.y, selfPos.z);
-  updateCamera(dt);
-
-  // 3) 渲染
-  renderer.updateTerrainUniforms(now / 1000);
-  renderer.renderer.render(renderer.scene, renderer.camera);
+  // 地形流式加载（俯视 MMO：仅加载玩家可见范围内区块，超出卸载）+ 绘制
+  renderer.updateTerrain(selfPos.x, selfPos.z);
+  renderer.setSelf(selfPos.x, selfPos.y, selfPos.z, net.selfName);
+  renderer.setEntities(entities.forRender());
+  renderer.draw();
 
   // 4) HUD
   fpsAcc += dt;
@@ -192,7 +236,9 @@ function loop(now) {
   if (fpsAcc >= 0.5) {
     const fps = Math.round(fpsCount / fpsAcc);
     $('hud-fps').textContent = `fps:${fps}`;
-    $('hud-pos').textContent = `x:${target.x.toFixed(1)} y:${target.y.toFixed(1)} z:${target.z.toFixed(1)}`;
+    $('hud-pos').textContent = `x:${selfPos.x.toFixed(1)} y:${selfPos.y.toFixed(1)} z:${selfPos.z.toFixed(1)}`;
+    const b = $('proto-bps');
+    if (b && window.__ewBytes) b.textContent = (window.__ewBytes / 1024).toFixed(1) + 'KB';
     fpsAcc = 0;
     fpsCount = 0;
   }
@@ -211,16 +257,3 @@ window.__ewResume = () => {
   lastT = performance.now();
   requestAnimationFrame(loop);
 };
-
-function updateCamera() {
-  const target = entities.selfPosition(new THREE.Vector3());
-  const dist = 13;
-  const cosP = Math.cos(input.pitch);
-  const off = new THREE.Vector3(
-    Math.sin(input.yaw) * dist * cosP,
-    dist * Math.sin(input.pitch),
-    Math.cos(input.yaw) * dist * cosP
-  );
-  renderer.camera.position.copy(target).add(off);
-  renderer.camera.lookAt(target.x, target.y + 0.6, target.z);
-}

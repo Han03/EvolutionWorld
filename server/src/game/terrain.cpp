@@ -1,4 +1,4 @@
-// terrain.cpp - 确定性噪声 + SDF 地形实现（与 JS/GLSL 逐位一致）
+// terrain.cpp - 确定性噪声 + 高度场地形实现（与 JS terrain.js 逐位一致）
 #include "terrain.h"
 #include "../util/random.h"
 #include <cmath>
@@ -60,6 +60,19 @@ double terrainHeight(double x, double z) {
 }
 
 void randomSpawn(Mulberry32& rng, double& x, double& y, double& z) {
+  for (int attempt = 0; attempt < 32; attempt++) {
+    double angle = rng.next() * 6.283185307179586;
+    double r = std::sqrt(rng.next()) * 60.0;
+    x = std::cos(angle) * r;
+    z = std::sin(angle) * r;
+    double h = terrainHeight(x, z);
+    // 只选干地出生点（高于水面，留 1.0m 缓冲）
+    if (h > kWaterLevel + 1.0) {
+      y = h + 1.5;
+      return;
+    }
+  }
+  // 兜底：任意点
   double angle = rng.next() * 6.283185307179586;
   double r = std::sqrt(rng.next()) * 60.0;
   x = std::cos(angle) * r;

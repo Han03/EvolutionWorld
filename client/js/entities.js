@@ -1,186 +1,108 @@
 /**
- * 实体渲染管理
- * 负责把服务端快照中的实体渲染为悬浮球体：
+ * 实体数据管理（二进制协议版，Canvas 2D 俯视渲染）
  *  - 当前角色：橙色圆球 + 半透明白色描边
- *  - 其他玩家：绿色圆球 + 名字标签
- *  - 怪物：红色圆球
- *  - NPC：蓝色圆球
- * 使用指数平滑在快照之间插值，保证移动流畅。
+ *  - 其他玩家：绿色圆球 / 怪物：红色圆球 / NPC：蓝色圆球
+ * 实体以数字 wid 为键；ENTER 创建、LEAVE 删除、UPDATE 增量更新、SNAPSHOT 校准重建。
+ * 仅管理数据 + 位置插值，渲染由 renderer（Canvas2D）完成。
  */
-import * as THREE from 'three';
-
-const STYLE = {
-  player: { color: 0x34d399 },   // 绿色
-  monster: { color: 0xf87171 },  // 红色
-  npc: { color: 0x60a5fa },      // 蓝色
-};
-const SELF_COLOR = 0xff8c1a;     // 橙色
-
+import { KIND } from './protocol.js';
+const KIND_NAME = { [KIND.PLAYER]: 'player', [KIND.MONSTER]: 'monster', [KIND.NPC]: 'npc' };
 export class EntityViewManager {
-  constructor(scene, selfId) {
-    this.scene = scene;
-    this.selfId = selfId;
-    this.views = new Map(); // id -> view
-    this._sphereGeo = new THREE.SphereGeometry(1, 24, 18);
-    this._matCache = new Map(); // styleKey -> material
-    this._labelTexCache = new Map();
+  constructor(selfWid) {
+    this.selfWid = selfWid;
+    this.views = new Map(); // wid -> {wid,kind,name,x,y,z,tx,ty,tz,state}
   }
-
-  _getMat(key, color) {
-    if (!this._matCache.has(key)) {
-      this._matCache.set(
-        key,
-        new THREE.MeshStandardMaterial({
-          color,
-          roughness: 0.55,
-          metalness: 0.05,
-          emissive: color,
-          emissiveIntensity: 0.12,
-        })
-      );
+  _kindName(kind) { return KIND_NAME[kind] || 'monster'; }
+  /** ENTER：实体进入视野 */
+  applyEnter(entities) {
+    for (const e of entities) {
+      if (e.wid === this.selfWid) continue;
+      if (this.views.has(e.wid)) {
+        this._setTarget(e.wid, e.x, e.y, e.z);
+      } else {
+        this._create(e);
+      }
     }
-    return this._matCache.get(key);
   }
-
-  _makeLabel(text) {
-    const w = 256, h = 72;
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    ctx.font = 'bold 30px "PingFang SC","Microsoft YaHei",sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    // 半透明底
-    ctx.fillStyle = 'rgba(6,18,32,0.55)';
-    const tw = ctx.measureText(text).width;
-    ctx.beginPath();
-    ctx.roundRect((w - tw) / 2 - 12, 20, tw + 24, 32, 8);
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(text, w / 2, 37);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.minFilter = THREE.LinearFilter;
-    const sp = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false })
-    );
-    sp.scale.set(3.4, 1.0, 1.0);
-    sp.renderOrder = 3;
-    return sp;
+  /** LEAVE：实体离开视野 */
+  applyLeave(wids) {
+    for (const wid of wids) this.views.delete(wid);
   }
-
-  /** 应用一份快照（实体列表） */
+  /** UPDATE：增量更新（相对坐标已在协议层解码为绝对） */
+  applyUpdate(updates) {
+    for (const u of updates) {
+      const v = this.views.get(u.wid);
+      if (!v) continue;
+      if (u.mask & 0x01) {
+        v.tx = u.dx / 100; v.ty = u.dy / 100; v.tz = u.dz / 100;
+      }
+      if (u.state !== undefined) v.state = u.state;
+    }
+  }
+  /** SNAPSHOT：校准重建（丢包/失步自愈） */
   applySnapshot(entities) {
     const seen = new Set();
     for (const e of entities) {
-      seen.add(e.id);
-      let view = this.views.get(e.id);
-      if (!view) {
-        view = this._createView(e);
-        this.views.set(e.id, view);
+      if (e.wid === this.selfWid) continue;
+      seen.add(e.wid);
+      if (this.views.has(e.wid)) {
+        this._setTarget(e.wid, e.x, e.y, e.z);
+      } else {
+        this._create(e);
       }
-      view.target.set(e.x, e.y, e.z);
     }
-    // 移除已消失的实体
-    for (const [id, view] of this.views) {
-      if (!seen.has(id)) {
-        this.scene.remove(view.group);
-        view.label && this.scene.remove(view.label);
-        this.views.delete(id);
-      }
+    for (const wid of this.views.keys()) {
+      if (!seen.has(wid)) this.views.delete(wid);
     }
   }
-
-  _createView(e) {
-    const isSelf = e.id === this.selfId;
-    const group = new THREE.Group();
-
-    let mat;
-    let outline = null;
-    let label = null;
-
-    if (isSelf) {
-      mat = this._getMat('self', SELF_COLOR);
-      // 半透明白色描边（略大的透明白球壳）
-      outline = new THREE.Mesh(
-        this._sphereGeo,
-        new THREE.MeshBasicMaterial({
-          color: 0xffffff,
-          transparent: true,
-          opacity: 0.16,
-          side: THREE.BackSide,
-          depthWrite: false,
-        })
-      );
-      outline.scale.setScalar(1.45);
-      outline.renderOrder = 2;
-      group.add(outline);
-    } else {
-      const style = STYLE[e.kind] || STYLE.monster;
-      mat = this._getMat(`${e.kind}`, style.color);
-      if (e.kind === 'player') {
-        label = this._makeLabel(e.username || e.id);
-        label.position.y = 1.7;
-      } else if (e.name) {
-        label = this._makeLabel(e.name);
-        label.position.y = 1.7;
-      }
-    }
-
-    const sphere = new THREE.Mesh(this._sphereGeo, mat);
-    sphere.scale.setScalar(e.kind === 'player' ? 0.55 : 0.5);
-    group.add(sphere);
-    if (label) this.scene.add(label);
-
-    const view = {
-      group,
-      sphere,
-      outline,
-      label,
-      target: new THREE.Vector3(e.x, e.y, e.z),
-      cur: new THREE.Vector3(e.x, e.y, e.z),
-      isSelf,
-      kind: e.kind,
-    };
-    this.scene.add(group);
-    return view;
+  _setTarget(wid, x, y, z) {
+    const v = this.views.get(wid);
+    if (!v) return;
+    v.tx = x; v.ty = y; v.tz = z;
   }
-
-  /** 每帧插值并更新位置 */
+  _create(e) {
+    this.views.set(e.wid, {
+      wid: e.wid,
+      kind: this._kindName(e.kind),
+      name: e.name || (e.kind === KIND.PLAYER ? `玩家${e.wid}` : ''),
+      x: e.x, y: e.y, z: e.z,
+      tx: e.x, ty: e.y, tz: e.z,
+      state: e.state,
+    });
+  }
+  /** 每帧插值（简单 lerp，朝向目标平滑） */
   update(dt) {
-    for (const view of this.views.values()) {
-      // 自身由客户端预测驱动（setSelf 已直接放置），不再向服务端快照插值
-      if (view.isSelf) continue;
-      const k = 9;
-      const f = Math.min(1, dt * k);
-      view.cur.lerp(view.target, f);
-      view.group.position.copy(view.cur);
-      if (view.label) {
-        view.label.position.set(view.cur.x, view.cur.y + 1.7, view.cur.z);
-      }
+    const k = 9;
+    const f = Math.min(1, dt * k);
+    for (const v of this.views.values()) {
+      v.x += (v.tx - v.x) * f;
+      v.y += (v.ty - v.y) * f;
+      v.z += (v.tz - v.z) * f;
     }
   }
   /** 直接把自身实体放到预测位置（零延迟渲染 + 回退） */
   setSelf(x, y, z) {
-    const view = this.views.get(this.selfId);
-    if (!view) return;
-    view.cur.set(x, y, z);
-    view.target.set(x, y, z);
-    view.group.position.copy(view.cur);
-  }
-
-  /** 获取当前角色位置（用于相机跟随） */
-  selfPosition(out) {
-    const view = this.views.get(this.selfId);
-    if (view) return out.copy(view.cur);
-    return out.set(0, 5, 0);
-  }
-
-  dispose() {
-    for (const [, v] of this.views) {
-      this.scene.remove(v.group);
-      v.label && this.scene.remove(v.label);
+    let v = this.views.get(this.selfWid);
+    if (!v) {
+      v = { wid: this.selfWid, kind: 'player', name: '', x, y, z, tx: x, ty: y, tz: z, state: 0 };
+      this.views.set(this.selfWid, v);
     }
-    this.views.clear();
+    v.x = x; v.y = y; v.z = z;
+    v.tx = x; v.ty = y; v.tz = z;
   }
+  /** 供渲染器每帧读取（返回普通对象数组） */
+  forRender() {
+    const out = [];
+    for (const v of this.views.values()) {
+      if (v.wid === this.selfWid) continue;
+      out.push({ wid: v.wid, kind: v.kind, name: v.name, x: v.x, y: v.y, z: v.z, state: v.state });
+    }
+    return out;
+  }
+  /** 当前角色位置（相机跟随） */
+  selfPosition() {
+    const v = this.views.get(this.selfWid);
+    return v ? { x: v.x, y: v.y, z: v.z } : { x: 0, y: 5, z: 0 };
+  }
+  dispose() { this.views.clear(); }
 }
