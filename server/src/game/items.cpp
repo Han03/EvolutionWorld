@@ -101,7 +101,8 @@ void GameData::addDefaultSkill(uint32_t id, const char* name, const char* desc, 
                                SkillTarget target, SkillEffect effect, double mana, uint32_t cdMs,
                                double range, double radius, double dmgMul, double flatDmg, double heal,
                                BuffType buffType, double buffValue, double buffDur, double lifesteal,
-                               uint16_t castTimeMs, bool cancelOnMove, bool cancelOnHit) {
+                               uint16_t castTimeMs, bool cancelOnMove, bool cancelOnHit,
+                               double knockback, bool superArmor) {
   SkillDef s;
   s.id = id; s.name = name; s.desc = desc; s.icon = icon;
   s.target = target; s.effect = effect;
@@ -113,6 +114,8 @@ void GameData::addDefaultSkill(uint32_t id, const char* name, const char* desc, 
   s.castTimeMs = castTimeMs;
   s.castCancelOnMove = cancelOnMove;
   s.castCancelOnHit = cancelOnHit;
+  s.knockback = knockback;
+  s.superArmor = superArmor;
   skills_[id] = s;
 }
 void GameData::loadDefaults() {
@@ -203,6 +206,39 @@ void GameData::loadDefaults() {
   addDefaultSkill(1008, "荆棘护体", "周身环绕荆棘，受到伤害时反弹 20%（8 秒）", "s8",
                   SkillTarget::SELF, SkillEffect::BUFF, 12, 15000, 0, 0, 0, 0, 0,
                   BuffType::THORNS, 0.2, 8.0, 0, 600);  // 前摇 0.6s
+  // ---- 大型网游扩展：控制/减益/增益/击退 ----
+  // 1010 铁壁守护：不可打断 + 霸体 + 防御增益（免疫眩晕/击退，前摇期间移动/受击均不打断）
+  addDefaultSkill(1010, "铁壁守护", "摆出铁壁架势，防御 +15 并进入霸体（免疫眩晕/击退，施放不可打断），持续 8 秒", "s10",
+                  SkillTarget::SELF, SkillEffect::BUFF, 15, 18000, 0, 0, 0, 0, 0,
+                  BuffType::DEF, 15, 8.0, 0, 800, false, false, 0, true);  // 前摇 0.8s，不可打断+霸体
+  // 1011 撕裂：范围伤害 + 流血 DoT（每秒 10 点，5 秒）
+  addDefaultSkill(1011, "撕裂", "撕开目标的伤口，造成 130% 伤害并使其流血（每秒 10 点，5 秒）", "s11",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 14, 9000, 8, 4, 1.3, 0, 0,
+                  BuffType::BLEED, 10, 5.0, 0, 700);  // 前摇 0.7s
+  // 1012 破甲斩：范围伤害 + 减防（防御 -12，6 秒）
+  addDefaultSkill(1012, "破甲斩", "重击破开护甲，造成 140% 伤害并降低目标防御 12 点（6 秒）", "s12",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 15, 10000, 7, 3, 1.4, 0, 0,
+                  BuffType::DEF_DOWN, -12, 6.0, 0, 600);  // 前摇 0.6s
+  // 1013 虚弱咒印：范围减攻（攻击 -8，8 秒）
+  addDefaultSkill(1013, "虚弱咒印", "施加虚弱诅咒，使目标攻击力 -8（8 秒）", "s13",
+                  SkillTarget::AOE, SkillEffect::BUFF, 12, 12000, 8, 4, 0, 0, 0,
+                  BuffType::ATK_DOWN, -8, 8.0, 0, 500);  // 前摇 0.5s
+  // 1014 震荡波：范围伤害 + 眩晕（2 秒）
+  addDefaultSkill(1014, "震荡波", "冲击波震击目标，造成 100% 伤害并眩晕 2 秒", "s14",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 18, 14000, 7, 3.5, 1.0, 0, 0,
+                  BuffType::STUN, 1, 2.0, 0, 800);  // 前摇 0.8s
+  // 1015 疾风步：加速（移速 +50%，8 秒）
+  addDefaultSkill(1015, "疾风步", "脚下生风，移动速度 +50%（8 秒）", "s15",
+                  SkillTarget::SELF, SkillEffect::BUFF, 8, 12000, 0, 0, 0, 0, 0,
+                  BuffType::SPEED, 0.5, 8.0, 0, 300);  // 前摇 0.3s
+  // 1016 猛击：范围伤害 + 击退 6m
+  addDefaultSkill(1016, "猛击", "巨力挥击，造成 180% 伤害并击退目标 6 米", "s16",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 16, 10000, 6, 3, 1.8, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 500, true, true, 6.0);  // 前摇 0.5s，击退 6m
+  // 1017 生命涌动：持续回血（每秒 25 点，8 秒）
+  addDefaultSkill(1017, "生命涌动", "生命之力涌动，每秒恢复 25 点生命（8 秒）", "s17",
+                  SkillTarget::SELF, SkillEffect::BUFF, 14, 16000, 0, 0, 0, 0, 0,
+                  BuffType::REGEN, 25, 8.0, 0, 400);  // 前摇 0.4s
   // 新玩家自动习得：冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
   starterSkills_ = {1001, 1002, 1003};
 }
@@ -346,6 +382,8 @@ bool GameData::loadFromJson(const std::string& dir) {
             s.castTimeMs = (uint16_t)(j.has("castTimeMs") ? j.at("castTimeMs").asInt() : 0);
             s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
             s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
+            s.knockback = j.has("knockback") ? j.at("knockback").asNumber() : 0;
+            s.superArmor = j.has("superArmor") && j.at("superArmor").asInt() != 0;
             skills_[s.id] = s;
           }
           any = true;

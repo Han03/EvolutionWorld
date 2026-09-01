@@ -48,9 +48,11 @@ std::string consoleHelpText() {
     "  skill <skillId>              学习技能\n"
     "  skills                       查看已学技能与冷却\n"
     "  cast <skillId> [targetWid]   施放技能（无目标自动选最近怪物）\n"
-    "  buff <atk|def|slow|regen|thorns> <value> <dur>   给自身挂 Buff\n"
+    "  buff <atk|def|slow|regen|thorns|bleed|def_down|atk_down|stun|super_armor|speed> <value> <dur>   给自身挂 Buff\n"
     "  buff clear                   清除自身所有 Buff\n"
     "  spawn <type> [x z]           生成怪物（wolf/goblin/skeleton/gargoyle）\n"
+    "  heal                         恢复自身 HP/MP 至满\n"
+    "  buffmon <wid> <type> <v> <d> 给指定怪物挂 Buff（调试/测试）\n"
     "  kill <wid|all|monsters|boss> 击杀实体/全部/普通怪/Boss\n"
     "  respawn [all|monsters|boss]  复活死亡实体\n"
     "  teleport <x> <z>             传送自身\n";
@@ -92,12 +94,14 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     Entity* p = w.findEntity(ctx.playerId);
     double range = args.size() > 1 ? toNum(args[1], 100) : 100;
     double px = p ? p->pos.x : 0, pz = p ? p->pos.z : 0;
-    Json arr = w.entitiesStatus(px, pz, range, 50);
+    Json arr = w.entitiesStatus(px, pz, range, 300);
     std::ostringstream os;
     os << "附近实体 " << arr.size() << " 个:";
     for (const auto& j : arr.asArray()) {
       os << " [" << j.at("kind").asInt() << "]" << j.at("name").asString()
          << "(wid=" << j.at("wid").asInt() << ") hp=" << j.at("hp").asInt() << "/" << j.at("maxHp").asInt();
+      if (j.has("atk")) os << " atk=" << j.at("atk").asInt() << " def=" << j.at("def").asInt();
+      os << " @(" << j.at("x").asNumber() << "," << j.at("z").asNumber() << ")";
     }
     out(os.str());
     return true;
@@ -281,18 +285,44 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
       out("已清除所有 Buff");
       return true;
     }
-    if (args.size() < 4) { out("用法: buff <atk|def|slow|regen|thorns> <value> <dur>"); return true; }
-    uint8_t type = 0;
-    const std::string& k = args[1];
-    if (k == "atk") type = (uint8_t)BuffType::ATK;
-    else if (k == "def") type = (uint8_t)BuffType::DEF;
-    else if (k == "slow") type = (uint8_t)BuffType::MOVE_SLOW;
-    else if (k == "regen") type = (uint8_t)BuffType::REGEN;
-    else if (k == "thorns") type = (uint8_t)BuffType::THORNS;
-    else { out("未知 Buff 类型: " + k); return true; }
+    if (args.size() < 4) { out("用法: buff <atk|def|slow|regen|thorns|bleed|def_down|atk_down|stun|super_armor|speed> <value> <dur>"); return true; }
+    uint8_t type = (uint8_t)SkillDef::buffFromStr(args[1]);
+    if (type == (uint8_t)BuffType::NONE) { out("未知 Buff 类型: " + args[1]); return true; }
     double v = toNum(args[2], 0), dur = toNum(args[3], 0);
     w.applyBuff(*p, 0, type, v, dur);
     out("挂载 Buff " + std::string(SkillDef::buffName((BuffType)type)) + "=" + args[2] + " " + args[3] + "s");
+    return true;
+  }
+
+  // 重置全部技能冷却（测试辅助）
+  if (cmd == "cdreset") {
+    Entity* p = w.findEntity(ctx.playerId);
+    if (!p) { out("未找到目标玩家"); return true; }
+    p->skillCd.clear();
+    out("已重置全部技能冷却");
+    return true;
+  }
+  // 恢复自身 HP/MP（测试辅助）
+  if (cmd == "heal") {
+    Entity* p = w.findEntity(ctx.playerId);
+    if (!p) { out("未找到目标玩家"); return true; }
+    p->hp = p->maxHp;
+    p->mp = p->maxMp;
+    w.markStatsDirty(ctx.playerId);
+    out("已恢复 HP/MP 至满");
+    return true;
+  }
+  // 给指定实体挂 Buff（测试/调试：验证怪物侧 debuff）
+  if (cmd == "buffmon") {
+    if (args.size() < 5) { out("用法: buffmon <wid> <type> <value> <dur>"); return true; }
+    uint32_t wid = (uint32_t)toNum(args[1], 0);
+    Entity* t = w.findByWid(wid);
+    if (!t) { out("未找到实体 wid=" + args[1]); return true; }
+    uint8_t type = (uint8_t)SkillDef::buffFromStr(args[2]);
+    if (type == (uint8_t)BuffType::NONE) { out("未知 Buff 类型: " + args[2]); return true; }
+    double v = toNum(args[3], 0), dur = toNum(args[4], 0);
+    w.applyBuff(*t, 0, type, v, dur);
+    out("给实体(wid=" + args[1] + ")挂载 " + std::string(SkillDef::buffName((BuffType)type)) + "=" + args[3] + " " + args[4] + "s");
     return true;
   }
 

@@ -66,6 +66,11 @@ struct Entity {
     double durationSec = 0; // 总时长（秒，供 UI 展示）
   };
   std::vector<Buff> buffs;  // 自身 Buff 列表（buffSystem 每 tick 衰减）
+  // 是否挂有指定类型的 Buff（且未过期）——眩晕/霸体/减速等状态查询
+  bool hasBuff(uint8_t type) const {
+    for (const auto& b : buffs) if (b.type == type && b.remainSec > 0) return true;
+    return false;
+  }
   // 施放中（前摇）状态：castingSkillId != 0 表示正在施放，到期由 castSystem 结算
   uint32_t castingSkillId = 0;
   uint64_t castStartMs = 0; // 开始施放时刻（服务端单调时钟 ms）

@@ -29,10 +29,24 @@ export class InputState {
       if (e.code === 'KeyE') {
         this.pickupQueued = true;
       }
-      // 技能栏热键（数字 1-8 → 技能栏顺序）
+      // 技能栏热键：1-9 数字 → 槽 1-9；0/-/= → 槽 10/11/12；Q/R/T/Y → 槽 13-16
       if (e.code.startsWith('Digit')) {
         const n = parseInt(e.code.slice(5), 10);
-        if (n >= 1 && n <= 8) this.skillQueued = n;
+        if (n >= 1 && n <= 9) this.skillQueued = n;
+      } else if (e.code === 'Digit0') {
+        this.skillQueued = 10;
+      } else if (e.code === 'Minus') {
+        this.skillQueued = 11;
+      } else if (e.code === 'Equal') {
+        this.skillQueued = 12;
+      } else if (e.code === 'KeyQ') {
+        this.skillQueued = 13;
+      } else if (e.code === 'KeyR') {
+        this.skillQueued = 14;
+      } else if (e.code === 'KeyT') {
+        this.skillQueued = 15;
+      } else if (e.code === 'KeyY') {
+        this.skillQueued = 16;
       }
       this.keys.add(e.code);
       // 阻止方向键滚动页面

@@ -240,18 +240,18 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
   auto cdit = p->skillCd.find(skillId);
   if (cdit != p->skillCd.end() && cdit->second > nowMs) return false;  // 冷却中
   if (p->mp < sd->manaCost) return false;  // 蓝量不足
-  // 目标解析与校验
-  Entity* t = targetWid ? findByWid(targetWid) : nullptr;
-  if (sd->target == SkillTarget::ENEMY) {
-    if (!t || !t->active || t->kind != EntityKind::Monster) return false;
-    if (p->pos.dist2D(t->pos) > sd->range) return false;  // 距离
-  } else if (sd->target == SkillTarget::AOE) {
-    if (p->pos.dist2D({tx, 0, tz}) > sd->range) return false; // 落点距离
-  }
-  // 施法落点（用于广播与 AOE 判定）
+  // 取消目标检测：无目标（targetWid=0）也可施放。命中全部按「落点 + radius」范围计算。
+  // 落点语义：SELF=自身位置；ENEMY/AOE=客户端指定落点（用于范围命中判定）。
   double gx = tx, gz = tz;
-  if (sd->target == SkillTarget::ENEMY && t) { gx = t->pos.x; gz = t->pos.z; }
-  else if (sd->target == SkillTarget::SELF) { gx = p->pos.x; gz = p->pos.z; }
+  if (sd->target == SkillTarget::SELF) { gx = p->pos.x; gz = p->pos.z; }
+  else if (sd->range > 0 && p->pos.dist2D({gx, 0, gz}) > sd->range) {
+    return false; // 施法距离（落点距施法者）——仍作基础约束，防止超距施法
+  }
+  // 霸体技能：施放即挂 SUPER_ARMOR（免疫眩晕/击退），持续 = 前摇 + 0.5s 尾部余量
+  if (sd->superArmor) {
+    double armDur = (sd->castTimeMs > 0 ? sd->castTimeMs : 0) / 1000.0 + 0.5;
+    applyBuff(*p, skillId, (uint8_t)BuffType::SUPER_ARMOR, 1.0, armDur);
+  }
   // 前摇：进入施放中状态（覆盖旧施放），广播前摇事件
   if (sd->castTimeMs > 0) {
     if (p->castingSkillId != 0) cancelCast(*p, 0); // 替换旧施放（reason=0 不广播取消）
@@ -267,29 +267,28 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
   resolveCast(*p, *sd, targetWid, gx, gz);
   return true;
 }
-// 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 施加效果
+// 命中半径：radius>0 用 radius，radius==0 视为近战贴身范围（1.2m）——所有技能统一按此判定
+static double hitRadius(const SkillDef& sd) { return sd.radius > 0 ? sd.radius : 1.2; }
+
+// 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 按范围施加效果
 void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz) {
   uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
   caster.mp -= sd.manaCost;
   caster.skillCd[sd.id] = nowMs + (uint64_t)sd.cooldownMs;
   if (caster.kind == EntityKind::Player) { markStatsDirty(caster.id); markSkillsDirty(caster.id); }
-  // 落点（结算时以目标当前/落点为准）
+  // 落点（结算时以落点为准；SELF=施法者位置）
   double gx = tx, gz = tz;
-  Entity* t = targetWid ? findByWid(targetWid) : nullptr;
-  if (sd.target == SkillTarget::ENEMY && t && t->active) { gx = t->pos.x; gz = t->pos.z; }
-  else if (sd.target == SkillTarget::SELF) { gx = caster.pos.x; gz = caster.pos.z; }
+  if (sd.target == SkillTarget::SELF) { gx = caster.pos.x; gz = caster.pos.z; }
   pushEvent(proto::EVT_SKILL, caster.wid, sd.id, proto::qAbs(gx), proto::qAbs(gz));
-  // 施加效果
+  const double hr = hitRadius(sd);
+  // 施加效果：全部按「落点 + 命中半径」计算是否击中（无目标检测）
   switch (sd.effect) {
     case SkillEffect::DAMAGE: {
-      if (sd.target == SkillTarget::ENEMY && t && t->active) {
-        applySkillDamage(caster, *t, sd, 0.9 + rng01() * 0.2);
-      } else if (sd.target == SkillTarget::AOE) {
-        for (auto& [id, e] : entities_) {
-          if (!e.active || e.kind != EntityKind::Monster) continue;
-          if (e.pos.dist2D({gx, 0, gz}) > sd.radius) continue;
-          applySkillDamage(caster, e, sd, 0.9 + rng01() * 0.2);
-        }
+      for (auto& [id, e] : entities_) {
+        (void)id;
+        if (!e.active || e.kind != EntityKind::Monster) continue;
+        if (e.pos.dist2D({gx, 0, gz}) > hr) continue;  // 范围命中
+        applySkillDamage(caster, e, sd, 0.9 + rng01() * 0.2);
       }
       break;
     }
@@ -301,8 +300,14 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
     case SkillEffect::BUFF: {
       if (sd.target == SkillTarget::SELF) {
         applyBuff(caster, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
-      } else if (t && sd.target == SkillTarget::ENEMY) {
-        applyBuff(*t, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+      } else {
+        // 减益按范围命中（对怪物）
+        for (auto& [id, e] : entities_) {
+          (void)id;
+          if (!e.active || e.kind != EntityKind::Monster) continue;
+          if (e.pos.dist2D({gx, 0, gz}) > hr) continue;
+          applyBuff(e, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+        }
       }
       break;
     }
@@ -328,7 +333,7 @@ void World::cancelCastOnHit(Entity& e) {
   if (e.castingSkillId == 0 || e.kind != EntityKind::Player) return;
   cancelCast(e, 2);
 }
-// 技能伤害落点：伤害计算 + 仇恨 + 死亡 + 吸血
+// 技能伤害落点：伤害计算 + 仇恨 + 死亡 + 吸血 + 附带减益 + 击退
 void World::applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd, double variance) {
   double dmg = calcDamage(caster.attack * sd.dmgMul, target.defense, variance) + sd.flatDmg;
   target.hp -= dmg;
@@ -342,18 +347,37 @@ void World::applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd,
     caster.hp = std::min(caster.maxHp, caster.hp + dmg * sd.lifesteal);
     if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
   }
-  // 冰霜新星等附带减速 Buff
+  // 附带减益（减速/流血/减防/减攻/眩晕等，按 BuffType 配置）
   if (sd.buffType != BuffType::NONE && sd.buffDurSec > 0 && target.active) {
     applyBuff(target, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+  }
+  // 击退：沿 caster→target 方向位移（霸体免疫）
+  if (sd.knockback > 0 && target.active) {
+    applyKnockback(caster, target, sd.knockback);
   }
   if (target.hp <= 0 && target.active) {
     uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
     onVictimDeath(target, caster, nowMs);
   }
 }
+// 击退：沿 from→target 水平方向把 target 位移 dist 米，落回地形高度；霸体免疫；触发受击打断
+void World::applyKnockback(Entity& from, Entity& target, double dist) {
+  if (target.hasBuff((uint8_t)BuffType::SUPER_ARMOR)) return; // 霸体免疫击退
+  double dx = target.pos.x - from.pos.x, dz = target.pos.z - from.pos.z;
+  double len = std::hypot(dx, dz);
+  if (len < 1e-4) { dx = 1; dz = 0; len = 1; } // 重叠时取固定方向
+  target.pos.x += dx / len * dist;
+  target.pos.z += dz / len * dist;
+  target.pos.y = terrainHeight(target.pos.x, target.pos.z); // 落回地表
+  if (target.isBoss) markBossDirty();
+  cancelCastOnHit(target); // 击退视为受击：打断目标前摇（霸体技能 castCancelOnHit=false 不受影响）
+  // 位移由 netcode 的 UPDATE/SNAPSHOT 帧自动同步给视野内玩家，无需额外事件
+}
 // 挂载 Buff：同技能同类型刷新；不同类型并存
 void World::applyBuff(Entity& e, uint32_t skillId, uint8_t type, double value, double durSec) {
   if (durSec <= 0) return;
+  // 霸体免疫控制：目标有 SUPER_ARMOR 时，眩晕/减速等控制类减益不生效
+  if (type == (uint8_t)BuffType::STUN && e.hasBuff((uint8_t)BuffType::SUPER_ARMOR)) return;
   for (auto& b : e.buffs) {
     if (b.skillId == skillId && b.type == type) {  // 刷新
       b.value = value;
@@ -365,8 +389,11 @@ void World::applyBuff(Entity& e, uint32_t skillId, uint8_t type, double value, d
   }
   e.buffs.push_back({skillId, type, value, durSec, durSec});
   if (e.kind == EntityKind::Player) { markBuffsDirty(e.id); markStatsDirty(e.id); }
-  // 属性类 Buff 立即生效
-  if (type == (uint8_t)BuffType::ATK || type == (uint8_t)BuffType::DEF) recomputeStats(e);
+  // 属性类 Buff 立即生效（含减防/减攻等负值）
+  if (type == (uint8_t)BuffType::ATK || type == (uint8_t)BuffType::DEF ||
+      type == (uint8_t)BuffType::DEF_DOWN || type == (uint8_t)BuffType::ATK_DOWN) {
+    recomputeStats(e);
+  }
 }
 void World::removeBuffType(Entity& e, uint8_t type) {
   bool changed = false;
@@ -574,6 +601,8 @@ Json World::entitiesStatus(double px, double pz, double range, int limit) const 
     j["name"] = e.name.empty() ? e.username : e.name;
     j["hp"] = e.hp;
     j["maxHp"] = e.maxHp;
+    j["atk"] = e.attack;
+    j["def"] = e.defense;
     j["x"] = e.pos.x;
     j["z"] = e.pos.z;
     arr.push_back(std::move(j));
@@ -763,11 +792,14 @@ void World::recomputeStats(Entity& p) {
     atk += it->attackBonus;
     def += it->defenseBonus;
   }
-  // 属性类 Buff（战吼 +攻 / 防御增益）叠加
+  // 属性类 Buff（攻/防加成 + 减防/减攻等负值）叠加
   for (const auto& b : p.buffs) {
-    if (b.type == (uint8_t)BuffType::ATK) atk += b.value;
-    else if (b.type == (uint8_t)BuffType::DEF) def += b.value;
+    if (b.type == (uint8_t)BuffType::ATK || b.type == (uint8_t)BuffType::ATK_DOWN) atk += b.value;
+    else if (b.type == (uint8_t)BuffType::DEF || b.type == (uint8_t)BuffType::DEF_DOWN) def += b.value;
   }
+  if (atk < 1) atk = 1;       // 攻击下限保护（防减攻出现负攻击）
+  if (maxHp < 1) maxHp = 1;
+  if (maxMp < 0) maxMp = 0;
   p.maxHp = maxHp;
   p.maxMp = maxMp;
   p.attack = atk;
@@ -810,12 +842,22 @@ std::vector<const Entity*> World::bosses() const {
 // ---------------- 系统实现 ----------------
 static void inputSystem(World& w, double dt) {
   const auto& cfg = w.config();
-  double speed = cfg.maxMoveSpeed;
   uint64_t nowMs = w.tickCount() * (uint64_t)cfg.tickMs;
   for (const auto& pid : w.players()) {
     Entity* p = w.findEntity(pid);
     if (!p) continue;
-    double mx = p->input.moveX, mz = p->input.moveZ;
+    // 眩晕：无法移动/跳跃（控制状态；霸体可免疫 STUN 挂载）
+    const bool stunned = p->hasBuff((uint8_t)BuffType::STUN);
+    // 加速 Buff：比例加成（SPEED>0），与减速叠加
+    double spdMul = 1.0;
+    for (const auto& b : p->buffs) {
+      if (b.type == (uint8_t)BuffType::SPEED) spdMul += b.value;
+      else if (b.type == (uint8_t)BuffType::MOVE_SLOW) spdMul -= b.value;
+    }
+    if (spdMul < 0.05) spdMul = 0.05;
+    double speed = cfg.maxMoveSpeed * spdMul;
+    double mx = stunned ? 0 : p->input.moveX;
+    double mz = stunned ? 0 : p->input.moveZ;
     double len = std::hypot(mx, mz);
     double tx = 0, tz = 0;
     if (len > 1e-4) {
@@ -824,9 +866,11 @@ static void inputSystem(World& w, double dt) {
     }
     p->input.targetVX = tx;
     p->input.targetVZ = tz;
-    if (p->input.jump) {
+    if (p->input.jump && !stunned) {
       p->input.jump = false;
       w.physics().tryJump(*p);
+    } else if (p->input.jump) {
+      p->input.jump = false;
     }
     // 脱战回血/回蓝（5s 未受击）；整数值变化才标记脏（避免每 tick 刷 STATS 帧）
     bool statsChanged = false;
@@ -883,25 +927,35 @@ static void castSystem(World& w, double dt) {
     }
   }
 }
-// Buff 系统：每 tick 衰减剩余时长 + 持续效果（REGEN 回血），过期移除并重算属性
+// Buff 系统：每 tick 衰减剩余时长 + 持续效果（REGEN 回血 / BLEED 流血），过期移除并重算属性
 static void buffSystem(World& w, double dt) {
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (!e.active || e.buffs.empty()) continue;
     bool expired = false;
+    bool statsChanged = false;
     for (auto it = e.buffs.begin(); it != e.buffs.end();) {
       it->remainSec -= dt;
       // 持续回血（REGEN）：每秒恢复 value 点
       if (it->type == (uint8_t)BuffType::REGEN && it->remainSec > 0 && e.hp > 0) {
         double before = std::floor(e.hp);
         e.hp = std::min(e.maxHp, e.hp + it->value * dt);
-        if (std::floor(e.hp) != before && e.kind == EntityKind::Player) w.markStatsDirty(e.id);
+        if (std::floor(e.hp) != before) statsChanged = true;
+      }
+      // 流血（BLEED）：每秒损失 value 点生命（DoT，不致死演示保护：最低 1 HP）
+      if (it->type == (uint8_t)BuffType::BLEED && it->remainSec > 0 && e.hp > 1) {
+        double before = std::floor(e.hp);
+        e.hp = std::max(1.0, e.hp - it->value * dt);
+        if (std::floor(e.hp) != before) {
+          w.pushEvent(proto::EVT_DAMAGE, e.wid, (uint32_t)(it->value * dt), 0, 0);
+          if (e.kind == EntityKind::Player) statsChanged = true;
+        }
       }
       if (it->remainSec <= 0) { it = e.buffs.erase(it); expired = true; }
       else ++it;
     }
-    if (expired) {
-      // 属性类 Buff 失效需重算派生属性
+    if (expired || statsChanged) {
+      // 属性类 Buff 失效/变化需重算派生属性
       w.recomputeStats(e);
       if (e.kind == EntityKind::Player) {
         w.markBuffsDirty(e.id);

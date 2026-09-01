@@ -67,6 +67,12 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
   const auto& cfg = w.config();
   uint64_t nowMs = w.tickCount() * (uint64_t)cfg.tickMs;
   auto& ai = e.ai;
+  // 眩晕：无法移动/攻击（霸体可免疫挂载；期间保持静止）
+  if (e.hasBuff((uint8_t)BuffType::STUN)) {
+    ai.targetVX = 0;
+    ai.targetVZ = 0;
+    return;
+  }
   // 感知：清理失效仇恨（离线/死亡玩家）
   for (auto it = e.aggro.begin(); it != e.aggro.end();) {
     Entity* pl = w.findByWid(it->first);
@@ -188,11 +194,22 @@ void tickBossAi(World& w, Entity& e, double dt) {
     }
     return;
   }
+  // 眩晕：无法移动/攻击（霸体可免疫挂载）
+  const bool bossStunned = e.hasBuff((uint8_t)BuffType::STUN);
   // 感知：清理失效仇恨
   for (auto it = e.aggro.begin(); it != e.aggro.end();) {
     Entity* pl = w.findByWid(it->first);
     if (!pl || pl->kind != EntityKind::Player || !pl->active || pl->hp <= 0) it = e.aggro.erase(it);
     else ++it;
+  }
+  if (bossStunned) {
+    e.ai.targetVX = 0;
+    e.ai.targetVZ = 0;
+    // IDLE 脱战回血不受眩晕影响
+    if (e.bossState == BS_IDLE && e.hp < e.maxHp) {
+      e.hp = std::min(e.maxHp, e.hp + cfg.bossRegenPerSec * dt);
+    }
+    return;
   }
   // IDLE：脱战回血 + 侦测仇恨
   if (e.bossState == BS_IDLE) {

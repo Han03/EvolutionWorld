@@ -156,6 +156,8 @@ private:
   void onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs);
   // 技能伤害落点（含仇恨/死亡/吸血），skillFalloff=1.0 单目标、0=边缘（预留）
   void applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd, double variance);
+  // 击退：沿 from→target 方向把 target 位移 dist 米（霸体免疫；落回地形高度），并触发受击打断
+  void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
   void spawnBoss(int idx, double homeX, double homeZ);

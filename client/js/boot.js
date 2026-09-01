@@ -54,6 +54,18 @@ let myBuffs = [];         // [{skillId, type, value, remainSec}]
 let skillCastFeedback = null; // 最近一次技能施放反馈（用于日志/提示）
 // 技能栏展示映射：slot(1-8) -> skillId（按技能 ID 升序填槽）
 let skillBar = [];        // skillId 数组（与技能栏 UI 顺序一致）
+// 技能槽位 → 热键标签（与 input.js 的 16 槽映射一致）
+function SKILL_KEY_LABEL(slot) {
+  if (slot >= 1 && slot <= 9) return String(slot);
+  if (slot === 10) return '0';
+  if (slot === 11) return '-';
+  if (slot === 12) return '=';
+  if (slot === 13) return 'Q';
+  if (slot === 14) return 'R';
+  if (slot === 15) return 'T';
+  if (slot === 16) return 'Y';
+  return String(slot);
+}
 // 渲染器物品名映射（renderer.js 读取）
 window.__itemNames = {};
 for (const [id, d] of Object.entries(ITEM_DEFS)) window.__itemNames[id] = d.name;
@@ -502,7 +514,7 @@ function renderSkillBar() {
     cell.className = 'skill-cell' + (onCd ? ' cd' : '');
     cell.innerHTML = `
       <div class="skill-icon">${sd.icon}</div>
-      <div class="skill-key">${idx + 1}</div>
+      <div class="skill-key">${SKILL_KEY_LABEL(idx + 1)}</div>
       <div class="skill-name">${sd.name}</div>
       <div class="skill-cd">${onCd ? (cdLeft / 1000).toFixed(1) + 's' : ''}</div>`;
     cell.addEventListener('click', () => {
@@ -519,7 +531,10 @@ function renderBuffBar() {
   const bar = $('buff-bar');
   if (!bar) return;
   bar.innerHTML = '';
-  const buffNameMap = { 1: '攻击↑', 2: '防御↑', 3: '减速', 4: '回血', 5: '反伤' };
+  const buffNameMap = {
+    1: '攻击↑', 2: '防御↑', 3: '减速', 4: '回血', 5: '反伤',
+    6: '流血', 7: '减防', 8: '减攻', 9: '眩晕', 10: '霸体', 11: '加速',
+  };
   for (const b of myBuffs) {
     const cell = document.createElement('div');
     cell.className = 'buff-cell';
@@ -532,31 +547,19 @@ function castSkillNow(skillId) {
   if (!net || !predictor) return;
   const selfPos = predictor.predicted();
   const sd = skillDef(skillId);
-  // 单目标技能：找最近的可攻击怪物（范围由服务端权威校验）
-  let targetWid = 0;
-  const isEnemy = [1001, 1006, 1007].includes(skillId); // 镜像：单目标伤害技能
-  if (isEnemy) {
-    let best = null, bestD = 6;
-    for (const e of entities.forRender()) {
-      if (e.kind !== 'monster') continue;
-      const d = Math.hypot(e.x - selfPos.x, e.z - selfPos.z);
-      if (d < bestD) { bestD = d; best = e; }
-    }
-    if (best) targetWid = best.wid;
+  // 取消目标检测：无目标（targetWid=0）即可施放，命中全部由服务端按「落点 + 命中半径」范围判定。
+  // 落点默认取自身位置；AOE/范围技能若有最近怪物则对准怪物（便于命中演示）。
+  let ax = selfPos.x, az = selfPos.z;
+  let best = null, bestD = (sd.radius > 0 ? sd.radius + 1 : 6);
+  for (const e of entities.forRender()) {
+    if (e.kind !== 'monster') continue;
+    const d = Math.hypot(e.x - selfPos.x, e.z - selfPos.z);
+    if (d < bestD) { bestD = d; best = e; }
   }
-  // AOE 技能：本地预览落点范围圈（对准最近怪物，无则自身前方）
-  if (sd.radius > 0) {
-    let ax = selfPos.x, az = selfPos.z;
-    let best = null, bestD = sd.radius + 1;
-    for (const e of entities.forRender()) {
-      if (e.kind !== 'monster') continue;
-      const d = Math.hypot(e.x - selfPos.x, e.z - selfPos.z);
-      if (d < bestD) { bestD = d; best = e; }
-    }
-    if (best) { ax = best.x; az = best.z; }
-    renderer.showAoePreview(ax, az, sd.radius, sd.color);
-  }
-  net.sendCastSkill(skillId, targetWid, selfPos.x, selfPos.z);
+  if (best) { ax = best.x; az = best.z; }
+  // AOE 范围技能：本地预览落点范围圈
+  if (sd.radius > 0) renderer.showAoePreview(ax, az, sd.radius, sd.color);
+  net.sendCastSkill(skillId, 0, ax, az);
 }
 // 按 wid 查找可见实体（技能效果定位用）
 function findEntityByWid(wid) {

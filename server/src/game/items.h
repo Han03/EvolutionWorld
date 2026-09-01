@@ -116,7 +116,8 @@ private:
                        SkillTarget target, SkillEffect effect, double mana, uint32_t cdMs,
                        double range, double radius, double dmgMul, double flatDmg, double heal,
                        BuffType buffType, double buffValue, double buffDur, double lifesteal,
-                       uint16_t castTimeMs = 0, bool cancelOnMove = true, bool cancelOnHit = true);
+                       uint16_t castTimeMs = 0, bool cancelOnMove = true, bool cancelOnHit = true,
+                       double knockback = 0, bool superArmor = false);
   std::unordered_map<uint32_t, ItemDef> items_;
   std::unordered_map<std::string, MonsterDef> monsters_;
   std::unordered_map<uint32_t, ShopDef> shops_;

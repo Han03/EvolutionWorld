@@ -47,6 +47,7 @@ node scripts/prediction_test.mjs              # 预测轨迹 vs 服务端权威�
 node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇、追击、攻击
 node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇、追击、攻击
 node scripts/items_test.mjs                   # 物品/属性/商店端到端：掉落/拾取/购买/穿戴/使用（16/16）
+node scripts/skills_debuff_test.mjs            # 技能扩展端到端：无目标施放/范围命中/流血/眩晕/击退/霸体/不可打断/减防/减攻（15/15）
 
 ```
 
@@ -74,8 +75,8 @@ node scripts/items_test.mjs                   # 物品/属性/商店端到端：
 | **商店系统** | 商店 NPC「商店老板·全能杂货铺」固定 (6,6)，4m 内可打开，出售全部物品；`stock=0` 表示无限库存；金币购买，背包/金币同步（S2C_INVENTORY） |
 | **配置系统** | `data/items.json|monsters.json|shop.json|skills.json` 可热配置：怪物属性与掉落概率（`DropEntry`）、NPC 商店售价/库存、按 ID 管理物品、技能（伤害倍率/冷却/蓝耗/范围/**前摇 castTimeMs**/打断开关）；未提供配置时内置 `loadDefaults()` 兜底 |
 | **预置测试物品** | 20 件默认物品：铁剑/烈焰剑等武器、皮帽/铁盔/锁子甲等防具、小血瓶/大血瓶消耗品、任务道具（可卖金币） |
-| **技能系统** | 8 个技能（冲刺斩/烈焰冲击/治疗之光/冰霜新星/战吼/雷霆一击/吸血打击/荆棘护体），`SkillDef` 按 ID 配置；三层范围判定（施法距离/AOE 落点距离/AOE 命中半径）+ **技能前摇（castTimeMs）+ 释放时间判定**：前摇期间不生效、到期才结算（扣蓝/冷却/施加效果），**移动/受击可打断**（打断不消耗，`EVT_SKILL_CANCEL` 广播）；冷却/蓝量/范围/目标校验服务端权威 |
-| **游戏控制台** | 服务端调试控制台：HTTP `POST /api/console` + WS `CONSOLE`(0x0B/0x93) 双通道，命令：`help/gold/level/stat/status/skill/items/boss/entities/echo/…`，用于功能测试与在线调试 |
+| **技能系统** | 16 个技能（8 基础 + 8 扩展：铁壁守护/撕裂/破甲斩/虚弱咒印/震荡波/疾风步/猛击/生命涌动），`SkillDef` 按 ID 配置；**取消目标检测（无目标也可施放，命中全部按落点+radius 范围计算）** + 三层范围判定 + **前摇 castTimeMs + 释放时间判定**：前摇期间不生效、到期才结算，**移动/受击可打断**（逐技能 `cancelOnMove/cancelOnHit` 可关闭=不可打断）；**霸体**（`superArmor` 免疫眩晕/击退）、**击退**（`knockback`）、**Buff 12 种**（含流血 DoT/减防/减攻/眩晕/加速）；冷却/蓝量/范围校验服务端权威 |
+| **游戏控制台** | 服务端调试控制台：HTTP `POST /api/console` + WS `CONSOLE`(0x0B/0x93) 双通道，命令：`help/gold/level/stat/status/skill/items/boss/entities/heal/cdreset/spawn/kill/buff/buffmon/echo/…`，用于功能测试与在线调试 |
 
 ---
 
@@ -248,24 +249,45 @@ EvolutionWorld/
 
 ---
 
-## 技能系统（前摇 / 释放时间 / 范围判定）
+## 技能系统（无目标施放 / 范围命中 / 前摇 / 霸体 / 减益 / 击退）
 
-**三层范围判定（服务端权威）**
-1. **施法距离**：单目标/AOE 施法点距施法者 ≤ `range`（冲刺斩 3.5m 等）；
-2. **AOE 落点距离**：玩家点击落点需在施法范围内；
-3. **AOE 命中半径**：结算时对落点 `radius`（如烈焰冲击 4m）内怪物施加伤害/效果，半径外不受影响。
+**命中判定：全部按「落点 + radius」范围计算（取消目标检测）**
+- 任何技能都**无目标可施放**（`targetWid=0`）；落点语义：SELF=自身位置，ENEMY/AOE=客户端落点；
+- 仅保留基础约束：SELF 落点锁定自身、落点距施法者 ≤ `range`（防超距施法）；
+- 结算命中半径 `hitRadius = radius>0 ? radius : 1.2m`（近战贴身），对落点 `radius` 内怪物统一施加伤害/减益/击退，不再依赖锁定目标。
 
 **前摇与释放时间判定（castTimeMs）**
-- `SkillDef.castTimeMs`：0=瞬发（冲刺斩/雷霆一击…），>0=有前摇（烈焰冲击 600ms、冰霜新星 800ms、雷霆一击 1000ms…）；
+- `SkillDef.castTimeMs`：0=瞬发，>0=有前摇（铁壁守护 800ms、震荡波 800ms…）；
 - 施放 → 进入「施放中」状态（`beginCast`），**立即广播 `EVT_SKILL_CASTING`**（客户端画前摇进度圈）；
 - 前摇期间技能**不生效**，**到期才结算**（`resolveCast`：扣蓝/上冷却/`EVT_SKILL`/施加效果）——被打断则完全不消耗；
-- **打断规则**：`castCancelOnMove`（移动即打断，`EVT_SKILL_CANCEL` reason=1）/ `castCancelOnHit`（受击打断，reason=2），可逐技能在 skills.json 关闭；
+- **打断规则**：`cancelOnMove`（移动即打断，`EVT_SKILL_CANCEL` reason=1）/ `cancelOnHit`（受击打断，reason=2），可逐技能在 skills.json 关闭（如铁壁守护两者全关=不可打断）；
+- **霸体**：`superArmor=true` 技能施放即挂 SUPER_ARMOR（持续=前摇+0.5s），期间**免疫眩晕/击退**（`applyBuff` 对 STUN 做霸体免疫，`applyKnockback` 对霸体目标无效）；
 - 系统调度优先级：AI(30) → **castSystem(32)** → Buff(35)，每 tick 检查移动打断与前摇到期结算。
+
+**Buff 系统（12 种）**
+- 增益：ATK 攻击+/ DEF 防御+/ SPEED 移速+ / REGEN 持续回血 / THORNS 反伤 / SUPER_ARMOR 霸体；
+- 减益：BLEED 流血（DoT 每秒扣血，逐秒推 `EVT_DAMAGE`）/ DEF_DOWN 减防 / ATK_DOWN 减攻 / STUN 眩晕（无法移动/跳跃，怪物 AI 眩晕短路）/ MOVE_SLOW 减速（与加速叠加，速度下限 0.05）；
+- `recomputeStats` 合并增益减益（ATK/ATK_DOWN、DEF/DEF_DOWN），攻击下限保护 ≥1；`applyBuff` 触发重算，`EVT_BUFFS`(0x92) 同步客户端。
+
+**击退**：`SkillDef.knockback`（米），结算时沿「施法者→目标」方向位移目标、落回地形高度；霸体目标免疫；击退视为受击（打断目标前摇）。
+
+**扩展技能一览（1010-1017）**
+| ID | 名称 | 效果 | 前摇 | 特点 |
+|---|---|---|---|---|
+| 1010 | 铁壁守护 | DEF+15（8s） | 800ms | **不可打断 + 霸体** |
+| 1011 | 撕裂 | 130% AOE + 流血 10/s·5s | 700ms | 流血 DoT |
+| 1012 | 破甲斩 | 140% AOE + 减防 12·6s | 600ms | 减防 |
+| 1013 | 虚弱咒印 | AOE 减攻 8·8s | 500ms | 减攻 |
+| 1014 | 震荡波 | 100% AOE + 眩晕 2s | 800ms | 眩晕控制 |
+| 1015 | 疾风步 | 移速+50%（8s） | 300ms | 加速 |
+| 1016 | 猛击 | 180% AOE + 击退 6m | 500ms | 击退 |
+| 1017 | 生命涌动 | 回血 25/s（8s） | 400ms | 持续回血 |
 
 **客户端简易效果（俯视 Canvas）**
 - **前摇进度圈**：施法者身上金色/技能色圆环，弧线随释放时间 0→360° 填充；打断时红色闪圈并清除；
 - **AOE 范围圈**：半透明填充 + 技能色虚线圆 + 半径标注（米），按技能键本地即时预览落点，结算落点由 `EVT_SKILL` 广播再次绘制；
-- 单目标/自身技能仅显示前摇圈，无范围圈。
+- **Buff 栏**：显示 12 种 Buff 图标与剩余秒数（含流血/减防/减攻/眩晕/霸体/加速）；
+- **技能热键**：技能栏按 ID 升序填槽，槽 1-9=数字 1-9、槽 10=0、11=-、12==、13-16=Q/R/T/Y（与移动 WASD / 拾取 E 无冲突）。
 
 ## 游戏控制台
 
@@ -276,12 +298,13 @@ EvolutionWorld/
 | HTTP | `POST /api/console`，body `{token, command}`，返回 `{ok, text}`（无 EW_DEBUG 门控） |
 | WS | C2S `CONSOLE`(0x0B) → S2C `CONSOLE`(0x93) 回显 |
 
-常用命令：`help`（列出全部）、`gold <n>`（发金币）、`level <n>`、`stat atk|def|hp|mp <n>`、`status`（查看自身属性/装备/技能）、`skill <id>`（学习技能）、`items`、`boss`、`entities`、`echo <text>`。
+常用命令：`help`（列出全部）、`gold <n>`（发金币）、`level <n>`、`stat atk|def|hp|mp <n>`、`status`（查看自身属性/装备/技能/冷却）、`skill <id>`（学习技能）、`skills`（查看已学+冷却）、`items`、`boss`、`entities [range]`（附近实体 hp/atk/def/@坐标）、`spawn <type> [x z]`（生成怪物）、`kill <wid|all|monsters|boss>`、`respawn`、`heal`（回满自身 HP/MP）、`cdreset`（重置技能冷却）、`buff <type> <v> <dur>`（自身挂 Buff：atk/def/slow/regen/thorns/bleed/def_down/atk_down/stun/super_armor/speed）、`buffmon <wid> <type> <v> <dur>`（给指定怪物挂 Buff，便于验证怪物侧减益）、`echo <text>`。
 
 **自动化验证脚本**（`server/scripts/`）：
 - `skills_console_test.mjs`：技能+控制台端到端 23/23（含前摇结算时序）
-- `cast_time_test.mjs`：前摇专项 14/14（反馈 castTimeMs / EVT_SKILL_CASTING / 移动打断不结算 / 完整前摇≈600ms 结算 / 瞬发无前摇）
-- `skill_fx_e2e.mjs`：浏览器端到端渲染验证（前摇进度圈 / AOE 范围圈 / 打断清除，Playwright 截图）
+- `cast_time_test.mjs`：前摇专项 13/13（反馈 castTimeMs / EVT_SKILL_CASTING / 移动打断不结算 / 完整前摇结算 / 瞬发无前摇）
+- `skills_debuff_test.mjs`：技能扩展端到端 15/15 —— 无目标施放（SELF/AOE/霸体技能）、范围命中（撕裂 AOE）、流血 DoT（HP 持续下降）、眩晕（位置静止）、击退（位移>3m）、霸体免疫眩晕、不可打断（移动不打断仍结算）、减防（def 5→-9）、减攻（atk 7→4）
+- `skill_fx_e2e.mjs`：浏览器端到端渲染验证（前摇进度圈 / AOE 范围圈 / 打断清除 / 无 JS 错误，Playwright）
 
 ---
 
