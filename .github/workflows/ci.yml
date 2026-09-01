@@ -1,4 +1,4 @@
-name: CI - Build & Start Server (WSL)
+name: CI - Build, Deploy & Keep Server Running (WSL)
 
 on:
   push:
@@ -21,18 +21,23 @@ jobs:
           Write-Output "Building in: $wsl/server"
           wsl -d Ubuntu -- bash -lc "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
 
-      - name: Start game server (systemd, survives runner process cleanup)
+      - name: Deploy to stable path and start server
         run: |
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
+          # Stop old service first
+          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true"
+          # Deploy build artifacts to stable WSL path (survives runner workspace cleanup)
+          wsl -d Ubuntu -- bash -lc "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && echo DEPLOY_OK"
+          # Point systemd service at the stable path
           $lines = @(
             "[Unit]",
             "Description=EvolutionWorld Game Server",
             "After=network.target",
             "",
             "[Service]",
-            "WorkingDirectory=$wsl/server",
-            "ExecStart=$wsl/server/build/evolution_server",
+            "WorkingDirectory=/opt/evolutionworld/server",
+            "ExecStart=/opt/evolutionworld/server/build/evolution_server",
             "Environment=EW_DEBUG=1",
             "Restart=no",
             "",
@@ -41,7 +46,7 @@ jobs:
           )
           $svc = ($lines -join "`n") + "`n"
           $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($svc))
-          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true; echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
+          wsl -d Ubuntu -- bash -lc "echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
           Write-Output "Server address: http://localhost:3000"
 
       - name: Health check
@@ -59,7 +64,8 @@ jobs:
       - name: Server kept running for manual testing
         run: |
           Write-Output "=============================================="
-          Write-Output " Game server is now RUNNING and left alive."
+          Write-Output " Game server deployed to /opt/evolutionworld"
+          Write-Output " and is now RUNNING and left alive."
           Write-Output " Open http://localhost:3000 in your browser"
           Write-Output " to manually test the latest build."
           Write-Output "=============================================="
