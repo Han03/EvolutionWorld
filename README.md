@@ -2,10 +2,11 @@
 
 一个可扩展的 **空壳（Shell）网络游戏服务端 + 网页测试客户端**：
 HTTP 账号密码登录 → 进入**固定俯视角无缝世界**（高度场地形）→ 实时操控角色移动/跳跃，内置
-**服务端权威 + 防作弊系统** 与 **大型网游规模的数据传输方案**，并预留了清晰的系统扩展框架。
+**服务端权威 + 防作弊系统**、**大型网游规模的数据传输方案**、**世界怪物/Boss 状态共享** 与
+**生物/NPC/Boss AI 整体框架**，并预留了清晰的系统扩展框架。
 
-> 当前为骨架/演示版本：核心系统已可运行，各玩法系统（世界 Boss、战斗、任务、聊天、持久化 DB 等）
-> 通过统一框架预留扩展位。
+> 当前为可运行演示版本：核心系统 + 世界 Boss + 大规模 AI 已落地；任务、聊天、持久化 DB 等
+> 玩法系统通过统一框架预留扩展位。
 
 ---
 
@@ -37,7 +38,9 @@ python3 scripts/ws_smoke_test.py --normal     # 合法客户端：移动，应�
 python3 scripts/ws_smoke_test.py --teleport   # 瞬移作弊：应收到回退并最终踢出
 python3 scripts/ws_smoke_test.py --flood      # 高频轰炸：应被限频踢出
 python3 scripts/ws_smoke_test.py --jump       # 跳跃：高度场碰撞与预测一致
+python3 scripts/ws_smoke_test.py --boss       # 世界 Boss 共享状态（攻击/死亡/复活/新客户端一致）
 node scripts/prediction_test.mjs              # 预测轨迹 vs 服务端权威轨迹一致性
+node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇、追击、攻击
 ```
 
 ---
@@ -57,7 +60,8 @@ node scripts/prediction_test.mjs              # 预测轨迹 vs 服务端权威�
 | **客户端预测** | 本地预测即时移动（零延迟），服务端后校验不通过则下发 `SELF` 回退 |
 | **防作弊系统** | ① 客户端预测 + 服务端后校验/回退；② 随机采样校验 + 轨迹校验；③ 令牌桶限频 + 序号仲裁；④ 不信任客户端时间戳，带网络容错 |
 | **操作** | WASD / 方向键移动、空格跳跃（固定俯视角，无自由镜头） |
-| **AI 演示** | 怪物/NPC 在出生点附近随机游走（仅玩家视野内的实体被模拟） |
+| **世界怪物/Boss 状态共享** | 3 只全区共享世界 Boss（荒原巨兽/深渊领主/冰霜女王），服务端单点权威：HP/仇恨/阶段/生死，`S2C_BOSS` 全局广播（dirty 去重）+ 加入即一致的 HELLO 帧 + 共享事件队列（伤害/死亡/复活/技能，全区每 tick 广播） |
+| **生物/NPC/Boss AI 框架** | `ai.h/cpp` 状态机（8 态）+ 大规模调度：AOI 激活、时间片轮转、距离分级（LOD）；怪物入仇/追击/近战/脱战回巢/巡逻；NPC 低频游走（预留交互态）；Boss 脱战回血/仇恨侦测/阶段切换(≤65%/≤35%)/追击/普攻/AOE 技能/死亡复活 |
 
 ---
 
@@ -74,18 +78,43 @@ node scripts/prediction_test.mjs              # 预测轨迹 vs 服务端权威�
 | `ENTER`(0x83) / `LEAVE`(0x84) | AOI 进出（显式生命周期） |
 | `UPDATE`(0x85) | 增量更新（mask 位图 + 量化相对坐标） |
 | `SELF`(0x86) | 预测回退校正（服务端权威位置） |
-| `EVENT`(0x87) / `PING`(0x88) / `KICK`(0x89) / `ERROR`(0x8A) | 事件 / 心跳 / 踢出 / 错误 |
+| `EVENT`(0x87) / `PING`(0x88) / `KICK`(0x89) / `ERROR`(0x8A) | 共享事件（伤害/死亡/复活/技能）/ 心跳 / 踢出 / 错误 |
+| `BOSS`(0x8B) | 世界 Boss 全局共享状态（HP/状态/阶段/仇恨目标） |
 ### 上行消息（C2S）
 | 消息 | 作用 |
 |---|---|
 | `INPUT`(0x01) | 输入 + 预测位置（防作弊校验依据），20Hz |
 | `EVENT`(0x02) / `PONG`(0x03) | 事件 / 心跳 |
+| `ATTACK`(0x04) | 攻击世界实体：目标 wid + 技能槽（服务端权威校验伤害/仇恨/死亡/复活） |
 ### AOI + 增量 + LOD
 - **AOI 空间网格**（`aoi.cpp`，cell 25m）+ 距离过滤：只向玩家广播其兴趣集内实体
 - **LOD 分级**：近 25m 每 tick、中 50m 每 2 tick、远每 4 tick 更新
 - **带宽观测**：`EW_NETDBG=1` 输出每玩家带宽日志；客户端右下角「协议透传」面板实时显示解码后的每一帧（二进制 ↔ 可读对象）
 
 ---
+
+## 世界怪物 / 世界 Boss 状态共享（全区同步）
+按大型网游的规模，世界 Boss 采用**服务端单点权威 + 全局共享 + 全区广播**：
+- **服务端单点权威**：3 只固定锚点世界 Boss（荒原巨兽/深渊领主/冰霜女王）在服务端 `World` 中全局模拟，所有玩家共享同一份 HP/仇恨表/阶段/生死，不存在"副本私有数据"。
+- **全局广播**：`S2C_BOSS`(0x8B) 帧携带全部存活 Boss 的 `{wid, state, phase, hp, maxHp, bossTarget}`；状态变化经 `markBossDirty()` 标记，`netcode.tickBroadcast` 每 tick 全局广播（dirty 去重，无变化不发）。
+- **加入即一致**：新玩家 HELLO 帧强制附带一次 `bossFrame(true)`，保证任何时刻进入世界的玩家看到的是同一个世界状态。
+- **共享事件队列**：`pushEvent`/`takeSharedEvents` 维护全区事件（`EVT_DAMAGE/DEATH/RESPAWN/SKILL`），每 tick 拼接在广播末尾，全区玩家同步收到。
+- **跨 Zone 扩展位**：事件/帧结构预留 `wid/b/x/z` 字段，后续可按 Zone 过滤广播、按区域分片（Sharding），或接入跨服共享状态服务。
+详见 `server/docs/world-shared-state.md`。
+
+## 生物 / NPC / Boss AI 整体方案（大型网游规模）
+`server/src/game/ai.h / ai.cpp` 实现 **状态机（FSM）+ 三级调度**，在单线程 20Hz 权威 tick 上支撑大规模实体：
+- **状态机（8 态）**：`IDLE / PATROL / CHASE / ATTACK / RETURN / WANDER / INTERACT / DEAD`。
+  - **怪物** `tickMonsterAi`：感知清失效仇恨 → 玩家进入 `monsterAggroRange` 主动入仇 → 追击（`speed×1.8`）→ 近战攻击（服务端计算伤害+事件）；超出 `monsterLeashRange` 脱战回巢；无仇恨时按 `patrolRadius` 巡逻、越界回巢。
+  - **NPC** `tickNpcAi`：低频 IDLE/WANDER 游走，`INTERACT` 交互态已预留（对话/商店/任务扩展位）。
+  - **世界 Boss** `tickBossAi`（全区共享，不走 LOD）：IDLE 脱战回血 + 仇恨侦测 → ENGAGE 追击（`bossChaseSpeed`）→ 普攻 + 周期 AOE 范围技能（`EVT_SKILL` 广播）→ 按血量阶段切换（≤65% P2 / ≤35% P3）→ DEAD 复活计时回满血回锚点并广播复活。
+- **三级调度** `AiScheduler::shouldTick`（大型网游核心——摊帧峰、省算力）：
+  1. **AOI 激活**：玩家视野外的实体直接休眠（不模拟，位置由 move 系统保留）；
+  2. **距离分级（AI LOD）**：距最近玩家 `<aiLodNearM(25m)` 每 tick、`<aiLodMidM(50m)` 每 2 tick、其余每 `aiLodFarStride(4)` tick；
+  3. **时间片轮转**：`(tick + wid) % stride == 0` 把同档位实体摊到不同 tick，避免帧峰。
+- **仇恨模型**：`aggro[wid]` 权重表；攻击增仇、Boss 被击目标仇恨衰减；玩家离线/死亡自动清仇；`pickAggroTarget` 取最高仇恨，便于后续扩展（威胁值衰减/距离权重/坦克切换）。
+- **扩展位**：AI 参数全部集中在 `config.h`（仇恨/追击/巡逻/LOD 阈值），可用环境变量覆盖；新行为 = 新状态 + 新系统，不改既有系统。
+
 
 ## 项目结构
 ```
@@ -123,7 +152,9 @@ EvolutionWorld/
             ├── physics.h/cpp      # 重力/高度场碰撞/加速度/跳跃
             ├── chunk.h/cpp        # 区块加载 + ★ 高度场数据存储
             ├── aoi.h/cpp          # ★ AOI 空间网格
-            └── netcode.h/cpp      # ★ 每玩家兴趣集 + 增量/LOD/校准快照
+            ├── ai.h/cpp           # ★ 生物/NPC/Boss AI 框架（状态机 + 三级调度）
+            └── netcode.h/cpp      # ★ 每玩家兴趣集 + 增量/LOD/校准快照 + Boss 全局广播
+    └── docs/world-shared-state.md  # 世界怪物/Boss 状态共享方案设计文档
 ```
 （`server/data/users.json` 为运行时生成的账号数据，已被 .gitignore 忽略。）
 

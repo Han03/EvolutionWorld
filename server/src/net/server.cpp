@@ -339,6 +339,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       j["x"] = p->pos.x; j["y"] = p->pos.y; j["z"] = p->pos.z;
       j["vx"] = p->vel.x; j["vz"] = p->vel.z;
       j["grounded"] = p->grounded;
+      j["hp"] = p->hp; j["maxHp"] = p->maxHp;
       arr.push_back(j);
     }
     Json r = Json::object();
@@ -349,6 +350,63 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     return;
   }
 
+  // ---- 调试接口（EW_DEBUG=1）----
+  if (path == "/api/debug/teleport" && req.method == "POST" && getenv("EW_DEBUG")) {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      Entity* p = username.empty() ? nullptr : world_.findPlayerByUsername(username);
+      if (p) {
+        double x = in.at("x").asNumber();
+        double z = in.at("z").asNumber();
+        p->pos.x = x;
+        p->pos.z = z;
+        p->pos.y = terrainHeight(x, z) + p->radius + 0.3;
+        p->vel = {0, 0, 0};
+        p->grounded = true;
+        // 防作弊重置：传送属调试工具，避免在途旧输入（传送前已发出）被轨迹校验
+        // 误判累积违规踢出。回到 grace 期（acceptedInputs=0），未采样前不校验轨迹。
+        ac_.reset(*p);
+        p->violations = 0;
+        p->acceptedInputs = 0;
+        p->rateDrops = 0;
+        // 推送 SELF 校正：客户端预测器同步到新位置（防作弊随后校验基于新位置）
+        int wfd = fdOfPlayer(p->id);
+        if (wfd >= 0) {
+          auto it = conns_.find(wfd);
+          if (it != conns_.end() && it->second.phase == Conn::Ws) {
+            sendTo(it->second, netcode_.correctionFrame(*p, "debug_teleport", (uint32_t)world_.tickCount()));
+            netcode_.requestResync(p->id);
+          }
+        }
+        r["ok"] = true;
+        r["x"] = p->pos.x; r["y"] = p->pos.y; r["z"] = p->pos.z;
+        code = 200;
+      } else { r["error"] = "no player"; code = 404; }
+    } catch (...) { r["error"] = "bad request"; code = 400; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  if (path == "/api/debug/bosses" && req.method == "GET" && getenv("EW_DEBUG")) {
+    Json arr = Json::array();
+    for (const Entity* b : world_.bosses()) {
+      Json j = Json::object();
+      j["id"] = b->id; j["wid"] = (int64_t)b->wid; j["name"] = b->name;
+      j["x"] = b->pos.x; j["y"] = b->pos.y; j["z"] = b->pos.z;
+      j["hp"] = b->hp; j["maxHp"] = b->maxHp;
+      j["state"] = (int64_t)b->bossState;
+      j["phase"] = (int64_t)b->bossPhase;
+      j["target"] = (int64_t)b->bossTarget;
+      arr.push_back(j);
+    }
+    Json r = Json::object(); r["bosses"] = arr;
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
   // 地形高度场数据接口：按区块坐标返回存储的高度场网格（世界地图数据存储层）
   if (path == "/api/terrain/chunk" && req.method == "GET") {
     int64_t cx = 0, cz = 0;
@@ -457,6 +515,15 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
         return; // 心跳应答（TCP 已可靠，暂不统计）
       case proto::C2S_EVENT:
         return; // 预留：通用事件
+      case proto::C2S_ATTACK: {
+        proto::AttackMsg atk;
+        if (proto::decodeAttack(f.payload, atk)) {
+          bool hit = world_.playerAttack(c.playerId, atk.targetWid, atk.slot);
+          if (getenv("EW_DEBUG"))
+            fprintf(stderr, "[ATK] %s -> wid=%u hit=%d\n", c.playerId.c_str(), atk.targetWid, (int)hit);
+        }
+        break;
+      }
       default:
         return;
     }

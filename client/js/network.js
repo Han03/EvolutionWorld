@@ -3,7 +3,7 @@
  * 数据传输方案：二进制帧 + 量化坐标 + AOI 进出 + 增量更新 + 校准快照
  * 扩展：输入上报携带预测位置 px/py/pz（防作弊校验），处理 SELF（回退）与 KICK。
  */
-import { encodeInput, parseS2C, MSG } from './protocol.js';
+import { encodeInput, encodeAttack, parseS2C, MSG } from './protocol.js';
 export class NetworkClient {
   constructor() {
     this.ws = null;
@@ -21,6 +21,8 @@ export class NetworkClient {
     this.onSelf = null;      // 服务端后校验回退
     this.onKick = null;
     this.onDisconnect = null;
+    this.onBoss = null;      // 世界 Boss 全局共享状态（S2C_BOSS）
+    this.onEvent = null;     // 战斗/世界共享事件（S2C_EVENT）
     // 协议透传转换监控：每次二进制帧解码为可读对象后触发（dir: 's2c' | 'c2s'，obj 为解码结果）
     this.onProtocol = null;
     // 自身预测位置（解码相对坐标用参考）
@@ -115,6 +117,12 @@ export class NetworkClient {
           break;
         case MSG.S2C_PING:
           break;
+        case MSG.S2C_BOSS:
+          if (this.onBoss) this.onBoss(msg);
+          break;
+        case MSG.S2C_EVENT:
+          if (this.onEvent) this.onEvent(msg);
+          break;
         case MSG.S2C_ERROR:
           console.error('[net]', msg.code, msg.msg);
           break;
@@ -133,6 +141,12 @@ export class NetworkClient {
     if (this.onProtocol) {
       this.onProtocol('c2s', { type: 'INPUT', seq: this.seq, moveX, moveZ, jump, x: pred.x, y: pred.y, z: pred.z });
     }
+  }
+  /** 攻击世界实体（世界怪物/Boss） */
+  sendAttack(targetWid, slot = 0) {
+    if (!this.connected || !targetWid) return;
+    this.ws.send(encodeAttack(targetWid, slot));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'ATTACK', targetWid, slot });
   }
   close() {
     this.connected = false;

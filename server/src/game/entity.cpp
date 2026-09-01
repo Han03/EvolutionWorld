@@ -29,6 +29,9 @@ Entity makePlayer(const std::string& id, const std::string& username) {
   e.kind = EntityKind::Player;
   e.radius = 0.55;
   e.username = username;
+  e.hp = e.maxHp = 100;
+  e.attack = 12;
+  e.level = 1;
   return e;
 }
 
@@ -38,6 +41,10 @@ Entity makeMonster(const std::string& id) {
   e.kind = EntityKind::Monster;
   e.radius = 0.5;
   e.ai.speed = 1.5;
+  e.hp = e.maxHp = 60;
+  e.attack = 8;
+  e.level = 1;
+  e.name = "Monster";
   return e;
 }
 
@@ -47,6 +54,10 @@ Entity makeNpc(const std::string& id) {
   e.kind = EntityKind::Npc;
   e.radius = 0.5;
   e.ai.speed = 0.8;
+  e.hp = e.maxHp = 100;
+  e.attack = 0;
+  e.level = 1;
+  e.name = "NPC";
   return e;
 }
 

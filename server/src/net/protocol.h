@@ -28,6 +28,7 @@ enum MsgType : uint8_t {
   C2S_INPUT = 0x01,   // 移动输入 + 预测位置
   C2S_EVENT = 0x02,   // 通用事件（预留：聊天/技能/交互…）
   C2S_PONG  = 0x03,   // 心跳应答
+  C2S_ATTACK= 0x04,   // 攻击世界实体（目标 wid + 技能槽）
   // S2C
   S2C_HELLO   = 0x81, // 握手（world 参数 + 自身完整状态）
   S2C_SNAPSHOT= 0x82, // 校准快照（周期全量，自愈）
@@ -35,11 +36,23 @@ enum MsgType : uint8_t {
   S2C_LEAVE   = 0x84, // 实体离开视野
   S2C_UPDATE  = 0x85, // 实体增量状态
   S2C_SELF    = 0x86, // 自身权威位置（预测回退/校正）
-  S2C_EVENT   = 0x87, // 通用事件（预留）
+  S2C_EVENT   = 0x87, // 通用事件（战斗事件：伤害/死亡/复活/技能）
   S2C_PING    = 0x88, // 心跳
   S2C_KICK    = 0x89, // 踢出
   S2C_ERROR   = 0x8A, // 错误
+  S2C_BOSS    = 0x8B, // 世界 Boss 全局共享状态（血量/阶段/状态/目标/位置）
 };
+// ---------- 共享事件类型（S2C_EVENT payload 首字节） ----------
+enum EvtType : uint8_t {
+  EVT_DAMAGE  = 1,   // 伤害：wid 目标, b 伤害值(有符号), x 保留
+  EVT_DEATH   = 2,   // 死亡：wid 死亡者, b 击杀者 wid
+  EVT_RESPAWN = 3,   // 复活：wid 复活实体
+  EVT_SKILL   = 4,   // 范围技能：wid 施法者, b skillId, x/z 技能落点
+};
+// ---------- Boss 状态位（S2C_BOSS.state，与 entity.h BossState 一致） ----------
+constexpr uint8_t BOSS_IDLE = 0;
+constexpr uint8_t BOSS_ENGAGE = 1;
+constexpr uint8_t BOSS_DEAD = 2;
 
 // ---------- flags ----------
 enum Flags : uint8_t {
@@ -161,6 +174,9 @@ std::string selfCorrection(const std::string& reason, const Entity& p, uint32_t 
 std::string ping(uint32_t ts);
 std::string kick(const std::string& reason);
 std::string error(uint8_t code, const std::string& msg);
+// 世界共享状态（Boss 全区广播 + 战斗事件）
+std::string bossState(const Entity& boss);
+std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z);
 
 // ---------- C2S 解码 ----------
 struct InputMsg {
@@ -169,6 +185,11 @@ struct InputMsg {
   bool jump = false;
   double px = 0, py = 0, pz = 0;
 };
+struct AttackMsg {
+  uint32_t targetWid = 0;
+  uint8_t slot = 0;   // 0=普攻，1..=技能（预留）
+};
 bool decodeInput(const std::string& payload, InputMsg& out);
+bool decodeAttack(const std::string& payload, AttackMsg& out);
 } // namespace proto
 } // namespace ew

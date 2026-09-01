@@ -5,12 +5,17 @@
  */
 export const MSG = {
   // C2S
-  C2S_INPUT: 0x01, C2S_EVENT: 0x02, C2S_PONG: 0x03,
+  C2S_INPUT: 0x01, C2S_EVENT: 0x02, C2S_PONG: 0x03, C2S_ATTACK: 0x04,
   // S2C
   S2C_HELLO: 0x81, S2C_SNAPSHOT: 0x82, S2C_ENTER: 0x83,
   S2C_LEAVE: 0x84, S2C_UPDATE: 0x85, S2C_SELF: 0x86,
   S2C_EVENT: 0x87, S2C_PING: 0x88, S2C_KICK: 0x89, S2C_ERROR: 0x8A,
+  S2C_BOSS: 0x8B,
 };
+// 世界共享事件类型（S2C_EVENT 首字节）
+export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4 };
+// Boss 状态（S2C_BOSS.state）
+export const BOSS_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
 export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04 };
 export const KIND = { PLAYER: 1, MONSTER: 2, NPC: 3 };
 export const ST = { MOVING: 0x01, GROUNDED: 0x02 };
@@ -96,6 +101,12 @@ export function encodeInput(seq, moveX, moveZ, jump, px, py, pz) {
   return makeFrame(MSG.C2S_INPUT, w.finish());
 }
 
+/** 攻击世界实体：目标 wid + 技能槽（0=普攻） */
+export function encodeAttack(targetWid, slot = 0) {
+  const w = new Writer();
+  w.u32(targetWid >>> 0).u8(slot & 0xFF);
+  return makeFrame(MSG.C2S_ATTACK, w.finish());
+}
 // ---------------- S2C 解码（返回已解实体描述） ----------------
 export function decodeEntityFull(r, refX, refY, refZ) {
   const wid = r.u32();
@@ -183,6 +194,27 @@ export function parseS2C(type, payload, refX, refY, refZ) {
     case MSG.S2C_PING: {
       const ts = r.u32();
       return { type, ts };
+    }
+    case MSG.S2C_BOSS: {
+      const wid = r.u32();
+      const state = r.u8();
+      const phase = r.u8();
+      const hp = r.f32();
+      const maxHp = r.f32();
+      const target = r.i32();
+      const x = dq(r.i32());
+      const y = dq(r.i16());
+      const z = dq(r.i32());
+      const name = r.str();
+      return { type, wid, state, phase, hp, maxHp, target, x, y, z, name };
+    }
+    case MSG.S2C_EVENT: {
+      const evtType = r.u8();
+      const wid = r.u32();
+      const b = r.u32();
+      const x = dq(r.i32());
+      const z = dq(r.i32());
+      return { type, evtType, wid, b, x, z };
     }
     default:
       return { type };

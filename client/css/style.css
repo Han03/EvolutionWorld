@@ -119,3 +119,23 @@ kbd {
 .proto-line { line-height: 1.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proto-line.s2c { color: #93c5fd; }
 .proto-line.c2s { color: #fcd34d; }
+
+/* 世界Boss 全区共享血量条 */
+#boss-bar {
+  position: absolute;
+  top: 64px; left: 50%;
+  transform: translateX(-50%);
+  width: 320px;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(6,18,32,0.62);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+  padding: 6px 12px;
+  z-index: 6;
+}
+#boss-bar.hidden { display: none; }
+#boss-name { color: #fecaca; font-weight: 700; font-size: 12px; white-space: nowrap; min-width: 110px; }
+.boss-track { flex: 1; height: 9px; background: #3f1d1d; border-radius: 5px; overflow: hidden; }
+#boss-fill { height: 100%; width: 100%; background: linear-gradient(90deg,#f43f5e,#4ade80); transition: width .2s; }
+#boss-hp { color: #fecaca; font-size: 11px; min-width: 72px; text-align: right; }
+.hud-chip.warn { background: #b45309; }

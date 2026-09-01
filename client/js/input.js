@@ -7,10 +7,14 @@ export class InputState {
     this.dom = domElement;
     this.keys = new Set();
     this.jumpQueued = false; // 边沿触发，发送后清除
+    this.attackQueued = false; // J：攻击世界实体（世界怪物/Boss）
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space') {
         this.jumpQueued = true;
         e.preventDefault();
+      }
+      if (e.code === 'KeyJ') {
+        this.attackQueued = true;
       }
       this.keys.add(e.code);
       // 阻止方向键滚动页面
@@ -48,5 +52,11 @@ export class InputState {
     const j = this.jumpQueued;
     this.jumpQueued = false;
     return j;
+  }
+  /** 消费攻击边沿信号（J） */
+  takeAttack() {
+    const a = this.attackQueued;
+    this.attackQueued = false;
+    return a;
   }
 }

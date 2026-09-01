@@ -33,6 +33,8 @@ let lastT = 0;
 let fpsAcc = 0;
 let fpsCount = 0;
 let inputAcc = 0;
+let bossStates = new Map(); // wid -> 世界Boss共享状态（S2C_BOSS 最新）
+let bossDisplay = null;     // HUD 顶栏展示的 Boss
 
 // ---------------- 登录 UI ----------------
 
@@ -146,6 +148,20 @@ async function enterWorld(token, username, worldMeta) {
   net.onUpdate = (ups) => entities.applyUpdate(ups);
   net.onSnapshot = (snap) => entities.applySnapshot(snap.entities);
 
+  // 世界 Boss 全局共享状态（S2C_BOSS）：更新渲染 + HUD 顶栏
+  net.onBoss = (b) => {
+    bossStates.set(b.wid, b);
+    renderer.setBossState(b);
+    updateBossHud();
+  };
+  // 世界共享事件（S2C_EVENT）：伤害/死亡/复活/技能
+  net.onEvent = (ev) => {
+    if (ev.evtType === 2 && ev.wid === net.selfWid) {
+      $('hud-conn').textContent = '你被击倒了（已回血保护）';
+      $('hud-conn').className = 'hud-chip warn';
+    }
+  };
+
   net.onSelf = (msg) => {
     // 服务端后校验不通过 → 回退到权威位置
     predictor.correction(msg.x, msg.y, msg.z);
@@ -188,6 +204,13 @@ function protocolLog(dir, msg) {
     case 'SELF': detail = `reason=${msg.reason} pos=(${msg.x.toFixed(1)},${msg.y.toFixed(1)},${msg.z.toFixed(1)})`; break;
     case 'KICK': detail = `reason=${msg.reason}`; break;
     case 'INPUT': detail = `seq=${msg.seq} mv=(${msg.moveX},${msg.moveZ}) jump=${msg.jump}`; break;
+    case 'ATTACK': detail = `targetWid=${msg.targetWid} slot=${msg.slot}` + (msg.note ? ` ${msg.note}` : ''); break;
+    case 'BOSS': detail = `wid=${msg.wid} ${msg.name} hp=${Math.round(msg.hp)}/${Math.round(msg.maxHp)} state=${msg.state} phase=${msg.phase} target=${msg.target}`; break;
+    case 'EVENT': {
+      const names = { 1: '伤害', 2: '死亡', 3: '复活', 4: '范围技能' };
+      detail = `${names[msg.evtType] || msg.evtType} wid=${msg.wid} b=${msg.b}`;
+      break;
+    }
     default: detail = JSON.stringify(msg).slice(0, 80); break;
   }
   line.textContent = `[${dir === 's2c' ? '↓S2C' : '↑C2S'}] ${t} ${detail}`;
@@ -196,6 +219,40 @@ function protocolLog(dir, msg) {
 }
 // 供测试/调试挂载协议监控（渲染启动后设置）
 window.__ewProtocolLog = protocolLog;
+
+// 攻击范围（米，与服务端 playerAttackRange 一致）
+const ATTACK_RANGE = 3.2;
+function findNearestAttackable(px, pz) {
+  let best = null, bestD = ATTACK_RANGE + 1;
+  for (const e of entities.forRender()) {
+    if (e.kind !== 'monster') continue;
+    const d = Math.hypot(e.x - px, e.z - pz);
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return best;
+}
+// ---------------- 世界Boss HUD（全区共享血量条） ----------------
+function updateBossHud() {
+  const bar = $('boss-bar');
+  if (!bar) return;
+  // 展示：优先正在仇恨本玩家的 Boss，否则存活 Boss
+  let pick = null;
+  for (const b of bossStates.values()) {
+    if (b.state === 1 && b.target === net.selfWid) { pick = b; break; }
+  }
+  if (!pick) {
+    for (const b of bossStates.values()) {
+      if (b.state !== 2 && (pick === null || b.hp / b.maxHp < pick.hp / pick.maxHp)) pick = b;
+    }
+  }
+  if (!pick) { bar.style.display = 'none'; return; }
+  bossDisplay = pick;
+  bar.style.display = 'block';
+  $('boss-name').textContent = `${pick.name || '世界Boss'} Lv.${pick.phase} ${pick.state === 2 ? '· 已阵亡' : ''}`;
+  const pct = Math.max(0, Math.min(100, (pick.hp / pick.maxHp) * 100));
+  $('boss-fill').style.width = pct + '%';
+  $('boss-hp').textContent = `${Math.round(pick.hp)} / ${Math.round(pick.maxHp)}`;
+}
 
 // ---------------- 主循环 ----------------
 
@@ -215,6 +272,13 @@ function loop(now) {
     predictor.applyInput(mv.x, mv.z, jump);
     const pred = predictor.predicted();
     net.sendInput(mv.x, mv.z, jump, pred);
+  }
+
+  // 攻击：J 键 → 攻击范围内最近的世界怪物/Boss（服务端权威校验）
+  if (input.takeAttack()) {
+    const target = findNearestAttackable(selfPos.x, selfPos.z);
+    if (target) net.sendAttack(target.wid);
+    else protocolLog('c2s', { type: 'ATTACK', targetWid: 0, slot: 0, note: '范围内无目标' });
   }
 
   // 2) 推进预测（内部按 50ms 步进；用真实 dt 保持与服务端实时同步），插值位置驱动自身渲染

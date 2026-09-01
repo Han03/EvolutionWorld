@@ -21,7 +21,8 @@ std::string Netcode::helloFor(const Entity& player) {
   v.seen.clear();
   v.last.clear();
   v.forceSnap = false;
-  return proto::hello(cfg_, player);
+  // 加入即一致：HELLO 后附当前世界 Boss 全局共享状态
+  return proto::hello(cfg_, player) + w_.bossFrame(true);
 }
 void Netcode::resetPlayer(const std::string& playerId) {
   views_.erase(playerId);
@@ -33,6 +34,11 @@ void Netcode::requestResync(const std::string& playerId) {
 }
 const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
   out_.clear();
+  // 世界共享状态（全区广播，每 tick 一次）：共享事件 + Boss 状态帧（变化去重）
+  auto sharedEvents = w_.takeSharedEvents();
+  std::string sharedSuffix;
+  for (const auto& ev : sharedEvents) sharedSuffix += proto::eventFrame(ev.type, ev.wid, ev.b, ev.x, ev.z);
+  sharedSuffix += w_.bossFrame(false);
   for (const auto& pid : w_.players()) {
     const Entity* player = w_.findEntity(pid);
     if (!player) continue;
@@ -100,6 +106,7 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       v.lastSnapTick = tick;
       v.forceSnap = false;
     }
+    buf += sharedSuffix; // 全区共享状态（事件 + Boss 血量/状态）
     if (!buf.empty()) out_[player->id] = std::move(buf);
   }
   return out_;

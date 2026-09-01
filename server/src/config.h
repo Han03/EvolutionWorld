@@ -19,6 +19,34 @@ struct Config {
   int terrainGridPoints = 33;  // 区块高度场数据每边采样点数（世界地图数据存储粒度）
   int monsterCount = 24;
   int npcCount = 12;
+  // ---- 世界怪物 & 世界 Boss（状态共享）----
+  int bossCount = 3;                 // 世界 Boss 数量（全区共享实体）
+  float bossHp = 500.0f;             // Boss 生命
+  float bossAttack = 18.0f;          // Boss 攻击力
+  float bossAttackRange = 2.5f;      // 近战攻击范围
+  float bossAggroRange = 18.0f;      // 进入仇恨的侦测范围
+  float bossSkillRange = 8.0f;       // 范围技能半径
+  float bossSkillCdSec = 6.0f;       // 范围技能冷却（秒）
+  float bossAttackCdSec = 0.9f;      // Boss 普攻间隔（秒）
+  float bossRespawnSec = 30.0f;      // Boss 死亡复活（秒）
+  float bossRegenPerSec = 4.0f;      // 脱战回血/秒
+  float monsterRespawnSec = 10.0f;   // 普通怪物死亡复活（秒）
+  float playerAttackRange = 3.2f;    // 玩家攻击判定范围
+  float playerAttackCdSec = 0.5f;    // 玩家攻击冷却（秒）
+  float playerRegenPerSec = 3.0f;    // 玩家脱战回血/秒
+
+  // ---- AI（大型网游规模：状态机 + 时间片/距离分级调度）----
+  float monsterAggroRange = 10.0f;   // 怪物仇恨侦测范围
+  float monsterLeashRange = 24.0f;   // 最大追击距离（超出脱战回巢）
+  float monsterAttackRange = 1.6f;   // 怪物近战攻击距离
+  float monsterAttackCdSec = 1.0f;   // 怪物攻击间隔（秒）
+  float monsterPatrolRadius = 12.0f; // 巡逻半径（围绕出生点）
+  float monsterPatrolPauseSec = 2.0f;// 巡逻转向间隔下限（秒）
+  float bossChaseSpeed = 3.0f;       // Boss 追击速度（m/s）
+  // AI LOD 分级：距最近玩家 <aiLodNearM 每 tick、<aiLodMidM 每 2 tick、其余每 aiLodFarStride tick
+  float aiLodNearM = 25.0f;
+  float aiLodMidM = 50.0f;
+  uint32_t aiLodFarStride = 4;
 
   // ---- 模拟 ----
   float tickRateHz = 20.0f;

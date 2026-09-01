@@ -124,7 +124,7 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
   w.i16(qVel(e.vel.x));
   w.i16(qVel(e.vel.z));
   if (e.kind == EntityKind::Player) w.str(e.username);
-  else w.str(e.kind == EntityKind::Monster ? "Monster" : "NPC");
+  else w.str(e.name.empty() ? (e.kind == EntityKind::Monster ? "Monster" : "NPC") : e.name);
 }
 static std::string entityListToPayload(const std::vector<const Entity*>& ents, const Vec3& ref) {
   Writer w;
@@ -210,6 +210,31 @@ std::string error(uint8_t code, const std::string& msg) {
   return frame(S2C_ERROR, w.data());
 }
 // ---------- C2S 解码 ----------
+// 世界 Boss 全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
+std::string bossState(const Entity& boss) {
+  Writer w;
+  w.u32((uint32_t)boss.wid);
+  w.u8(boss.bossState);
+  w.u8(boss.bossPhase);
+  w.f32((float)boss.hp);
+  w.f32((float)boss.maxHp);
+  w.i32((int32_t)boss.bossTarget);
+  w.i32(qAbs(boss.pos.x));
+  w.i16(qAbs(boss.pos.y));
+  w.i32(qAbs(boss.pos.z));
+  w.str(boss.name.empty() ? "WorldBoss" : boss.name);
+  return frame(S2C_BOSS, w.data());
+}
+// 战斗/世界共享事件帧
+std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z) {
+  Writer w;
+  w.u8(evtType);
+  w.u32(wid);
+  w.u32(b);
+  w.i32(x);
+  w.i32(z);
+  return frame(S2C_EVENT, w.data());
+}
 bool decodeInput(const std::string& payload, InputMsg& out) {
   Reader r(payload);
   uint32_t seq;
@@ -226,6 +251,15 @@ bool decodeInput(const std::string& payload, InputMsg& out) {
   out.px = dqAbs(px);
   out.py = dqAbs(py);
   out.pz = dqAbs(pz);
+  return true;
+}
+bool decodeAttack(const std::string& payload, AttackMsg& out) {
+  Reader r(payload);
+  uint32_t wid;
+  uint8_t slot;
+  if (!r.u32(wid) || !r.u8(slot)) return false;
+  out.targetWid = wid;
+  out.slot = slot;
   return true;
 }
 } // namespace proto

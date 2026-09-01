@@ -26,6 +26,8 @@ export function createRenderer(container) {
 
   // 运行时状态（每帧由 boot 同步）
   const state = { selfX: 0, selfZ: 0, self: null, entities: [] };
+  // 世界 Boss 共享状态（来自 S2C_BOSS，血量/阶段/状态；位置走 AOI 实体插值）
+  const bossHp = new Map(); // wid -> {hp,maxHp,state,phase,name}
 
   // ---- 区块离屏画布（流式加载，仅玩家可见范围） ----
   const chunkCanvases = new Map(); // "cx,cz" -> {canvas, cx, cz}
@@ -136,10 +138,17 @@ export function createRenderer(container) {
 
   function drawEntity(e) {
     const x = sx(e.x), y = sy(e.z);
+    const boss = bossHp.get(e.wid);
     let color, r = 7;
-    if (e.kind === 'player') { color = '#34d399'; r = 7; }   // 绿色
+    if (boss) { color = '#7f1d1d'; r = 14; }                 // 世界 Boss：暗红大圆
+    else if (e.kind === 'player') { color = '#34d399'; r = 7; }   // 绿色
     else if (e.kind === 'npc') { color = '#60a5fa'; r = 6; } // 蓝色
     else { color = '#f87171'; r = 6; }                        // 红色（怪物）
+    // 影子（俯视投影）
+    ctx.beginPath();
+    ctx.arc(x + 1.5, y + 1.5, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fill();
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -147,7 +156,29 @@ export function createRenderer(container) {
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 1.4;
     ctx.stroke();
-    if (e.name) {
+    if (boss) {
+      // Boss：死亡置灰 + 头顶血条（全区共享）
+      const dead = boss.state === 2;
+      if (dead) {
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = '#444'; ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      const barW = 40, barH = 5;
+      const bx = x - barW / 2, by = y - r - 12;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+      ctx.fillStyle = '#e11d48';
+      ctx.fillRect(bx, by, barW, barH);
+      const pct = Math.max(0, Math.min(1, boss.hp / boss.maxHp));
+      ctx.fillStyle = '#4ade80';
+      ctx.fillRect(bx, by, barW * pct, barH);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${boss.name || 'Boss'} Lv.${boss.phase} ${Math.round(boss.hp)}/${Math.round(boss.maxHp)}`, x, by - 4);
+    } else if (e.name) {
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.font = '10px "PingFang SC","Microsoft YaHei",sans-serif';
       ctx.textAlign = 'center';
@@ -163,6 +194,11 @@ export function createRenderer(container) {
   function setEntities(list) {
     state.entities = list;
   }
+  /** 同步世界 Boss 共享状态（S2C_BOSS；wid→血量/阶段） */
+  function setBossState(b) {
+    if (!b || !b.wid) return;
+    bossHp.set(b.wid, { hp: b.hp, maxHp: b.maxHp, state: b.state, phase: b.phase, name: b.name });
+  }
 
-  return { canvas, ctx, updateTerrain, setSelf, setEntities, draw, resize };
+  return { canvas, ctx, updateTerrain, setSelf, setEntities, setBossState, draw, resize };
 }
