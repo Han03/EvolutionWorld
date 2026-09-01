@@ -14,8 +14,10 @@ jobs:
           Write-Output "Runner machine: $env:COMPUTERNAME"
           Write-Output "OS: $env:OS"
           Write-Output "Arch: $env:PROCESSOR_ARCHITECTURE"
-      - name: Show runner version
-        run: .\run.cmd --version
+      - name: Show runner install dir
+        run: |
+          Test-Path C:\actions-runner\run.cmd
+          C:\actions-runner\bin\Runner.Listener.exe --version
       - name: Node & Git versions
         run: |
           node --version
