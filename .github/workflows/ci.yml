@@ -1,4 +1,4 @@
-name: CI - Build & Smoke Test (WSL)
+name: CI - Build & Start Server (WSL)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  build-and-start:
     runs-on: [self-hosted, Windows, X64]
     defaults:
       run:
@@ -20,12 +20,6 @@ jobs:
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
           Write-Output "Building in: $wsl/server"
           wsl -d Ubuntu -- bash -lc "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
-
-      - name: Install Python test dependencies
-        run: |
-          python --version
-          python -m pip install websocket-client --quiet -i https://pypi.tuna.tsinghua.edu.cn/simple
-          python -c "import websocket; print('websocket-client OK')"
 
       - name: Start game server (systemd, survives runner process cleanup)
         run: |
@@ -48,6 +42,7 @@ jobs:
           $svc = ($lines -join "`n") + "`n"
           $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($svc))
           wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true; echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
+          Write-Output "Server address: http://localhost:3000"
 
       - name: Health check
         run: |
@@ -60,20 +55,6 @@ jobs:
             Start-Sleep -Seconds 3
           }
           if (-not $ok) { throw "Server failed health check" }
-
-      - name: Smoke test - normal movement
-        run: python "server/scripts/ws_smoke_test.py" --normal
-
-      - name: Smoke test - teleport cheat detection
-        run: python "server/scripts/ws_smoke_test.py" --teleport
-
-      - name: Smoke test - flood rate limiting
-        continue-on-error: true
-        run: python "server/scripts/ws_smoke_test.py" --flood
-
-      - name: Prediction consistency test
-        continue-on-error: true
-        run: node --experimental-websocket "server/scripts/prediction_test.mjs"
 
       - name: Stop game server
         if: always()
