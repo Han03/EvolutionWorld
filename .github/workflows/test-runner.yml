@@ -1,0 +1,24 @@
+name: Self-hosted Runner Test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - name: Show runner machine info
+        run: |
+          Write-Output "Runner machine: $env:COMPUTERNAME"
+          Write-Output "OS: $env:OS"
+          Write-Output "Arch: $env:PROCESSOR_ARCHITECTURE"
+      - name: Show runner version
+        run: .\run.cmd --version
+      - name: Node & Git versions
+        run: |
+          node --version
+          git --version
+      - name: Final success marker
+        run: Write-Output "SELF-HOSTED-RUNNER-TEST-PASSED"
