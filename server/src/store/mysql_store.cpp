@@ -219,6 +219,8 @@ bool MysqlStore::loadPlayer(const std::string& username, PlayerSave& out) {
 }
 #else
 // ---------------- 无 MySQL 头文件：编译为空实现（永远不可用 → 全内存） ----------------
+// 占位完整类型：让 ~MysqlStore()=default（unique_ptr<MysqlImpl>）在严格编译器下可编译
+struct MysqlImpl {};
 MysqlStore::MysqlStore(const StoreConfig& sc) : sc_(sc) {}
 MysqlStore::~MysqlStore() = default;
 bool MysqlStore::init() { return false; }
