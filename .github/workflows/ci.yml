@@ -25,20 +25,21 @@ jobs:
         run: |
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
-          $svc = @"
-[Unit]
-Description=EvolutionWorld Game Server
-After=network.target
-
-[Service]
-WorkingDirectory=$wsl/server
-ExecStart=$wsl/server/build/evolution_server
-Environment=EW_DEBUG=1
-Restart=no
-
-[Install]
-WantedBy=multi-user.target
-"@
+          $lines = @(
+            "[Unit]",
+            "Description=EvolutionWorld Game Server",
+            "After=network.target",
+            "",
+            "[Service]",
+            "WorkingDirectory=$wsl/server",
+            "ExecStart=$wsl/server/build/evolution_server",
+            "Environment=EW_DEBUG=1",
+            "Restart=no",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target"
+          )
+          $svc = ($lines -join "`n") + "`n"
           $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($svc))
           wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true; echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
 
