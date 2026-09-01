@@ -1,6 +1,7 @@
-// chunk.cpp
+﻿// chunk.cpp
 #include "chunk.h"
 #include "world.h"
+#include <algorithm>
 #include <cmath>
 namespace ew {
 
