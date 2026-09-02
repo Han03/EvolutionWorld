@@ -33,6 +33,9 @@ EW_DEBUG=1 ./evolution_server          # 输出防作弊日志 + /api/debug/play
 # 启用外部存储（可选；不设置则纯内存模式，功能不受影响）
 EW_DB_MYSQL=127.0.0.1:3306 EW_DB_MYSQL_USER=root EW_DB_MYSQL_PASS=secret EW_DB_MYSQL_DB=evolutionworld \
 EW_DB_REDIS=127.0.0.1:6379 ./evolution_server
+# 或统一用 EW_CONFIG 部署配置（key1=value,key2=value2,...，未知 key 忽略；自托管 runner 连托管库）
+# 支持 mysql_host/port/user/pass/db 与 redis_host/port/pass/prefix
+EW_CONFIG="mysql_host=db.internal:3306,mysql_user=ew,mysql_pass=xxx,mysql_db=ew,redis_host=cache.internal:6379,redis_prefix=prod:" ./evolution_server
 ```
 浏览器打开 `http://localhost:3000` → 输入账号密码 → 点「注册」自动注册并登录（或注册后点「登录」）→ 进入俯视角无缝世界。
 
@@ -49,6 +52,7 @@ node scripts/ai_behavior_test.mjs             # AI 行为：怪物/Boss 入仇�
 node scripts/items_test.mjs                   # 物品/属性/商店端到端：掉落/拾取/购买/穿戴/使用
 node scripts/map_collision_death_test.mjs       # 地图碰撞/怪物刷新/玩家死亡复活端到端（9/9）
 node scripts/skills_debuff_test.mjs            # 技能扩展端到端：无目标施放/范围命中/流血/眩晕/击退/霸体/不可打断/减防/减攻（15/15）
+node scripts/ai_void_test.mjs                  # AI 空洞区域判断：怪物追击不穿洞/卡住脱战回巢/NPC不进入空洞（6/6）
 
 ```
 
@@ -383,6 +387,37 @@ EvolutionWorld/
 
 ### 3. 碰撞一致性保障
 地形任何改动必须**三处同步**：`server/src/game/terrain.cpp` ↔ `client/js/terrain.js` ↔ `client/js/predict.js`（预测碰撞）。用 `prediction_test.mjs`（0 回退）回归；C++/JS 逐位一致性用临时对比程序抽样验证。
+
+---
+
+## 本轮修复与部署（客户端边界 / 登录健壮性 / AI 空洞 / 出生布局 / EW_CONFIG）
+
+### 1. 客户端空洞边界修复（玩家可走到地图外）
+- **根因不是"缺空洞判断"**（C++/JS `terrainBlocked` 9 万采样逐位一致），而是预测碰撞回退失效：
+  - `client/js/predict.js`：`_tickStep()` 的 `ox/oz` 在积分**之后**取值，`slideMove` 回退基准=被阻挡位置，回退永远无效 → 玩家在空洞内振荡前进；
+  - `server/src/game/collision.cpp` 与 predict 同源 bug：`slideMove` 的 okX/okZ 分支只设单轴不还原另一轴，对角残留 → 服务端实测同样穿洞。
+- **修复**：`ox/oz` 移到积分前；`slideMove` 两分支完整还原双轴（客户端/服务端一致）。
+- 验证：空洞边缘端到端同步停在 `-84.2`、零振荡；`prediction_test.mjs` 最大偏差 0.641m、corrections=0。
+
+### 2. 登录刷新 CONNECTING 报错修复
+- **根因**：`btn-login` 为 `type="submit"`，点击同时触发 click+submit → `doLogin` 双调 → `net.connect()` 双执行，第二个连接仍在 CONNECTING 时被放行 `ws.send` → `InvalidStateError`。
+- **修复**：`network.js` `connect()` 先关旧 socket 并立即 `connected=false`；新增 `_send(frame)` 检查 `readyState===OPEN`，全部 `this.ws.send` 改走 `_send`；`boot.js` `doLogin` 加 `loggingIn` 防重入（try/finally 复位）。
+
+### 3. AI 空洞区域判断（怪物 / NPC）
+- **检查结论**：AI 移动统一经 `moveSystem → moveEntityCollide` 地形碰撞（含空洞）——**AI 不会进入空洞**；`spawnMonster`/`spawnDropAt` 出生/掉落自动向最近干地（`!terrainBlocked && h>kWaterLevel+1.0`）偏移。
+- **补缺陷**：追击/巡逻撞空洞墙会永久顶墙（无寻路）→ 新增 `AiAgent::stuckT` 卡住计时（有移动意图但位移<0.05m 累积、否则衰减）：巡逻/游走卡住 >1.5s 立即换向，追击卡住 >2s 清仇恨脱战回巢。
+- 验证：`ai_void_test.mjs` 6/6（怪物隔空洞引怪 12 采样点全程干地、卡住后回巢、NPC 位置不进入空洞）。
+
+### 4. 地图重生成：出生空地 / 安全区无怪 / NPC 在出生点旁
+- **玩家出生/复活**：改为**主城圆盘开放空地**（`terrain.cpp` 新增 `townSpawn`，r≤8.2，保证玩家圆盘可容纳）；复活点同样回主城。
+- **怪物**：出生改为**环带 20-110m**（出生点最近怪实测约 38m），并按距离**阶梯刷怪**（近郊野狼→中郊哥布林→远郊骷髅→边境石像鬼），更符合大型 MMO 刷怪区。
+- **NPC**：12 个 NPC 全部布置在出生点附近（4-13m），锚点在主城圆盘内、就近找干地兜底；商店 NPC「商店老板·全能杂货铺」守店于 (6,6)。
+- **世界 Boss**：锚点从城镇中心 `(0,0)` 移走，改为 3 个远离出生点且可通行的锚点 `{-79.5,-73.5} / {74.5,38.5} / {-47.5,44.5}`。
+
+### 5. EW_CONFIG 部署配置环境变量
+- 服务端启动时检查 `EW_CONFIG`，按 `key1=value,key2=value2,...` 读取白名单配置（未知 key 忽略）：`mysql_host / mysql_port / mysql_user / mysql_pass / mysql_db`、`redis_host / redis_port / redis_pass / redis_prefix`。
+- 优先级：EW_CONFIG 先行应用，单独的 `EW_DB_MYSQL`/`EW_DB_REDIS` 等可覆盖对应字段；连接失败自动降级内存、不影响功能（连接超时：MySQL 2s / Redis 2s）。
+- 用于自托管 runner 部署时连接托管服务器上的 MySQL/Redis。
 
 ---
 

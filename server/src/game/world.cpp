@@ -11,8 +11,9 @@ namespace ew {
 static Mulberry32 gAiRng(0xC0FFEE);
 static double rng01() { return gAiRng.next(); }
 // 世界 Boss 固定锚点（确定性，可调）
+// 世界 Boss 锚点：远离城镇/出生点安全区（>=40m），且位于可通行地图区域（用与地形 mask 一致的采样选定）
 static const std::vector<std::pair<double, double>> kBossAnchors = {
-  {0, 0}, {160, -120}, {-170, 150},
+  {-79.5, -73.5}, {74.5, 38.5}, {-47.5, 44.5},
 };
 // 位置哈希 → 怪物类型（确定性：复活后类型不变）
 static const char* monsterTypeAt(double x, double z);
@@ -59,9 +60,10 @@ void World::addEntity(Entity&& e) {
   aoi_.move(entities_[id].wid, entities_[id].pos.x, entities_[id].pos.z);
 }
 void World::seedWorld() {
+  // 怪物：远离城镇/出生点（环形 20-110m），保证出生点附近安全区无怪物
   for (int i = 0; i < cfg_.monsterCount; i++) {
     double x, y, z;
-    randomSpawn(rng_, x, y, z);
+    randomSpawn(rng_, x, y, z, 20.0, 110.0);
     // 按位置哈希稳定分配怪物类型（4 种：野狼/哥布林/骷髅/石像鬼）
     const char* type = monsterTypeAt(x, z);
     Entity m = makeMonster(nextEntityId("m"), type);
@@ -71,20 +73,35 @@ void World::seedWorld() {
     m.ai.homeZ = m.pos.z;
     addEntity(std::move(m));
   }
+  // 功能性 NPC（商店等）：全部布置在出生点/主城附近（开放空地内），
+  // 固定锚点 + 就近找干地兜底；商店老板守店不游走。
+  const double npcAnchors[][2] = {  // 主城圆盘内的固定锚点（含出生点周边）
+    {6.0, 6.0}, {0.0, 6.0}, {6.0, 0.0}, {-6.0, 6.0}, {6.0, -6.0},
+    {0.0, -6.0}, {-6.0, 0.0}, {-3.0, 7.0}, {7.0, -3.0}, {-7.0, -3.0},
+    {3.0, -7.0}, {-7.0, 3.0}
+  };
   for (int i = 0; i < cfg_.npcCount; i++) {
     Entity n = makeNpc(nextEntityId("n"));
-    double x, y, z;
-    randomSpawn(rng_, x, y, z);
-    n.pos = {x, terrainHeight(x, z) + n.radius + 0.3, z};
+    // 目标锚点：就近找可通行干地（主城圆盘内），找不到才回退随机
+    double hx = npcAnchors[i % (sizeof(npcAnchors) / sizeof(npcAnchors[0]))][0];
+    double hz = npcAnchors[i % (sizeof(npcAnchors) / sizeof(npcAnchors[0]))][1];
+    double sx = hx, sz = hz;
+    bool found = false;
+    for (double r = 0; r <= 12 && !found; r += 2) {
+      for (int k = 0; k < 16 && !found; k++) {
+        double a = (double)k / 16.0 * 6.28318;
+        double px = hx + std::cos(a) * r, pz = hz + std::sin(a) * r;
+        if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; }
+      }
+    }
+    if (!found) { randomSpawn(rng_, sx, sz, n.pos.y, 0.0, 20.0); sx = n.pos.x; sz = n.pos.z; }
+    n.pos = {sx, terrainHeight(sx, sz) + n.radius + 0.3, sz};
     n.ai.homeX = n.pos.x;
     n.ai.homeZ = n.pos.z;
     if (i == 0) {
-      // 商店 NPC：就近固定锚点（世界中央，便于测试），出售全部物品
+      // 商店 NPC（功能性）：出生点附近固定锚点，出售全部物品，守店不游走
       n.shopId = 1;
       n.name = "商店老板·全能杂货铺";
-      n.pos = {6.0, terrainHeight(6.0, 6.0) + n.radius + 0.3, 6.0};
-      n.ai.homeX = n.pos.x;
-      n.ai.homeZ = n.pos.z;
       n.ai.aiState = 0; // IDLE 不游走（守店）
       fprintf(stderr, "[shopnpc] spawn id=%s pos=(%.2f,%.2f,%.2f) home=(%.2f,%.2f)\n",
               n.id.c_str(), n.pos.x, n.pos.y, n.pos.z, n.ai.homeX, n.ai.homeZ);
@@ -136,9 +153,10 @@ Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
   if (spawnHint) {
     p.pos = *spawnHint;
   } else {
+    // 玩家出生：主城圆盘开放空地（出生点附近无怪物，NPC 在旁）
     Mulberry32 rng((uint32_t)(username.size() * 2654435761u + (uint64_t)entitySeq_));
     double x, y, z;
-    randomSpawn(rng, x, y, z);
+    townSpawn(rng, x, y, z);
     p.pos = {x, terrainHeight(x, z) + p.radius + 0.3, z};
   }
   std::string id = p.id; // 移动前保存 id
@@ -636,12 +654,13 @@ Json World::entitiesStatus(double px, double pz, double range, int limit) const 
 }
 // ---------- 物品/属性/商店/掉落 实现 ----------
 // 位置哈希 → 怪物类型（确定性：复活后类型不变）
+// 初始刷怪类型：按距离城镇分层（弱怪近、强怪远）——大型 MMO 阶梯刷怪区
 static const char* monsterTypeAt(double x, double z) {
-  double h = hash2i((int64_t)std::floor(x / 8.0), (int64_t)std::floor(z / 8.0));
-  if (h < 0.25) return "wolf";
-  if (h < 0.50) return "goblin";
-  if (h < 0.75) return "skeleton";
-  return "gargoyle";
+  double d = std::hypot(x, z);
+  if (d < 45.0) return "wolf";       // 近郊：野狼（弱）
+  if (d < 65.0) return "goblin";     // 中郊：哥布林
+  if (d < 90.0) return "skeleton";   // 远郊：骷髅兵
+  return "gargoyle";                 // 边境：石像鬼（强）
 }
 void World::applyMonsterStats(Entity& m, const std::string& type) {
   const MonsterDef* def = data_.monster(type);
@@ -945,7 +964,12 @@ static void moveSystem(World& w, double dt) {
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (e.kind == EntityKind::Player || !e.active) continue;
+    const double px = e.pos.x, pz = e.pos.z;
+    const bool wantsMove = (e.ai.targetVX != 0.0 || e.ai.targetVZ != 0.0);
     moveEntityCollide(w, e, e.ai.targetVX, e.ai.targetVZ, dt);
+    // 卡住检测：有移动意图但实际位移≈0（被空洞/深水/悬崖/实体墙挡住）→ 累积；否则恢复
+    if (wantsMove && std::hypot(e.pos.x - px, e.pos.z - pz) < 0.05) e.ai.stuckT += dt;
+    else e.ai.stuckT = std::max(0.0, e.ai.stuckT - dt);
   }
   // 实体-实体碰撞（2.5D 圆形分离）：动态实体（玩家/怪物/Boss/NPC）不可互相穿透，
   // 重叠时沿连线各推开一半；推开后若落入障碍则回退（避免把实体挤进水里/悬崖）。
@@ -1108,12 +1132,12 @@ static void playerRespawnSystem(World& w, double) {
     p->respawnAtMs = 0;
     p->hp = p->maxHp;
     p->mp = p->maxMp;
-    // 找安全复活点：世界中心向外扩散（避开湖泊/河流/悬崖）
+    // 找安全复活点：主城圆盘开放空地（出生点附近，无怪物、NPC 在旁）
     double sx = 0, sz = 0;
     bool found = false;
     Mulberry32 rng((uint32_t)(p->wid * 2654435761u) ^ (uint32_t)cfg.worldSeed);
-    for (double r = 0; r <= 50 && !found; r += 2) {
-      for (int k = 0; k < 16 && !found; k++) {
+    for (double r = 0; r <= kTownSpawnRadius && !found; r += 1.5) {
+      for (int k = 0; k < 12 && !found; k++) {
         double a = rng.next() * 6.28318;
         double px = std::cos(a) * r, pz = std::sin(a) * r;
         if (w.collision().canStand(px, pz, p->radius)) { sx = px; sz = pz; found = true; }

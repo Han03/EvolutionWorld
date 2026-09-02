@@ -78,9 +78,47 @@ private:
 };
 
 // ============ 配置解析（环境变量） ============
+// EW_CONFIG：按 "key1=value1,key2=value2,..." 的规则读取可接受配置（部署用，自托管 runner 连托管库）。
+// 支持的 key（白名单，未知 key 忽略）：
+//   mysql_host / mysql_port / mysql_user / mysql_pass / mysql_db
+//   redis_host / redis_port / redis_pass / redis_prefix
+// 优先级：EW_CONFIG 先行应用，单独的 EW_DB_MYSQL / EW_DB_REDIS 等环境变量可覆盖对应字段。
+static void applyEwConfig(StoreConfig& sc) {
+  const char* ew = getenv("EW_CONFIG");
+  if (!ew || !*ew) return;
+  std::string buf(ew);
+  auto trim = [](const std::string& s) -> std::string {
+    size_t b = s.find_first_not_of(" \t");
+    if (b == std::string::npos) return "";
+    size_t e = s.find_last_not_of(" \t");
+    return s.substr(b, e - b + 1);
+  };
+  size_t pos = 0;
+  while (pos <= buf.size()) {
+    size_t comma = buf.find(',', pos);
+    std::string pair = buf.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    if (comma == std::string::npos) pos = buf.size() + 1; else pos = comma + 1;
+    size_t eq = pair.find('=');
+    if (eq == std::string::npos) continue;
+    std::string k = trim(pair.substr(0, eq));
+    std::string v = trim(pair.substr(eq + 1));
+    if (k.empty() || v.empty()) continue;
+    if (k == "mysql_host") sc.mysqlHost = v;
+    else if (k == "mysql_port") sc.mysqlPort = atoi(v.c_str());
+    else if (k == "mysql_user") sc.mysqlUser = v;
+    else if (k == "mysql_pass") sc.mysqlPass = v;
+    else if (k == "mysql_db") sc.mysqlDb = v;
+    else if (k == "redis_host") sc.redisHost = v;
+    else if (k == "redis_port") sc.redisPort = atoi(v.c_str());
+    else if (k == "redis_pass") sc.redisPass = v;
+    else if (k == "redis_prefix") sc.redisPrefix = v;
+    // 未知 key：忽略（仅接受可接受配置）
+  }
+}
 StoreConfig storeConfigFromEnv(const Config& cfg) {
   (void)cfg;
   StoreConfig sc;
+  applyEwConfig(sc);   // EW_CONFIG 先应用（部署配置）
   const char* m = getenv("EW_DB_MYSQL");
   if (m && *m) {
     std::string s = m;

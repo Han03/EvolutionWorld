@@ -99,21 +99,22 @@ async function main() {
     .filter((e) => e.kind === KIND.MONSTER)
     .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
 
-  /** 打怪刷金币：贴身击杀 + 拾取掉落，直至金币 >= target */
+  /** 打怪刷金币：逐只贴身击杀（以该怪物死亡产生的掉落为准）+ 拾取，直至金币 >= target。
+   *  注：出生点附近不刷怪（安全区），怪物在 20-110m 阶梯刷怪区，需主动接近并完整击杀。 */
   async function farmGold(target) {
     let guard = 0;
-    while ((inventory ? inventory.gold : 0) < target && guard < 60) {
+    while ((inventory ? inventory.gold : 0) < target && guard < 120) {
       const mm = nearestMonster();
       if (!mm) { await sleep(300); guard++; continue; }
       const tpR = await tp(mm.x, mm.z);
       ref = { x: tpR.x, y: tpR.y, z: tpR.z };
       await sleep(300);
       let t = mm;
-      let killed = false;
-      for (let i = 0; i < 25 && !killed; i++) {
+      const dropsBefore = dropSeen;
+      for (let i = 0; i < 30; i++) {
         // 每轮重新盯紧最近怪物（怪物会游走/被踢出视野）
         const near = [...known.values()]
-          .filter((e) => e.kind === KIND.MONSTER && Math.hypot(e.x - ref.x, e.z - ref.z) < 5)
+          .filter((e) => e.kind === KIND.MONSTER && Math.hypot(e.x - ref.x, e.z - ref.z) < 8)
           .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
         if (near) t = near;
         if (Math.hypot(t.x - ref.x, t.z - ref.z) > 4) {
@@ -124,10 +125,10 @@ async function main() {
         }
         send(encodeAttack(t.wid));
         await sleep(90);
-        if (dropSeen > 0) { killed = true; break; }
+        if (dropSeen > dropsBefore) break; // 本只怪物死亡产生掉落
       }
       // 等待掉落广播并拾取
-      await wait(() => dropSeen > 0, 1200);
+      await wait(() => dropSeen > dropsBefore, 1500);
       // 拾取视野内所有掉落物
       for (const e of [...known.values()]) {
         if (e.kind === KIND.ITEM) {
@@ -135,7 +136,7 @@ async function main() {
           await sleep(40);
         }
       }
-      await sleep(200);
+      await sleep(150);
       guard++;
     }
     return inventory ? inventory.gold : 0;
@@ -169,8 +170,8 @@ async function main() {
     check('商店含铁剑(1502)', shop && shop.entries.some((e) => e.itemId === 1502));
   }
 
-  // 4) 攒够 40 金 → 购买铁剑 1502
-  await farmGold(40);
+  // 4) 攒够 46 金（剑40+血瓶5） → 购买铁剑 1502
+  await farmGold(46);
   check('攒够金币≥40', inventory && inventory.gold >= 40, `gold=${inventory && inventory.gold}`);
   if (inventory && inventory.gold >= 40) {
     const goldBefore = inventory.gold;

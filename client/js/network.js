@@ -56,6 +56,12 @@ export class NetworkClient {
   }
   /** 建立 WebSocket 游戏连接（二进制协议） */
   connect(token) {
+    // 立即关闭旧连接并复位状态，避免新 socket 仍在 CONNECTING 时旧 connected=true
+    // 导致 send 被误放行（"Failed to execute 'send' ... Still in CONNECTING state"）
+    if (this.ws) {
+      try { this.ws.onclose = null; this.ws.close(); } catch (_) {}
+    }
+    this.connected = false;
     return new Promise((resolve, reject) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
@@ -72,6 +78,12 @@ export class NetworkClient {
       };
       ws.onmessage = (ev) => this._onBinary(ev.data);
     });
+  }
+  /** 安全的二进制发送：仅当 socket 已 OPEN 才发送（CONNECTING/CLOSING 一律静默丢弃，不抛异常） */
+  _send(frame) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(frame);
+    return true;
   }
   /** 设置自身预测位置（相对坐标解码参考） */
   setRef(x, y, z) {
@@ -169,7 +181,7 @@ export class NetworkClient {
   sendInput(moveX, moveZ, jump, pred) {
     if (!this.connected) return;
     const frame = encodeInput(++this.seq, moveX, moveZ, jump, pred.x, pred.y, pred.z);
-    this.ws.send(frame);
+    if (!this._send(frame)) return;
     if (this.onProtocol) {
       this.onProtocol('c2s', { type: 'INPUT', seq: this.seq, moveX, moveZ, jump, x: pred.x, y: pred.y, z: pred.z });
     }
@@ -177,49 +189,49 @@ export class NetworkClient {
   /** 攻击世界实体（世界怪物/Boss） */
   sendAttack(targetWid, slot = 0) {
     if (!this.connected || !targetWid) return;
-    this.ws.send(encodeAttack(targetWid, slot));
+    this._send(encodeAttack(targetWid, slot));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'ATTACK', targetWid, slot });
   }
   /** 打开商店（target 为商店 NPC wid） */
   sendShopOpen(npcWid) {
     if (!this.connected || !npcWid) return;
-    this.ws.send(encodeShopOpen(npcWid));
+    this._send(encodeShopOpen(npcWid));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'SHOP_OPEN', npcWid });
   }
   /** 购买物品 */
   sendShopBuy(itemId, count = 1) {
     if (!this.connected || !itemId) return;
-    this.ws.send(encodeShopBuy(itemId, count));
+    this._send(encodeShopBuy(itemId, count));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'SHOP_BUY', itemId, count });
   }
   /** 拾取地面掉落物 */
   sendPickup(dropWid) {
     if (!this.connected || !dropWid) return;
-    this.ws.send(encodePickup(dropWid));
+    this._send(encodePickup(dropWid));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'PICKUP', dropWid });
   }
   /** 穿戴/卸下装备 */
   sendEquip(slot, itemId) {
     if (!this.connected) return;
-    this.ws.send(encodeEquip(slot, itemId));
+    this._send(encodeEquip(slot, itemId));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'EQUIP', slot, itemId });
   }
   /** 使用消耗品 */
   sendUseItem(itemId, count = 1) {
     if (!this.connected || !itemId) return;
-    this.ws.send(encodeUseItem(itemId, count));
+    this._send(encodeUseItem(itemId, count));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'USE_ITEM', itemId, count });
   }
   /** 施放技能（技能系统） */
   sendCastSkill(skillId, targetWid = 0, tx = 0, tz = 0) {
     if (!this.connected || !skillId) return;
-    this.ws.send(encodeCastSkill(skillId, targetWid, tx, tz));
+    this._send(encodeCastSkill(skillId, targetWid, tx, tz));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'CAST_SKILL', skillId, targetWid, tx, tz });
   }
   /** 控制台命令（功能测试） */
   sendConsole(cmd) {
     if (!this.connected) return;
-    this.ws.send(encodeConsole(cmd));
+    this._send(encodeConsole(cmd));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'CONSOLE', cmd });
   }
   close() {

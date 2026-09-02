@@ -260,10 +260,12 @@ bool terrainBlocked(double x, double z) {
   if (terrainSlope(x, z) > kCliffSlope) return true;
   return false;
 }
-void randomSpawn(Mulberry32& rng, double& x, double& y, double& z) {
+void randomSpawn(Mulberry32& rng, double& x, double& y, double& z,
+                 double minR, double maxR) {
+  const double range = maxR - minR;
   for (int attempt = 0; attempt < 64; attempt++) {
     double angle = rng.next() * 6.283185307179586;
-    double r = std::sqrt(rng.next()) * 60.0;
+    double r = minR + std::sqrt(rng.next()) * range;
     x = std::cos(angle) * r;
     z = std::sin(angle) * r;
     double h = terrainHeight(x, z);
@@ -273,11 +275,28 @@ void randomSpawn(Mulberry32& rng, double& x, double& y, double& z) {
       return;
     }
   }
-  // 兜底：任意点
+  // 兜底：范围内任意点
   double angle = rng.next() * 6.283185307179586;
-  double r = std::sqrt(rng.next()) * 60.0;
+  double r = minR + std::sqrt(rng.next()) * range;
   x = std::cos(angle) * r;
   z = std::sin(angle) * r;
   y = terrainHeight(x, z) + 1.5;
+}
+// 城镇出生点：主城圆盘内（开放空地，玩家出生/复活安全区）
+void townSpawn(Mulberry32& rng, double& x, double& y, double& z) {
+  for (int attempt = 0; attempt < 64; attempt++) {
+    double angle = rng.next() * 6.283185307179586;
+    double r = std::sqrt(rng.next()) * kTownSpawnRadius;
+    x = std::cos(angle) * r;
+    z = std::sin(angle) * r;
+    double h = terrainHeight(x, z);
+    if (!terrainBlocked(x, z) && h > kWaterLevel + 1.0) {
+      y = h + 1.5;
+      return;
+    }
+  }
+  // 兜底：城镇中心
+  x = 0; z = 0;
+  y = terrainHeight(0, 0) + 1.5;
 }
 } // namespace ew

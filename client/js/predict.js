@@ -35,18 +35,19 @@ function circleBlocked(x, z, r) {
 // 与障碍重叠时逐轴尝试，模拟沿墙滑动
 function slideMove(e, ox, oz, nx, nz, r) {
   if (!circleBlocked(nx, nz, r)) { e.x = nx; e.z = nz; return false; }
+  // X 轴单独尝试（沿 X 滑动 → 结果 (nx, oz)）
   const okX = !circleBlocked(nx, oz, r);
+  // Z 轴单独尝试（沿 Z 滑动 → 结果 (ox, nz)）
   const okZ = !circleBlocked(ox, nz, r);
   if (okX && okZ) {
-    if (Math.abs(nx - ox) >= Math.abs(nz - oz)) e.x = nx;
-    else e.z = nz;
+    if (Math.abs(nx - ox) >= Math.abs(nz - oz)) { e.x = nx; e.z = oz; }
+    else { e.x = ox; e.z = nz; }
   } else if (okX) {
-    e.x = nx;
+    e.x = nx; e.z = oz;
   } else if (okZ) {
-    e.z = nz;
+    e.x = ox; e.z = nz;
   } else {
-    e.x = ox;
-    e.z = oz;
+    e.x = ox; e.z = oz;
   }
   return true;
 }
@@ -168,18 +169,16 @@ export class Predictor {
       v.z *= s;
     }
 
-    // 6) 积分
+    // 6) 积分（先记录积分前位置，供滑动回退用——与服务端 moveEntityCollide 在 physics.step 前取 ox/oz 一致）
+    const ox = p.x, oz = p.z;
     p.x += v.x * dt;
     p.y += v.y * dt;
     p.z += v.z * dt;
 
-    // 7) 2.5D 静态地形碰撞：圆盘与不可通行（湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
+    // 7) 2.5D 静态地形碰撞：圆盘与不可通行（空洞/湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
     //    （与服务端 moveEntityCollide 逐位一致，保证预测不被服务端回退）
-    {
-      const ox = p.x, oz = p.z;
-      if (circleBlocked(p.x, p.z, CFG.RADIUS)) {
-        slideMove(p, ox, oz, p.x, p.z, CFG.RADIUS);
-      }
+    if (circleBlocked(p.x, p.z, CFG.RADIUS)) {
+      slideMove(p, ox, oz, p.x, p.z, CFG.RADIUS);
     }
 
     // 8) 地表碰撞（滑动后重新贴地，与服务端一致）

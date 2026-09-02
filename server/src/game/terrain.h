@@ -34,7 +34,13 @@ double terrainSlope(double x, double z);
 // 该点是否不可通行：空洞 / 深水 / 悬崖。客户端与服务端逐位一致
 bool terrainBlocked(double x, double z);
 // 出生点：在世界内随机找安全地表点（非水、非悬崖、非空洞）
-void randomSpawn(Mulberry32& rng, double& x, double& y, double& z);
+// 随机可通行出生点：环形 [minR, maxR]，默认 [0,60]（保证避开空洞/深水/悬崖）
+void randomSpawn(Mulberry32& rng, double& x, double& y, double& z,
+                 double minR = 0.0, double maxR = 60.0);
+// 城镇出生点：主城圆盘内（出生/商店开放空地，r<=8.2 保证玩家圆盘可容纳）
+void townSpawn(Mulberry32& rng, double& x, double& y, double& z);
+// 城镇半径常量（与 void mask 主城圆盘 r=9 对应，留玩家半径余量）
+constexpr double kTownSpawnRadius = 8.2;
 
 // ---- 地形编辑器编辑层（稀疏格子覆盖；客户端 JS terrain.js 同结构） ----
 // 编辑器产物：对指定整数格覆盖「绝对高度 h」与「可通行性 v」，

@@ -83,13 +83,18 @@ function showMsg(text, ok) {
   el.className = 'msg' + (ok ? ' ok' : '');
 }
 
+let loggingIn = false; // 防重入：submit 按钮会同时触发 click+submit，避免双重连接
 async function doLogin(username, password) {
+  if (loggingIn) return;
+  loggingIn = true;
   showMsg('登录中…', false);
   try {
     const data = await net.login(username, password);
     await enterWorld(data.token, data.user.username, data.world);
   } catch (e) {
     showMsg(e.message);
+  } finally {
+    loggingIn = false;
   }
 }
 

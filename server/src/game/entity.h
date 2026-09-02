@@ -101,6 +101,7 @@ struct Entity {
     uint32_t targetWid = 0;  // 当前目标（仇恨/交互）
     double stateTime = 0;    // 当前状态持续时间（秒）
     double thinkCd = 0;      // 决策/行为冷却
+    double stuckT = 0;       // 卡住计时（有移动意图但位移≈0，用于空洞/悬崖前解卡）
     // --- 大规模 AI 调度（时间片轮转 + 距离分级）---
     uint32_t tickStride = 1; // 每 N tick 更新一次（AI LOD，由调度器维护）
   } ai;

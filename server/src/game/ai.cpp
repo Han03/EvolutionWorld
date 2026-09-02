@@ -115,7 +115,13 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         if (target->hp <= 0 && target->kind == EntityKind::Player) w.killPlayer(*target, &e); // 玩家死亡→复活
       }
     } else {
-      // 追击
+      // 追击：若被空洞/悬崖/深水墙挡住持续卡住 → 放弃追击回巢（不硬穿障碍）
+      if (ai.stuckT > 2.0) {
+        e.aggro.clear();
+        ai.aiState = AS_RETURN;
+        ai.stuckT = 0;
+        return;
+      }
       ai.aiState = AS_CHASE;
       moveToward(e, target->pos, slowedSpeed(e, ai.speed * 1.8), cfg.monsterAttackRange);
     }
@@ -128,6 +134,13 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
     return;
   }
   ai.aiState = AS_PATROL;
+  // 空洞/障碍前卡住 → 立即换巡逻方向（避免一直顶墙）
+  if (ai.stuckT > 1.5) {
+    ai.dirX = rng01() * 2.0 - 1.0;
+    ai.dirZ = rng01() * 2.0 - 1.0;
+    ai.timer = cfg.monsterPatrolPauseSec + rng01() * 2.0;
+    ai.stuckT = 0;
+  }
   ai.timer -= dt;
   if (ai.timer <= 0) {
     ai.dirX = rng01() * 2.0 - 1.0;
@@ -161,6 +174,13 @@ void tickNpcAi(World& w, Entity& e, double dt) {
     ai.timer = 4.0 + rng01() * 6.0;
   }
   if (ai.aiState == AS_WANDER) {
+    // 空洞/障碍前卡住 → 换游走方向
+    if (ai.stuckT > 1.5) {
+      ai.dirX = rng01() * 2.0 - 1.0;
+      ai.dirZ = rng01() * 2.0 - 1.0;
+      ai.timer = 3.0 + rng01() * 4.0;
+      ai.stuckT = 0;
+    }
     double homeD = std::hypot(e.pos.x - ai.homeX, e.pos.z - ai.homeZ);
     if (homeD > 6.0) {
       moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, slowedSpeed(e, ai.speed * 0.5), 1.0);

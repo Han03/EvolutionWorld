@@ -27,21 +27,20 @@ bool Collision::slideMove(Entity& e, double ox, double oz, double nx, double nz)
     e.pos.z = nz;
     return false; // 完全自由
   }
-  // X 轴单独尝试
+  // X 轴单独尝试（沿 X 滑动 → 结果 (nx, oz)）
   bool okX = !circleBlocked(nx, oz, r);
-  // Z 轴单独尝试
+  // Z 轴单独尝试（沿 Z 滑动 → 结果 (ox, nz)）
   bool okZ = !circleBlocked(ox, nz, r);
   if (okX && okZ) {
     // 都可行：选择位移更大的轴（自然的沿墙滑动）
-    if (std::abs(nx - ox) >= std::abs(nz - oz)) e.pos.x = nx;
-    else e.pos.z = nz;
+    if (std::abs(nx - ox) >= std::abs(nz - oz)) { e.pos.x = nx; e.pos.z = oz; }
+    else { e.pos.x = ox; e.pos.z = nz; }
   } else if (okX) {
-    e.pos.x = nx;
+    e.pos.x = nx; e.pos.z = oz;
   } else if (okZ) {
-    e.pos.z = nz;
+    e.pos.x = ox; e.pos.z = nz;
   } else {
-    e.pos.x = ox;
-    e.pos.z = oz;
+    e.pos.x = ox; e.pos.z = oz;
   }
   return true; // 发生阻挡
 }
