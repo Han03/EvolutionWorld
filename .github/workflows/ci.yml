@@ -38,7 +38,10 @@ jobs:
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
           # Stop old server process directly (systemctl hangs when user WSL session is active)
-          wsl -d Ubuntu -- bash -c "pkill -f evolution_server 2>/dev/null || true"
+          wsl -d Ubuntu -- bash -c "pkill -f evolution_server 2>/dev/null || true; fuser -k 3000/tcp 2>/dev/null || true"
+          # Wait for port 3000 to be released
+          Start-Sleep -Seconds 2
+          wsl -d Ubuntu -- bash -c "for i in 1 2 3 4 5; do if ! ss -tlnp 2>/dev/null | grep -q ':3000 '; then echo 'Port 3000 free'; break; fi; echo 'Waiting for port 3000...'; sleep 1; done; ss -tlnp 2>/dev/null | grep ':3000 ' || echo 'Port 3000 confirmed free'"
           # Deploy build artifacts to stable WSL path (survives runner workspace cleanup)
           wsl -d Ubuntu -- bash -c "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && echo DEPLOY_OK"
           # Resolve Windows host IP visible from WSL2 (for MySQL/Redis connectivity)
@@ -52,8 +55,8 @@ jobs:
           wsl -d Ubuntu -- bash -c "cd /opt/evolutionworld/server && EW_DEBUG=1 EW_CONFIG='$ewConfig' nohup ./build/evolution_server > /tmp/evolution_server.log 2>&1 & echo SERVER_STARTED pid=\$!"
           Write-Output "Server address: http://localhost:3000"
           # Wait a moment then check if server process is alive and show startup log
-          Start-Sleep -Seconds 3
-          wsl -d Ubuntu -- bash -c "echo '--- Server process check ---' && ps aux | grep evolution_server | grep -v grep && echo '--- Server startup log ---' && cat /tmp/evolution_server.log 2>/dev/null || echo 'No log file'"
+          Start-Sleep -Seconds 5
+          wsl -d Ubuntu -- bash -c "echo '=== Server process check ===' && ps aux | grep evolution_server | grep -v grep && echo '=== Port 3000 check ===' && ss -tlnp 2>/dev/null | grep ':3000 ' && echo '=== Server startup log (first 50 lines) ===' && head -50 /tmp/evolution_server.log 2>/dev/null || echo 'No log file'"
 
       - name: Health check
         run: |
