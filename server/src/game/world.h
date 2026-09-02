@@ -164,6 +164,8 @@ public:
   void addAliveBoss(int d) { aliveBoss_ = (uint32_t)((int)aliveBoss_ + d); }
   // 玩家死亡统一处理（hp=0+死亡标记+复活计时+EVT_DEATH 广播），供普攻/技能/Boss/反伤复用
   void killPlayer(Entity& p, Entity* killer);
+  // 通用技能效果施加：伤害/Buff/击退/死亡/吸血（玩家→怪物、怪物→玩家 均可用）
+  void applySkillToTarget(Entity& caster, Entity& target, const SkillDef& sd, double variance);
 private:
   void addEntity(Entity&& e);
   void despawnEntity(const std::string& id);
@@ -178,8 +180,6 @@ private:
   void applyMonsterStats(Entity& m, const std::string& type);
   // 目标死亡统一处理（Boss 复活/普通怪物失活+复活+掉落），供普攻/技能复用
   void onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs);
-  // 技能伤害落点（含仇恨/死亡/吸血），skillFalloff=1.0 单目标、0=边缘（预留）
-  void applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd, double variance);
   // 击退：沿 from→target 方向把 target 位移 dist 米（霸体免疫；落回地形高度），并触发受击打断
   void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);

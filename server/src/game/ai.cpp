@@ -104,6 +104,35 @@ bool AiScheduler::shouldTick(World& w, Entity& e, uint64_t tick) {
   return ((tick + e.wid) % stride) == 0;
 }
 
+// ---------------- 怪物技能选择（优先特殊效果，回退基础攻击） ----------------
+static const SkillDef* pickMonsterSkill(World& w, Entity& e, Entity& target, uint64_t nowMs) {
+  const SkillDef* fallback = nullptr;
+  double dist = e.pos.dist2D(target.pos);
+  for (uint32_t sid : e.skillIds) {
+    const SkillDef* sd = w.data().skill(sid);
+    if (!sd) continue;
+    auto cdIt = e.skillCd.find(sid);
+    if (cdIt != e.skillCd.end() && nowMs < cdIt->second) continue;
+    double range = sd->range > 0 ? sd->range : 3.0;
+    if (dist > range) continue;
+    if (sd->buffType != BuffType::NONE || sd->dmgMul > 1.0 || sd->knockback > 0) return sd;
+    if (!fallback) fallback = sd;
+  }
+  return fallback;
+}
+
+// 选择 Boss AOE 技能（target=AOE，冷却好可用）
+static const SkillDef* pickBossAoeSkill(World& w, Entity& e, uint64_t nowMs) {
+  for (uint32_t sid : e.skillIds) {
+    const SkillDef* sd = w.data().skill(sid);
+    if (!sd || sd->target != SkillTarget::AOE) continue;
+    auto cdIt = e.skillCd.find(sid);
+    if (cdIt != e.skillCd.end() && nowMs < cdIt->second) continue;
+    return sd;
+  }
+  return nullptr;
+}
+
 // ---------------- 生物（Monster）状态机 ----------------
 void tickMonsterAi(World& w, Entity& e, double dt) {
   const auto& cfg = w.config();
@@ -142,19 +171,17 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
       e.aggro.clear();
       ai.aiState = AS_RETURN;
     } else if (d <= cfg.monsterAttackRange) {
-      // 近战攻击
+      // 近战攻击（接入技能系统）
       ai.aiState = AS_ATTACK;
       ai.targetVX = ai.targetVZ = 0;
       if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.monsterAttackCdSec * 1000.0)) {
-        e.lastAttackMs = nowMs;
-        double dmg = calcDamage(e.attack, target->defense, 0.9 + rng01() * 0.2);
-        target->hp -= dmg;
-        target->lastDamageMs = nowMs;
-        w.pushEvent(proto::EVT_DAMAGE, target->wid, (uint32_t)dmg, 0, 0);
-        w.markStatsDirty(target->id);
-        w.thornsReflect(*target, e, dmg); // 荆棘反伤（玩家有 THORNS Buff 时反弹给怪物）
-        w.cancelCastOnHit(*target);        // 受击打断玩家前摇
-        if (target->hp <= 0 && target->kind == EntityKind::Player) w.killPlayer(*target, &e); // 玩家死亡→复活
+        const SkillDef* sd = pickMonsterSkill(w, e, *target, nowMs);
+        if (sd) {
+          e.lastAttackMs = nowMs;
+          e.skillCd[sd->id] = nowMs + (uint64_t)sd->cooldownMs;
+          w.pushEvent(proto::EVT_SKILL, e.wid, sd->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
+          w.applySkillToTarget(e, *target, *sd, 0.9 + rng01() * 0.2);
+        }
       }
     } else {
       // 追击：若被空洞/悬崖/深水墙挡住持续卡住 → 放弃追击回巢（不硬穿障碍）
@@ -310,33 +337,34 @@ void tickBossAi(World& w, Entity& e, double dt) {
     e.ai.aiState = AS_ATTACK;
     e.ai.targetVX = e.ai.targetVZ = 0;
     if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.bossAttackCdSec * 1000.0)) {
-      e.lastAttackMs = nowMs;
-      double dmg = calcDamage(e.attack, target->defense, 0.9 + rng01() * 0.2);
-      target->hp -= dmg;
-      target->lastDamageMs = nowMs;
-      e.aggro[target->wid] -= dmg * 0.3; // 被攻击目标仇恨衰减
-      w.pushEvent(proto::EVT_DAMAGE, target->wid, (uint32_t)dmg, 0, 0);
-      w.markStatsDirty(target->id);
-      w.thornsReflect(*target, e, dmg); // 荆棘反伤
-      w.cancelCastOnHit(*target);        // 受击打断玩家前摇
-      if (target->hp <= 0 && target->kind == EntityKind::Player) w.killPlayer(*target, &e); // 玩家死亡→复活
-      // 范围技能（周期性 AOE，全区广播）
-      e.bossSkillCd -= dt;
-      if (e.bossSkillCd <= 0) {
-        e.bossSkillCd = cfg.bossSkillCdSec;
-        w.pushEvent(proto::EVT_SKILL, e.wid, 1, (int32_t)e.pos.x, (int32_t)e.pos.z);
+      // 普攻（接入技能系统，选第一个非 AOE 技能）
+      const SkillDef* atkSkill = nullptr;
+      for (uint32_t sid : e.skillIds) {
+        const SkillDef* sd = w.data().skill(sid);
+        if (!sd || sd->target == SkillTarget::AOE) continue;
+        auto cdIt = e.skillCd.find(sid);
+        if (cdIt != e.skillCd.end() && nowMs < cdIt->second) continue;
+        atkSkill = sd;
+        break;
+      }
+      if (atkSkill) {
+        e.lastAttackMs = nowMs;
+        e.skillCd[atkSkill->id] = nowMs + (uint64_t)atkSkill->cooldownMs;
+        w.pushEvent(proto::EVT_SKILL, e.wid, atkSkill->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
+        w.applySkillToTarget(e, *target, *atkSkill, 0.9 + rng01() * 0.2);
+        e.aggro[target->wid] -= target->lastDamageMs == nowMs ? 0 : 0; // 仇恨衰减由 applySkillToTarget 内的 aggro 增长平衡
+      }
+      // 范围技能（AOE，独立冷却，全区广播）
+      const SkillDef* aoeSkill = pickBossAoeSkill(w, e, nowMs);
+      if (aoeSkill) {
+        e.skillCd[aoeSkill->id] = nowMs + (uint64_t)aoeSkill->cooldownMs;
+        w.pushEvent(proto::EVT_SKILL, e.wid, aoeSkill->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
+        const double aoeRange = aoeSkill->radius > 0 ? aoeSkill->radius : 6.0;
         for (const auto& pid : w.players()) {
           Entity* pl = w.findEntity(pid);
           if (!pl || pl->hp <= 0) continue;
-          if (pl->pos.dist2D(e.pos) <= cfg.bossSkillRange) {
-            double sdmg = calcDamage(e.attack * 0.8, pl->defense, 1.0);
-            pl->hp -= sdmg;
-            pl->lastDamageMs = nowMs;
-            w.pushEvent(proto::EVT_DAMAGE, pl->wid, (uint32_t)sdmg, 0, 0);
-            w.markStatsDirty(pl->id);
-            w.thornsReflect(*pl, e, sdmg); // 荆棘反伤
-            w.cancelCastOnHit(*pl);      // 受击打断玩家前摇
-            if (pl->hp <= 0) w.killPlayer(*pl, &e); // 玩家死亡→复活
+          if (pl->pos.dist2D(e.pos) <= aoeRange) {
+            w.applySkillToTarget(e, *pl, *aoeSkill, 1.0);
           }
         }
       }

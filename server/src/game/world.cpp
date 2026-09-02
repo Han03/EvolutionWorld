@@ -82,6 +82,7 @@ void World::spawnBossAt(double hx, double hz, const std::string& name) {
   b.pos = {bx, terrainHeight(bx, bz) + b.radius + 0.3, bz};
   b.ai.homeX = bx;
   b.ai.homeZ = bz;
+  b.skillIds = {2100, 2101};  // Boss 技能：地裂冲击 / 暗影波动
   addEntity(std::move(b));
   aliveBoss_++;
 }
@@ -308,7 +309,7 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
         (void)id;
         if (!e.active || e.kind != EntityKind::Monster) continue;
         if (e.pos.dist2D({gx, 0, gz}) > hr) continue;  // 范围命中
-        applySkillDamage(caster, e, sd, 0.9 + rng01() * 0.2);
+        applySkillToTarget(caster, e, sd, 0.9 + rng01() * 0.2);
       }
       break;
     }
@@ -353,8 +354,8 @@ void World::cancelCastOnHit(Entity& e) {
   if (e.castingSkillId == 0 || e.kind != EntityKind::Player) return;
   cancelCast(e, 2);
 }
-// 技能伤害落点：伤害计算 + 仇恨 + 死亡 + 吸血 + 附带减益 + 击退
-void World::applySkillDamage(Entity& caster, Entity& target, const SkillDef& sd, double variance) {
+// 通用技能效果施加：伤害计算 + 仇恨 + 死亡 + 吸血 + 附带减益 + 击退（玩家→怪物、怪物→玩家 均可用）
+void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& sd, double variance) {
   double dmg = calcDamage(caster.attack * sd.dmgMul, target.defense, variance) + sd.flatDmg;
   target.hp -= dmg;
   target.aggro[caster.wid] += dmg;
@@ -663,6 +664,7 @@ void World::applyMonsterStats(Entity& m, const std::string& type) {
   m.mp = m.maxMp = def->mp;
   m.attack = def->attack;
   m.defense = def->defense;
+  m.skillIds = def->skillIds;
 }
 // 怪物死亡掉落：金币 + 概率表物品（掉落物生成在世界，可拾取）
 void World::rollDrops(Entity& killer, Entity& victim) {

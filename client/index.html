@@ -10,10 +10,16 @@
   <!-- 3D 渲染容器 -->
   <div id="app"></div>
 
-  <!-- 登录界面 -->
+  <!-- ═══════════ 登录界面 ═══════════ -->
   <div id="login-overlay" class="overlay">
+    <div class="login-bg-particles"></div>
     <div class="login-card">
+      <div class="login-crest">
+        <div class="crest-glow"></div>
+        <div class="crest-icon">⚔</div>
+      </div>
       <h1 class="title">EVOLUTION<span>WORLD</span></h1>
+      <div class="title-divider"><span class="divider-gem">◆</span></div>
       <p class="subtitle">无缝世界 · 固定俯视角大型MMO · 空壳网络游戏服务端</p>
       <form id="login-form" autocomplete="off">
         <label>账号</label>
@@ -22,81 +28,127 @@
         <input id="password" type="password" placeholder="6-64 位" maxlength="64" />
         <div id="login-msg" class="msg"></div>
         <div class="btn-row">
-          <button type="button" id="btn-register" class="btn btn-ghost">注册</button>
-          <button type="submit" id="btn-login" class="btn btn-primary">登录</button>
+          <button type="button" id="btn-register" class="btn btn-ghost">注 册</button>
+          <button type="submit" id="btn-login" class="btn btn-primary">登 录</button>
         </div>
       </form>
-      <div class="hint">登录后将以 <b>橙色球体</b> 进入无缝世界（固定俯视角）<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC<br/><a href="./editor.html" target="_blank" style="color:#8fd3ff">🛠 地形编辑器（画刷调整地图）</a></div>
+      <div class="hint">登录后将以 <b>橙色球体</b> 进入无缝世界（固定俯视角）<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC<br/><a href="./editor.html" target="_blank" class="editor-link">🛠 地形编辑器（画刷调整地图）</a></div>
+      <div class="login-footer">v1.0 · EvolutionWorld</div>
     </div>
   </div>
 
-  <!-- 加载遮罩 -->
+  <!-- ═══════════ 加载遮罩 ═══════════ -->
   <div id="loading" class="loading hidden">
-    <div class="spinner"></div>
+    <div class="loading-ring"><div class="loading-ring-inner"></div></div>
     <span id="loading-text">连接世界中…</span>
   </div>
 
-  <!-- HUD -->
+  <!-- ═══════════ HUD ═══════════ -->
   <div id="hud" class="hidden">
-    <div class="hud-top">
-      <div class="hud-title">EVOLUTIONWORLD</div>
-      <div id="hud-conn" class="hud-chip">…</div>
-    </div>
-    <div id="boss-bar" class="hidden">
-      <div id="boss-name">世界Boss</div>
-      <div class="boss-track"><div id="boss-fill"></div></div>
-      <span id="boss-hp">0/0</span>
-    </div>
-    <div class="hud-bottom">
-      <div id="hud-info">
-        <div><b id="hud-user">-</b></div>
-        <div id="hud-pos">x:0 y:0 z:0</div>
-        <div id="hud-fps">fps:0</div>
+
+    <!-- ── 顶栏 ── -->
+    <div class="hud-top-bar">
+      <div class="hud-top-left">
+        <div class="hud-logo">EVOLUTIONWORLD</div>
+        <div id="hud-conn" class="hud-status-chip">…</div>
       </div>
-      <!-- 属性系统 HUD：血量/蓝量/攻击/防御/金币 -->
-      <div class="hud-vitals">
-        <div class="bar hp"><div id="hp-fill" class="fill"></div><span id="hp-text">100/100</span></div>
-        <div class="bar mp"><div id="mp-fill" class="fill"></div><span id="mp-text">50/50</span></div>
-        <div class="hud-stats">
-          <span>⚔ <b id="stat-attack">12</b></span>
-          <span>🛡 <b id="stat-defense">3</b></span>
-          <span class="hud-gold">💰 <b id="hud-gold">0</b></span>
+      <div class="hud-top-right">
+        <div id="hud-info" class="hud-info-block">
+          <div><b id="hud-user">-</b></div>
+          <div id="hud-pos">x:0 y:0 z:0</div>
+          <div id="hud-fps">fps:0</div>
         </div>
       </div>
-      <div class="hud-controls">
-        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
-        <div><kbd>Space</kbd> 跳跃 · <kbd>J</kbd> 攻击 · <kbd>B</kbd> 商店(靠近老板) · <kbd>E</kbd> 拾取 · <kbd>I</kbd> 背包/装备 · <kbd>1-8</kbd> 技能</div>
+    </div>
+
+    <!-- ── Boss 血条（顶部居中） ── -->
+    <div id="boss-bar" class="hidden">
+      <div class="boss-skull">💀</div>
+      <div class="boss-info">
+        <div id="boss-name">世界Boss</div>
+        <div class="boss-track"><div id="boss-fill"></div></div>
+      </div>
+      <span id="boss-hp">0/0</span>
+    </div>
+
+    <!-- ── 左侧：角色头像框 + 血量/蓝量 ── -->
+    <div class="hud-portrait">
+      <div class="portrait-frame">
+        <div class="portrait-icon">🛡</div>
+        <div class="portrait-level">Lv</div>
+      </div>
+      <div class="portrait-bars">
+        <div class="bar hp"><div id="hp-fill" class="fill"></div><span id="hp-text">100/100</span></div>
+        <div class="bar mp"><div id="mp-fill" class="fill"></div><span id="mp-text">50/50</span></div>
+        <div class="portrait-stats">
+          <span class="stat-atk">⚔ <b id="stat-attack">12</b></span>
+          <span class="stat-def">🛡 <b id="stat-defense">3</b></span>
+          <span class="stat-gold">💰 <b id="hud-gold">0</b></span>
+        </div>
       </div>
     </div>
-    <!-- 技能系统：技能栏（数字键 1-8 施放）+ Buff 栏 -->
-    <div id="skill-bar" class="skill-bar"></div>
+
+    <!-- ── 底部中央：技能栏 + Buff 栏 ── -->
     <div id="buff-bar" class="buff-bar"></div>
+    <div class="skill-bar-wrapper">
+      <div class="skill-bar-frame">
+        <div class="skill-bar-ornament left">◄</div>
+        <div id="skill-bar" class="skill-bar"></div>
+        <div class="skill-bar-ornament right">►</div>
+      </div>
+    </div>
+
+    <!-- ── 右下角：操作提示 ── -->
+    <div class="hud-controls">
+      <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
+      <div><kbd>Space</kbd> 跳跃 · <kbd>J</kbd> 攻击 · <kbd>B</kbd> 商店 · <kbd>E</kbd> 拾取</div>
+      <div><kbd>I</kbd> 背包/装备 · <kbd>1-8</kbd> 技能</div>
+    </div>
+
+    <!-- ── 左下角：协议监控（替代聊天栏位置） ── -->
+    <div id="proto-panel">
+      <div class="proto-head">
+        <span class="proto-icon">📡</span> 协议监控 <span id="proto-bps">-</span>
+      </div>
+      <div id="proto-log"></div>
+    </div>
   </div>
-  <!-- 背包/装备面板（I 键） -->
+
+  <!-- ═══════════ 背包/装备面板 ═══════════ -->
   <div id="inventory-panel" class="panel hidden">
-    <div class="panel-head"><span>背包 / 装备</span><button id="inv-close" class="panel-close">×</button></div>
+    <div class="panel-head">
+      <span class="panel-title-icon">🎒</span>
+      <span>背包 / 装备</span>
+      <button id="inv-close" class="panel-close">✕</button>
+    </div>
     <div class="inv-body">
       <div id="equip-list" class="equip-list"></div>
       <div id="inv-grid" class="inv-grid"></div>
     </div>
   </div>
-  <!-- 商店面板（B 键，靠近商店 NPC 打开） -->
+
+  <!-- ═══════════ 商店面板 ═══════════ -->
   <div id="shop-panel" class="panel hidden">
-    <div class="panel-head"><span id="shop-title">商店</span><button id="shop-close" class="panel-close">×</button></div>
+    <div class="panel-head">
+      <span class="panel-title-icon">🏪</span>
+      <span id="shop-title">商店</span>
+      <button id="shop-close" class="panel-close">✕</button>
+    </div>
     <div id="shop-list" class="shop-list"></div>
   </div>
-  <!-- 提示浮层 -->
+
+  <!-- ═══════════ 提示浮层 ═══════════ -->
   <div id="toast" class="toast"></div>
-  <!-- 死亡遮罩：玩家被击杀后显示复活倒计时（EVT_DEATH/EVT_RESPAWN 驱动） -->
+
+  <!-- ═══════════ 死亡遮罩 ═══════════ -->
   <div id="death-overlay" class="death-overlay hidden">
-    <div class="death-title">你已阵亡</div>
-    <div class="death-sub">正在等待复活…</div>
-    <div id="death-count" class="death-count">8.0s</div>
-  </div>
-  <!-- 协议透传转换监控：二进制帧 → 可读对象 实时解码展示 -->
-  <div id="proto-panel">
-    <div class="proto-head">协议透传 <span id="proto-bps">-</span></div>
-    <div id="proto-log"></div>
+    <div class="death-vignette"></div>
+    <div class="death-content">
+      <div class="death-skull">☠</div>
+      <div class="death-title">你已阵亡</div>
+      <div class="death-sub">正在等待复活…</div>
+      <div id="death-count" class="death-count">8.0s</div>
+    </div>
   </div>
 
   <script type="module" src="./js/boot.js"></script>

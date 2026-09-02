@@ -67,6 +67,7 @@ struct MonsterDef {
   uint32_t goldMin = 1, goldMax = 3;   // 击杀掉落金币区间
   std::vector<DropEntry> drops;        // 掉落物品概率表
   double dropRadius = 1.6;             // 掉落物散布半径
+  std::vector<uint32_t> skillIds;      // 该怪物类型可用的技能 ID
 };
 
 // ---------- 商店配置 ----------

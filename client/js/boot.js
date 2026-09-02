@@ -132,11 +132,11 @@ async function enterWorld(token, username, worldMeta) {
       hud.classList.remove('hidden');
       $('hud-user').textContent = net.selfName;
       $('hud-conn').textContent = '已连接';
-      $('hud-conn').className = 'hud-chip on';
+      $('hud-conn').className = 'hud-status-chip on';
     };
     net.onDisconnect = () => {
       $('hud-conn').textContent = '连接断开';
-      $('hud-conn').className = 'hud-chip off';
+      $('hud-conn').className = 'hud-status-chip off';
     };
     await net.connect(token);
     // 加载服务器地形编辑层（地形编辑器产物；客户端/服务端同源，保证预测与碰撞一致）
@@ -216,7 +216,7 @@ async function enterWorld(token, username, worldMeta) {
         const de = $('death-overlay');
         if (de) de.classList.remove('hidden');
         $('hud-conn').textContent = '你被击倒了';
-        $('hud-conn').className = 'hud-chip warn';
+        $('hud-conn').className = 'hud-status-chip warn';
       } else if (entities) {
         entities.applyDeath(ev.wid);
       }
@@ -227,7 +227,7 @@ async function enterWorld(token, username, worldMeta) {
         const de = $('death-overlay');
         if (de) de.classList.add('hidden');
         $('hud-conn').textContent = '已连接';
-        $('hud-conn').className = 'hud-chip on';
+        $('hud-conn').className = 'hud-status-chip on';
         toast('你已复活', 'ok');
       } else if (entities) {
         entities.applyRespawn(ev.wid);
@@ -323,7 +323,7 @@ async function enterWorld(token, username, worldMeta) {
 
   net.onKick = (msg) => {
     $('hud-conn').textContent = '已断开（' + (msg.reason || '违规') + '）';
-    $('hud-conn').className = 'hud-chip off';
+    $('hud-conn').className = 'hud-status-chip off';
     running = false;
     net.close();
   };

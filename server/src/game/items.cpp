@@ -155,12 +155,16 @@ void GameData::loadDefaults() {
   // ---- 怪物：由内向外难度梯度 ----
   addDefaultMonster("wolf", "野狼", 1, 45, 10, 7, 1, 2, 5);
   monsters_["wolf"].drops = {{3001, 0.35}, {2001, 0.10}, {1001, 0.03}};
+  monsters_["wolf"].skillIds = {2001};
   addDefaultMonster("goblin", "哥布林", 2, 70, 20, 10, 3, 4, 9);
   monsters_["goblin"].drops = {{3002, 0.30}, {2001, 0.15}, {1501, 0.05}, {1101, 0.03}};
+  monsters_["goblin"].skillIds = {2002};
   addDefaultMonster("skeleton", "骷髅兵", 3, 95, 30, 13, 5, 6, 14);
   monsters_["skeleton"].drops = {{3003, 0.28}, {2002, 0.08}, {1502, 0.05}, {1002, 0.03}, {1202, 0.03}};
+  monsters_["skeleton"].skillIds = {2003};
   addDefaultMonster("gargoyle", "石像鬼", 5, 150, 50, 17, 8, 10, 24);
   monsters_["gargoyle"].drops = {{3004, 0.20}, {2002, 0.12}, {1503, 0.04}, {1102, 0.04}, {1302, 0.03}};
+  monsters_["gargoyle"].skillIds = {2004};
 
   // ---- 商店：一个商店 NPC 出售全部物品 ----
   ShopDef shop;
@@ -243,6 +247,32 @@ void GameData::loadDefaults() {
   addDefaultSkill(1017, "生命涌动", "生命之力涌动，每秒恢复 25 点生命（8 秒）", "s17",
                   SkillTarget::SELF, SkillEffect::BUFF, 14, 16000, 0, 0, 0, 0, 0,
                   BuffType::REGEN, 25, 8.0, 0, 400);  // 前摇 0.4s
+  // ---- 怪物专属技能（ID 2000+，不与玩家技能冲突）----
+  // 2001 撕咬：野狼普攻，附带流血 DoT
+  addDefaultSkill(2001, "撕咬", "野狼凶猛撕咬，造成 100% 伤害并使其流血（每秒 8 点，3 秒）", "m_atk1",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 0, 1.0, 0, 0,
+                  BuffType::BLEED, 8, 3.0, 0, 0);  // 瞬发，无冷却（由 monsterAttackCdSec 兆底）
+  // 2002 利爪挥击：哥布林普攻，附带减速
+  addDefaultSkill(2002, "利爪挥击", "哥布林挥动利爪，造成 100% 伤害并减速 20%（2 秒）", "m_atk2",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 0, 1.0, 0, 0,
+                  BuffType::MOVE_SLOW, 0.2, 2.0, 0, 0);
+  // 2003 骨刺投掷：骷髅兵普攻，远程附带减防
+  addDefaultSkill(2003, "骨刺投掷", "投掷尖锐骨刺，造成 90% 伤害并降低目标防御 3 点（4 秒）", "m_atk3",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1200, 5.0, 0, 0.9, 0, 0,
+                  BuffType::DEF_DOWN, -3, 4.0, 0, 0);
+  // 2004 石像冲击：石像鬼普攻，高伤附带击退
+  addDefaultSkill(2004, "石像冲击", "石像鬼重击目标，造成 120% 伤害并击退 2 米", "m_atk4",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1500, 3.0, 0, 1.2, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 0, false, false, 2.0);
+  // ---- Boss 专属技能（ID 2100+）----
+  // 2100 地裂冲击：Boss AOE，范围伤害 + 击退
+  addDefaultSkill(2100, "地裂冲击", "巨兽踏裂大地，对 6m 内敌人造成 80% 伤害并击退 3 米", "b_s1",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 0, 8000, 0, 6, 0.8, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 0, false, false, 3.0);
+  // 2101 暗影波动：Boss AOE，范围伤害 + 减速
+  addDefaultSkill(2101, "暗影波动", "释放暗影波动，对 8m 内敌人造成 60% 伤害并减速 35%（4 秒）", "b_s2",
+                  SkillTarget::AOE, SkillEffect::DAMAGE, 0, 10000, 0, 8, 0.6, 0, 0,
+                  BuffType::MOVE_SLOW, 0.35, 4.0, 0, 0);
   // 新玩家自动习得：普通攻击 / 冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
   starterSkills_ = {1000, 1001, 1002, 1003};
 }

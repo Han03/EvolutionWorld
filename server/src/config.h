@@ -27,8 +27,6 @@ struct Config {
   float bossAttack = 18.0f;          // Boss 攻击力
   float bossAttackRange = 2.5f;      // 近战攻击范围
   float bossAggroRange = 18.0f;      // 进入仇恨的侦测范围
-  float bossSkillRange = 8.0f;       // 范围技能半径
-  float bossSkillCdSec = 6.0f;       // 范围技能冷却（秒）
   float bossAttackCdSec = 0.9f;      // Boss 普攻间隔（秒）
   float bossRespawnSec = 30.0f;      // Boss 死亡复活（秒）
   float bossRegenPerSec = 4.0f;      // 脱战回血/秒
