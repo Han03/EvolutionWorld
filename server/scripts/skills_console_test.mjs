@@ -2,7 +2,7 @@
 /**
  * skills_console_test.mjs - 技能系统 + 游戏控制台端到端验证（服务端权威）
  * 流程：
- *  1) 注册登录 → 校验 S2C_SKILLS 携带 3 个起始技能（1001/1002/1003）
+ *  1) 注册登录 → 校验 S2C_SKILLS 携带 4 个起始技能（1000/1001/1002/1003）
  *  2) HTTP /api/console：learn(1005) → WS 收到 S2C_SKILLS 含 1005
  *  3) HTTP /api/console：gold/level/stat/status/boss/entities 命令执行与回显
  *  4) WS C2S_CONSOLE 通道：发送命令 → 收到 S2C_CONSOLE 结果
@@ -116,11 +116,12 @@ async function main() {
     .filter((e) => e.kind === KIND.MONSTER && (e.hp === undefined || e.hp > 0))
     .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
 
-  // 1) 登录后 S2C_SKILLS：3 个起始技能
+  // 1) 登录后 S2C_SKILLS：4 个起始技能
   await wait(() => gotHello && skills, 3000);
   check('登录后收到 S2C_SKILLS', !!skills);
   const starterIds = skills ? skills.skills.map((s) => s.id).sort() : [];
-  check('起始技能=3个', skills && skills.skills.length === 3, `ids=${starterIds.join(',')}`);
+  check('起始技能=4个', skills && skills.skills.length === 4, `ids=${starterIds.join(',')}`);
+  check('含 普通攻击1000', starterIds.includes(1000));
   check('含 冲刺斩1001', starterIds.includes(1001));
   check('含 烈焰冲击1002', starterIds.includes(1002));
   check('含 治疗之光1003', starterIds.includes(1003));

@@ -1,5 +1,5 @@
 /**
- * editor.js - EvolutionWorld 世界/剧本编辑器（2.5D 等距视角）
+ * editor.js - EvolutionWorld 世界编辑器（2.5D 等距视角）
  * 使用共享 terrain-renderer.js 渲染，与游戏客户端 renderer.js 同源同构。
  *
  * 两种模式：

@@ -174,6 +174,10 @@ void GameData::loadDefaults() {
   };
   shops_[1] = shop;
   // ---- 技能表（大型网游规模：单目标/AOE/治疗/Buff，数据驱动） ----
+  // 1000 普通攻击：基础近战攻击（瞬发，零耗蓝，玩家默认习得）
+  addDefaultSkill(1000, "普通攻击", "基础近战攻击，造成 100% 攻击伤害", "atk",
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 500, 3.2, 0, 1.0, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 200);  // 前摇 0.2s，冷却 0.5s
   // 1001 冲刺斩：单目标物理伤害（起始技）
   addDefaultSkill(1001, "冲刺斩", "迅猛突进的一击，造成 220% 攻击伤害", "s1",
                   SkillTarget::ENEMY, SkillEffect::DAMAGE, 8, 3000, 3.5, 0, 2.2, 0, 0,
@@ -239,8 +243,8 @@ void GameData::loadDefaults() {
   addDefaultSkill(1017, "生命涌动", "生命之力涌动，每秒恢复 25 点生命（8 秒）", "s17",
                   SkillTarget::SELF, SkillEffect::BUFF, 14, 16000, 0, 0, 0, 0, 0,
                   BuffType::REGEN, 25, 8.0, 0, 400);  // 前摇 0.4s
-  // 新玩家自动习得：冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
-  starterSkills_ = {1001, 1002, 1003};
+  // 新玩家自动习得：普通攻击 / 冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
+  starterSkills_ = {1000, 1001, 1002, 1003};
 }
 
 // ---------- JSON 覆盖加载 ----------

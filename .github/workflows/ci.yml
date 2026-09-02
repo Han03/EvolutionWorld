@@ -14,21 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Shutdown user WSL sessions
+        run: wsl --shutdown
+
       - name: Build C++ server in WSL Ubuntu
         run: |
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
           Write-Output "Building in: $wsl/server"
-          wsl -d Ubuntu -- bash -lc "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
+          wsl -d Ubuntu -- bash -c "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
 
       - name: Deploy to stable path and start server
         run: |
           $ws = $env:GITHUB_WORKSPACE
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
           # Stop old service first
-          wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true"
+          wsl -d Ubuntu -- bash -c "systemctl stop evolution-server 2>/dev/null || true"
           # Deploy build artifacts to stable WSL path (survives runner workspace cleanup)
-          wsl -d Ubuntu -- bash -lc "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && echo DEPLOY_OK"
+          wsl -d Ubuntu -- bash -c "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && echo DEPLOY_OK"
           # Resolve Windows host IP visible from WSL2 (for MySQL/Redis connectivity)
           $winHost = (wsl -d Ubuntu -- bash -c "grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}'").Trim()
           $ewConfig = "mysql_host=$winHost,mysql_port=3306,mysql_user=root,mysql_pass=123456,mysql_db=evolution_world,redis_host=$winHost,redis_port=6379"
@@ -52,7 +55,7 @@ jobs:
           )
           $svc = ($lines -join "`n") + "`n"
           $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($svc))
-          wsl -d Ubuntu -- bash -lc "echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
+          wsl -d Ubuntu -- bash -c "echo $b64 | base64 -d > /etc/systemd/system/evolution-server.service && systemctl daemon-reload && systemctl start evolution-server && echo SERVER_STARTED"
           Write-Output "Server address: http://localhost:3000"
 
       - name: Health check

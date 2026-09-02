@@ -386,17 +386,6 @@ function protocolLog(dir, msg) {
 // 供测试/调试挂载协议监控（渲染启动后设置）
 window.__ewProtocolLog = protocolLog;
 
-// 攻击范围（米，与服务端 playerAttackRange 一致）
-const ATTACK_RANGE = 3.2;
-function findNearestAttackable(px, pz) {
-  let best = null, bestD = ATTACK_RANGE + 1;
-  for (const e of entities.forRender()) {
-    if (e.kind !== 'monster') continue;
-    const d = Math.hypot(e.x - px, e.z - pz);
-    if (d < bestD) { bestD = d; best = e; }
-  }
-  return best;
-}
 // ---------------- 物品系统 UI（背包/装备/商店/属性） ----------------
 function toast(text, cls) {
   const el = $('toast');
@@ -552,7 +541,7 @@ function renderSkillBar() {
     cell.className = 'skill-cell' + (onCd ? ' cd' : '');
     cell.innerHTML = `
       <div class="skill-icon">${sd.icon}</div>
-      <div class="skill-key">${SKILL_KEY_LABEL(idx + 1)}</div>
+      <div class="skill-key">${id === 1000 ? 'J' : SKILL_KEY_LABEL(idx + 1)}</div>
       <div class="skill-name">${sd.name}</div>
       <div class="skill-cd">${onCd ? (cdLeft / 1000).toFixed(1) + 's' : ''}</div>`;
     cell.addEventListener('click', () => {
@@ -562,7 +551,7 @@ function renderSkillBar() {
     bar.appendChild(cell);
   });
   if (!skillBar.length) {
-    bar.innerHTML = '<div class="skill-cell empty">未习得技能（控制台 skill 1001 学习）</div>';
+    bar.innerHTML = '<div class="skill-cell empty">未习得技能</div>';
   }
 }
 function renderBuffBar() {
@@ -666,11 +655,9 @@ function loop(now) {
     if (de) de.textContent = remain.toFixed(1) + 's';
   }
   if (!selfDead) {
-  // 攻击：J 键 → 攻击范围内最近的世界怪物/Boss（服务端权威校验）
+  // 攻击：J 键 → 普通攻击（技能 ID=1000，通过技能系统施放，显示前摇/范围）
   if (input.takeAttack()) {
-    const target = findNearestAttackable(selfPos.x, selfPos.z);
-    if (target) net.sendAttack(target.wid);
-    else protocolLog('c2s', { type: 'ATTACK', targetWid: 0, slot: 0, note: '范围内无目标' });
+    castSkillNow(1000);
   }
   // 技能系统：数字键 1-8 → 技能栏对应技能（服务端权威校验）
   const slot = input.takeSkillSlot();

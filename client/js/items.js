@@ -57,6 +57,8 @@ export function itemDesc(id) {
 /** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示） */
 export const SKILL_DEFS = {
   // castMs=前摇毫秒, radius=命中半径(0=近战贴身 1.2m)，与服务端 skills.json 对齐
+  1000: { name: '普通攻击', icon: '⚔️', color: '#e0e0e0', desc: '100% 攻击伤害', key: 'J', castMs: 200, radius: 0 },
+  // castMs=前摇毫秒, radius=命中半径(0=近战贴身 1.2m)，与服务端 skills.json 对齐
   1001: { name: '冲刺斩', icon: '⚔️', color: '#ff6b35', desc: '220% 攻击伤害', key: '1', castMs: 0, radius: 0 },
   1002: { name: '烈焰冲击', icon: '🔥', color: '#ff3d2e', desc: '150% AOE 伤害', key: '2', castMs: 600, radius: 4 },
   1003: { name: '治疗之光', icon: '✨', color: '#7ef9ff', desc: '恢复 60 生命', key: '3', castMs: 500, radius: 0 },
