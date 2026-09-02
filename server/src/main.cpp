@@ -7,6 +7,8 @@
 #include "anticheat/anticheat.h"
 #include "net/server.h"
 #include "store/store.h"
+#include "game/terrain.h"
+#include <fstream>
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
@@ -58,6 +60,17 @@ int main(int argc, char** argv) {
 
   World world(cfg);
   world.seedWorld();
+  // 地形编辑器编辑层：启动加载 data/terrain_edit.json（无则跳过，不影响功能）
+  {
+    std::string ep = cfg.dataDir + "/terrain_edit.json";
+    std::ifstream ef(ep, std::ios::binary);
+    if (ef.is_open()) {
+      std::string content((std::istreambuf_iterator<char>(ef)), std::istreambuf_iterator<char>());
+      if (!content.empty() && terrainEditFromJson(content)) {
+        fprintf(stderr, "[terrain] 加载编辑器编辑层 %s（%zu 格）\n", ep.c_str(), terrainEditSize());
+      }
+    }
+  }
   Auth auth(cfg, store);
   AntiCheat ac(cfg);
   GameServer server(cfg, world, auth, ac, store);

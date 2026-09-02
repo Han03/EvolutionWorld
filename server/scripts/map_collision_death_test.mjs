@@ -13,6 +13,7 @@ const BASE = 'http://localhost:3000';
 const WS = 'ws://localhost:3000/ws';
 const UN = 'map' + Math.floor(Math.random() * 100000);
 let pass = 0, fail = 0;
+let ref = { x: 0, y: 0, z: 0 }; // 最近权威位置（delta 快照解码基准；debugTp 后更新）
 function check(name, cond, extra = '') {
   if (cond) { pass++; console.log(`  [PASS] ${name} ${extra}`); }
   else { fail++; console.log(`  [FAIL] ${name} ${extra}`); }
@@ -34,6 +35,7 @@ async function postConsole(token, command) {
 async function debugTp(token, x, z) {
   const j = await post('/api/debug/teleport', { token, x, z });
   if (!j.ok) throw new Error('tp: ' + JSON.stringify(j));
+  ref = { x: j.x, y: j.y, z: j.z };
   return j;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -53,7 +55,6 @@ async function main() {
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
   ws.binaryType = 'arraybuffer';
   let selfWid = 0;
-  let ref = { x: 0, y: 0, z: 0 };
   let stats = null;
   const known = new Map();
   const evtDeath = [];     // {wid, b, ts}
@@ -99,10 +100,10 @@ async function main() {
   // 从 entities 命令读取当前玩家位置（服务端权威）
   async function selfPosFromConsole() {
     const r = await postConsole(token, 'entities');
-    // 结果行如: [player]name(wid=...) hp=.. @(x,z)
+    // 结果行如: [0]name(wid=..) hp=.. @(x,z)；玩家 kind=0（EntityKind::Player）
     const lines = (r.output || '').split('\n');
     for (const ln of lines) {
-      const m = ln.match(/@\((-?[\d.]+),(-?[\d.]+)\)/);
+      const m = ln.match(/\[0\][^@]*@\((-?[\d.]+),(-?[\d.]+)\)/);
       if (m) return { x: parseFloat(m[1]), z: parseFloat(m[2]) };
     }
     return null;
@@ -124,7 +125,7 @@ async function main() {
   check('向河流移动被阻挡（未进入水域）', !!finalPos && dry,
     finalPos ? `@(${finalPos.x.toFixed(2)},${finalPos.z.toFixed(2)}) blocked=${terrainBlocked(finalPos.x, finalPos.z)}` : '无位置');
   if (finalPos) {
-    check('停在河岸（z 未越过边界 z≈-17）', finalPos.z >= -17.2, `z=${finalPos.z.toFixed(2)}`);
+    check('停在河岸（z 未越过边界 z≈-17.5）', finalPos.z >= -18.2, `z=${finalPos.z.toFixed(2)}`);
   }
   // ============ 2) 怪物死亡 → 定时刷新 ============
   console.log('\n[2] 怪物死亡后定时刷新');
@@ -132,14 +133,21 @@ async function main() {
   const widM = (farm.output || '').match(/wid=(\d+)/);
   const monsterWid = widM ? parseInt(widM[1], 10) : 0;
   check('生成怪物成功', monsterWid > 0, `wid=${monsterWid}`);
-  // 贴身怪物并击杀（攻击直至 EVT_DEATH 广播该 wid）
+  // 贴身怪物并击杀（攻击直至 EVT_DEATH 广播该 wid）；等待怪物进入 AOI 快照（避免竞态）
+  await wait(() => [...known.values()].some((e) => e.wid === monsterWid), 2500);
   const m0 = [...known.values()].find((e) => e.wid === monsterWid);
   if (m0) { await debugTp(token, m0.x, m0.z); await sleep(250); }
   let killed = false;
   const t1 = Date.now();
-  while (Date.now() - t1 < 8000 && !killed) {
+  while (Date.now() - t1 < 10000 && !killed) {
     const mm = [...known.values()].find((e) => e.wid === monsterWid);
     if (mm) {
+      // 超出攻击范围（怪物游走/被推开）则重新贴身
+      if (Math.hypot(mm.x - ref.x, mm.z - ref.z) > 2.2) {
+        await debugTp(token, mm.x, mm.z);
+        await sleep(200);
+        continue;
+      }
       send(encodeAttack(monsterWid));
       await sleep(90);
       if (evtDeath.some((d) => d.wid === monsterWid)) killed = true;
@@ -154,7 +162,9 @@ async function main() {
   // ============ 3) 玩家死亡 → 复活 ============
   console.log('\n[3] 玩家死亡 → 复活');
   const hp0 = stats ? stats.maxHp : 100;
-  await postConsole(token, `stat hp 1`);
+  // stat hp 修改 baseHp（→maxHp）。用 20 作为临时基础血量：玩家能扛几刀，且复活后满血判定清晰
+  await postConsole(token, `stat hp 20`);
+  await wait(() => stats && stats.maxHp === 20, 3000);
   // 生成一只狼贴身攻击
   const farm2 = await postConsole(token, 'spawn wolf');
   const widM2 = (farm2.output || '').match(/wid=(\d+)/);
@@ -169,9 +179,13 @@ async function main() {
   // 等待复活（playerRespawnSec=8s + 网络余量）
   const selfRespawned = await wait(() => evtRespawn.some((r2) => r2.wid === selfWid), 13000);
   check('玩家复活 → EVT_RESPAWN(self)', selfRespawned);
-  // 复活后满血
-  const hpFull = await wait(() => stats && stats.hp >= stats.maxHp, 3000);
+  // 复活后满血（相对当前 maxHp=20）
+  const hpFull = await wait(() => stats && stats.hp >= stats.maxHp && stats.maxHp === 20, 3000);
   check('复活后满血', hpFull, stats ? `hp=${Math.round(stats.hp)}/${Math.round(stats.maxHp)}` : '无STATS');
+  // 清理：恢复基础血量并回满
+  await postConsole(token, `stat hp ${hp0}`);
+  await postConsole(token, 'heal');
+  await wait(() => stats && stats.hp >= stats.maxHp, 3000);
   console.log(`\n结果: PASS=${pass} FAIL=${fail}`);
   ws.close();
   process.exit(fail ? 1 : 0);

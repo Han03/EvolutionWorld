@@ -4,6 +4,7 @@
 #include "http.h"
 #include "net/protocol.h"
 #include "game/console.h"
+#include "game/terrain.h"
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
@@ -284,6 +285,13 @@ static std::string readFile(const std::string& path) {
   std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   return s;
 }
+static bool writeFile(const std::string& path, const std::string& content) {
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  if (!f.is_open()) return false;
+  f.write(content.data(), (std::streamsize)content.size());
+  f.close();
+  return true;
+}
 
 void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
   auto& path = req.path;
@@ -520,6 +528,54 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     r["waterLevel"] = kWaterLevel;
     r["heights"] = arr;
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+
+  // ---- 地形编辑器编辑层接口（编辑器：读取/保存） ----
+  // GET: 返回当前编辑层 {ok, count, cells: {"x,z": {h?,v?}}}（公开读取，与客户端 terrain.js 一致）
+  if (path == "/api/terrain/edit" && req.method == "GET") {
+    Json r = Json::object();
+    r["ok"] = true;
+    r["count"] = (int64_t)terrainEditSize();
+    Json cells = Json::object();
+    for (const auto& [k, c] : terrainEdits()) {
+      int64_t x = (int32_t)(k >> 32);
+      int64_t z = (int32_t)(k & 0xFFFFFFFFLL);
+      char key[64];
+      snprintf(key, sizeof(key), "%lld,%lld", (long long)x, (long long)z);
+      Json j = Json::object();
+      if (c.hasH) j["h"] = c.h;
+      if (c.hasV) j["v"] = (int64_t)c.v;
+      cells[key] = j;
+    }
+    r["cells"] = cells;
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存编辑层 {token, cells} -> 校验后应用内存 + 持久化 data/terrain_edit.json
+  if (path == "/api/terrain/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("cells") || in.at("cells").type() != Json::Type::Object) {
+        r["error"] = "cells object required";
+      } else {
+        Json root = Json::object(); root["cells"] = in.at("cells");
+        if (terrainEditFromJson(root.dump())) {
+          // 持久化（无 DB 不影响功能；data/terrain_edit.json）
+          writeFile(cfg_.dataDir + "/terrain_edit.json", terrainEditToJson());
+          r["ok"] = true;
+          r["count"] = (int64_t)terrainEditSize();
+          code = 200;
+        } else { r["error"] = "bad edit"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
     c.closeAfterFlush = true;
     return;
   }

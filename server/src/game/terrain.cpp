@@ -3,10 +3,16 @@
 //  1) 基础丘陵高度场（原 fbm）
 //  2) 河流下切：两条蜿蜒主河（东西向 + 南北向），河床压到水面以下 → 形成河流/湖泊
 //  3) 山脊抬升：ridged noise 生成陡峭山脊 → 悬崖（局部坡度 > 阈值即不可通行）
+//  4) 路径地图空洞：可到达区域收缩为「主干道走廊 + 分支 + 随机空地」，其余为空洞
+//  5) 地形编辑器编辑层：稀疏格子覆盖（绝对高度 h / 可通行性 v），优先于程序化
 #include "terrain.h"
 #include "../util/random.h"
+#include "../util/json.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
+#include <unordered_map>
+#include <cstdio>
 namespace ew {
 // ---- 整数坐标哈希（Math.imul 语义：32 位有符号乘法溢出） ----
 static inline uint32_t imul32(uint32_t a, uint32_t b) {
@@ -80,7 +86,142 @@ double riverBand(double x, double z) {
   double b2 = 1.0 - std::abs(x - xc) / kRiverHalfWidth;
   return std::max(0.0, std::max(b1, b2));
 }
+// ==================== 路径地图空洞 mask（确定性，与 JS terrainVoid 逐位一致） ====================
+// 可到达区域 = 主城圆盘 + 6 条主干道走廊（带分支）+ 随机空地；其余格为空洞。
+static const int kMaskN = 256;          // 覆盖世界 [-128,128)
+static const int kMaskOff = 128;
+static std::vector<uint8_t> g_walk;     // 1=可通行（懒生成缓存）
+static bool g_walkInit = false;
+static void ensureMask() {
+  if (g_walkInit) return;
+  g_walkInit = true;
+  g_walk.assign((size_t)kMaskN * kMaskN, 0);
+  auto markCircle = [&](double cx, double cz, double r) {
+    int x0 = std::max(0, (int)std::floor(cx - r) + kMaskOff);
+    int x1 = std::min(kMaskN - 1, (int)std::floor(cx + r) + kMaskOff);
+    int z0 = std::max(0, (int)std::floor(cz - r) + kMaskOff);
+    int z1 = std::min(kMaskN - 1, (int)std::floor(cz + r) + kMaskOff);
+    double r2 = r * r;
+    for (int gz = z0; gz <= z1; gz++) {
+      for (int gx = x0; gx <= x1; gx++) {
+        double dx = (double)(gx - kMaskOff) + 0.5 - cx;
+        double dz = (double)(gz - kMaskOff) + 0.5 - cz;
+        if (dx * dx + dz * dz <= r2) g_walk[(size_t)gz * kMaskN + (size_t)gx] = 1;
+      }
+    }
+  };
+  const double TWO_PI = 6.283185307179586;
+  // 主城（出生地 / 商店 / 城镇）：中心圆盘
+  markCircle(0.0, 0.0, 9.0);
+  // 主干道：6 条，从中心向外随机游走（确定性）
+  const int ROADS = 6;
+  for (int i = 0; i < ROADS; i++) {
+    double baseAng = i * (TWO_PI / ROADS) + (hash2i(i * 7 + 1, 13) - 0.5) * 0.5;
+    double px = 0.0, pz = 0.0;
+    double dir = baseAng;
+    int steps = 30 + (int)std::floor(hash2i(i * 3 + 5, 29) * 8.0); // 30..37
+    const double stepLen = 2.0;
+    for (int s = 0; s < steps; s++) {
+      // 方向扰动（确定性）
+      double wob = (hash2i(i * 101 + s * 13 + 3, s * 7 + 11) - 0.5) * 0.9;
+      dir += wob;
+      // 轻微拉回主方向，防止漂移过远
+      double da = baseAng - dir;
+      while (da > M_PI) da -= TWO_PI;
+      while (da < -M_PI) da += TWO_PI;
+      dir += da * 0.10;
+      px += std::cos(dir) * stepLen;
+      pz += std::sin(dir) * stepLen;
+      markCircle(px, pz, 3.6);
+      // 分支：每 7 步分叉一条短支路
+      if (s % 7 == 4) {
+        double bdir = dir + (hash2i(i * 17 + s, s * 3 + 2) - 0.5) * 2.2;
+        double bx = px, bz = pz;
+        for (int bs = 0; bs < 12; bs++) {
+          bdir += (hash2i(i * 31 + bs, s + bs * 5) - 0.5) * 0.7;
+          bx += std::cos(bdir) * 1.8;
+          bz += std::sin(bdir) * 1.8;
+          markCircle(bx, bz, 2.8);
+        }
+      }
+    }
+  }
+  // 随机空地（偶尔保留的开阔区）
+  const int G = 16;
+  for (int i = 0; i < G; i++) {
+    double ax = (hash2i(i * 131 + 7, 71) - 0.5) * 220.0;
+    double az = (hash2i(i * 211 + 3, 97) - 0.5) * 220.0;
+    double r = 5.5 + hash2i(i * 37, i * 19 + 5) * 6.5; // 5.5..12
+    markCircle(ax, az, r);
+  }
+}
+bool terrainVoid(double x, double z) {
+  ensureMask();
+  int gx = (int)std::floor(x) + kMaskOff;
+  int gz = (int)std::floor(z) + kMaskOff;
+  if (gx < 0 || gx >= kMaskN || gz < 0 || gz >= kMaskN) return true; // 超出 mask 范围视为空洞
+  return g_walk[(size_t)gz * kMaskN + (size_t)gx] == 0;
+}
+
+// ==================== 地形编辑器编辑层（稀疏格子覆盖） ====================
+// key：((uint32)x << 32) | (uint32)z（唯一映射；与 JS "x,z" 字符串键通过序列化对齐）
+static std::unordered_map<int64_t, EditCell> g_edit;
+static inline int64_t editKey(int64_t x, int64_t z) {
+  return (int64_t)(((uint64_t)(uint32_t)x << 32) | (uint32_t)z);
+}
+void terrainSetEdit(int64_t x, int64_t z, const EditCell& c) {
+  if (!c.hasH && !c.hasV) { g_edit.erase(editKey(x, z)); return; }
+  g_edit[editKey(x, z)] = c;
+}
+void terrainClearEdit() { g_edit.clear(); }
+size_t terrainEditSize() { return g_edit.size(); }
+const std::unordered_map<int64_t, EditCell>& terrainEdits() { return g_edit; }
+std::string terrainEditToJson() {
+  Json cells = Json::object();
+  for (const auto& [k, c] : g_edit) {
+    int64_t x = (int32_t)(k >> 32);          // 还原 x
+    int64_t z = (int32_t)(k & 0xFFFFFFFFLL); // 还原 z
+    char key[64];
+    snprintf(key, sizeof(key), "%lld,%lld", (long long)x, (long long)z);
+    Json j = Json::object();
+    if (c.hasH) j["h"] = c.h;
+    if (c.hasV) j["v"] = (int64_t)c.v;
+    cells[key] = j;
+  }
+  Json root = Json::object();
+  root["cells"] = cells;
+  return root.dump();
+}
+bool terrainEditFromJson(const std::string& json) {
+  try {
+    Json root = Json::parse(json);
+    Json cells = root["cells"];
+    if (cells.type() != Json::Type::Object) return false;
+    std::unordered_map<int64_t, EditCell> next;
+    for (const auto& [key, val] : cells.asObject()) {
+      // key = "x,z"
+      size_t comma = key.find(',');
+      if (comma == std::string::npos) continue;
+      int64_t x = std::atoll(key.substr(0, comma).c_str());
+      int64_t z = std::atoll(key.substr(comma + 1).c_str());
+      EditCell c;
+      if (val.has("h")) { c.hasH = true; c.h = val.at("h").asNumber(); }
+      if (val.has("v")) { c.hasV = true; c.v = (int8_t)val.at("v").asInt(); }
+      if (c.hasH || c.hasV) next[editKey(x, z)] = c;
+    }
+    g_edit = std::move(next);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 double terrainHeight(double x, double z) {
+  // 编辑器编辑层优先：绝对高度覆盖
+  {
+    auto it = g_edit.find(editKey((int64_t)std::floor(x), (int64_t)std::floor(z)));
+    if (it != g_edit.end() && it->second.hasH) return it->second.h;
+  }
   double base = fbm2(x * 0.006, z * 0.006, 5);
   double detail = fbm2(x * 0.03 + 100.0, z * 0.03 + 100.0, 4) * 0.5;
   double h = (base - 0.5) * 46.0 + (detail - 0.25) * 10.0;
@@ -106,6 +247,13 @@ double terrainSlope(double x, double z) {
   return std::max(sx, sz);
 }
 bool terrainBlocked(double x, double z) {
+  // 编辑器编辑层优先：可通行性覆盖
+  {
+    auto it = g_edit.find(editKey((int64_t)std::floor(x), (int64_t)std::floor(z)));
+    if (it != g_edit.end() && it->second.hasV) return it->second.v == 1;
+  }
+  // 路径地图空洞：可到达区域外的白色空洞（不可通行、不渲染）
+  if (terrainVoid(x, z)) return true;
   // 深水（湖泊/河流床）：水面以下不可通行
   if (terrainHeight(x, z) < kWaterLevel) return true;
   // 悬崖/陡坡：局部坡度超过阈值不可通行

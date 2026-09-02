@@ -9,6 +9,7 @@ import { EntityViewManager } from './entities.js';
 import { Predictor } from './predict.js';
 import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME, skillDef, skillName } from './items.js';
 import { EVT } from './protocol.js';
+import { loadEditCells } from './terrain.js';
 
 const $ = (id) => document.getElementById(id);
 const overlay = $('login-overlay');
@@ -133,6 +134,12 @@ async function enterWorld(token, username, worldMeta) {
       $('hud-conn').className = 'hud-chip off';
     };
     await net.connect(token);
+    // 加载服务器地形编辑层（地形编辑器产物；客户端/服务端同源，保证预测与碰撞一致）
+    try {
+      const r = await fetch('/api/terrain/edit');
+      const j = await r.json();
+      if (j && j.ok) loadEditCells(j.cells);
+    } catch (_) {}
   } catch (e) {
     loading.classList.add('hidden');
     overlay.classList.remove('hidden');

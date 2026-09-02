@@ -965,9 +965,15 @@ static void moveSystem(World& w, double dt) {
       if (!b || b->kind == EntityKind::Item || !b->active || b->dead) continue;
       if (b->wid < a->wid) continue;  // 每对只处理一次
       const double ax = a->pos.x, az = a->pos.z, bx = b->pos.x, bz = b->pos.z;
+      const bool aPlayer = a->kind == EntityKind::Player;
+      const bool bPlayer = b->kind == EntityKind::Player;
       if (Collision::separate(*a, *b)) {
-        if (w.collision().circleBlocked(a->pos.x, a->pos.z, a->radius)) { a->pos.x = ax; a->pos.z = az; }
-        if (w.collision().circleBlocked(b->pos.x, b->pos.z, b->radius)) { b->pos.x = bx; b->pos.z = bz; }
+        // 玩家永不被实体推挤（怪物/Boss/NPC 让行）：玩家轨迹仅由地形碰撞决定，
+        // 客户端预测可完全复刻，不被动态阻挡破坏预测一致性。
+        if (aPlayer) { a->pos.x = ax; a->pos.z = az; }
+        if (bPlayer) { b->pos.x = bx; b->pos.z = bz; }
+        if (!aPlayer && w.collision().circleBlocked(a->pos.x, a->pos.z, a->radius)) { a->pos.x = ax; a->pos.z = az; }
+        if (!bPlayer && w.collision().circleBlocked(b->pos.x, b->pos.z, b->radius)) { b->pos.x = bx; b->pos.z = bz; }
       }
     }
   }

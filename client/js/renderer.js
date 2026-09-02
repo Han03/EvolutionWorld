@@ -2,8 +2,10 @@
 // 固定斜上方 45° 等距视角（2:1 斜等测投影）：世界地图按「高度场 + 河流/湖泊 + 悬崖」区块
 // 预渲染为等距切片（离屏画布 + 可见范围流式加载），实体/掉落/技能效果做 2.5D 投影与深度排序。
 // 已移除原 SDF 体积地形（光线步进）与 Three.js 依赖。
+// 渲染风格（地图优化）：可通行地形统一**浅灰色**，不可通行区域（空洞/河流/悬崖）**不渲染**，
+// 以白色打底透出，呈现「路径地图」观感。
 import {
-  terrainHeight, terrainColor, WATER_LEVEL,
+  terrainHeight, terrainBlocked, WATER_LEVEL,
   TERRAIN_CHUNK, TERRAIN_RES,
 } from './terrain.js';
 // ---- 等距投影参数（斜上方 45°，2:1 斜等测） ----
@@ -113,40 +115,19 @@ export function createRenderer(container) {
     for (const [i, j] of cells) {
       const wx = x0 + i * CELL, wz = z0 + j * CELL;
       const h0 = H[i][j], h1 = H[i + 1][j], h2 = H[i + 1][j + 1], h3 = H[i][j + 1];
-      const hc = (h0 + h1 + h2 + h3) * 0.25;
-      const col = terrainColor(wx, wz);
+      // 空洞（不可通行：路径空洞 / 河流湖泊 / 悬崖）：不渲染（白色背景透出）
+      if (terrainBlocked(wx + CELL * 0.5, wz + CELL * 0.5)) continue;
       // 顶面四点（带各自高度）
       const A = [gx(wx, wz) - offGx, gy(wx, h0, wz) - offGy];
       const B = [gx(wx + CELL, wz) - offGx, gy(wx + CELL, h1, wz) - offGy];
       const C = [gx(wx + CELL, wz + CELL) - offGx, gy(wx + CELL, h2, wz + CELL) - offGy];
       const D = [gx(wx, wz + CELL) - offGx, gy(wx, h3, wz + CELL) - offGy];
-      // 坡度明暗（用格内高度差估算，节省采样）
+      // 统一浅灰色顶面（按坡度极轻微明暗体现立体，不做彩色地形）
       const slope = Math.max(Math.abs(h1 - h0), Math.abs(h3 - h0)) / CELL;
-      const bright = Math.max(0.55, Math.min(1.15, 1.0 - slope * 0.10));
-      const isWater = hc < WATER_LEVEL;
-      if (isWater) {
-        // 湖泊/河床：床体（暗色）→ 侧壁 → 半透明水面（位于 kWaterLevel）
-        const bedCol = shadeCol(col, 0.55);
-        fillQuad(o, A, B, C, D, bedCol);
-        drawBankFaces(o, H, x0, z0, i, j, { A, B, C, D, h0, h1, h2, h3 }, true, offGx, offGy);
-        // 水面：平铺在水位高度
-        const wTop = WATER_LEVEL;
-        const A2 = [gx(wx, wz) - offGx, gy(wx, wTop, wz) - offGy];
-        const B2 = [gx(wx + CELL, wz) - offGx, gy(wx + CELL, wTop, wz) - offGy];
-        const C2 = [gx(wx + CELL, wz + CELL) - offGx, gy(wx + CELL, wTop, wz + CELL) - offGy];
-        const D2 = [gx(wx, wz + CELL) - offGx, gy(wx, wTop, wz + CELL) - offGy];
-        fillQuad(o, A2, B2, C2, D2, 'rgba(56,140,210,0.60)');
-        // 水面高光描边
-        o.strokeStyle = 'rgba(180,220,255,0.35)';
-        o.lineWidth = 1;
-        quadPath(o, A2, B2, C2, D2);
-        o.stroke();
-      } else {
-        // 干地：顶面（按坡度明暗）+ 悬崖侧壁（朝向相机的 +x / +z 缘）
-        const r = Math.round(col.r * 255 * bright), g = Math.round(col.g * 255 * bright), b = Math.round(col.b * 255 * bright);
-        fillQuad(o, A, B, C, D, `rgb(${r},${g},${b})`);
-        drawBankFaces(o, H, x0, z0, i, j, { A, B, C, D, h0, h1, h2, h3 }, false, offGx, offGy);
-      }
+      const bright = Math.max(0.86, Math.min(1.12, 1.0 - slope * 0.05));
+      const g = Math.round(196 * bright); // 基础浅灰 #c4c4c4
+      fillQuad(o, A, B, C, D, `rgb(${g},${g},${g})`);
+      drawBankFaces(o, H, x0, z0, i, j, { A, B, C, D, h0, h1, h2, h3 }, offGx, offGy);
     }
     return { canvas: off, offGx, offGy, cx, cz };
   }
@@ -173,8 +154,8 @@ export function createRenderer(container) {
   function shadeCol(col, k) {
     return `rgb(${Math.round(col.r * 255 * k)},${Math.round(col.g * 255 * k)},${Math.round(col.b * 255 * k)})`;
   }
-  // 绘制朝相机方向的悬崖侧壁（+x 缘与 +z 缘，当相邻格显著更低时暴露岩壁）
-  function drawBankFaces(o, H, x0, z0, i, j, pts, water, offGx, offGy) {
+  // 绘制朝相机方向的悬崖侧壁（+x 缘与 +z 缘）：邻格显著更低或为空洞/水时暴露岩壁
+  function drawBankFaces(o, H, x0, z0, i, j, pts, offGx, offGy) {
     const W = pts;
     const cliff = 0.6; // 侧壁可见的最小高差（米）
     const P = (wx, wy, wz) => [gx(wx, wz) - offGx, gy(wx, wy, wz) - offGy];
@@ -183,10 +164,9 @@ export function createRenderer(container) {
       const nbTop = Math.max(H[i + 1][j], H[i + 1][j + 1]);
       const thisTop = Math.max(W.h1, W.h2);
       if (thisTop - nbTop > cliff) {
-        const base = water ? WATER_LEVEL : nbTop;
-        const Bbt = P(x0 + (i + 1) * CELL, base, z0 + j * CELL);
-        const Cbt = P(x0 + (i + 1) * CELL, base, z0 + (j + 1) * CELL);
-        fillQuad(o, W.B, W.C, Cbt, Bbt, water ? 'rgba(30,60,90,0.85)' : 'rgba(0,0,0,0.22)');
+        const Bbt = P(x0 + (i + 1) * CELL, nbTop, z0 + j * CELL);
+        const Cbt = P(x0 + (i + 1) * CELL, nbTop, z0 + (j + 1) * CELL);
+        fillQuad(o, W.B, W.C, Cbt, Bbt, 'rgba(0,0,0,0.22)');
       }
     }
     // +z 缘（D→C）：邻格为 (i, j+1)
@@ -194,10 +174,9 @@ export function createRenderer(container) {
       const nbTop = Math.max(H[i][j + 1], H[i + 1][j + 1]);
       const thisTop = Math.max(W.h3, W.h2);
       if (thisTop - nbTop > cliff) {
-        const base = water ? WATER_LEVEL : nbTop;
-        const Dbt = P(x0 + i * CELL, base, z0 + (j + 1) * CELL);
-        const Cbt = P(x0 + (i + 1) * CELL, base, z0 + (j + 1) * CELL);
-        fillQuad(o, W.D, W.C, Cbt, Dbt, water ? 'rgba(25,55,85,0.9)' : 'rgba(0,0,0,0.16)');
+        const Dbt = P(x0 + i * CELL, nbTop, z0 + (j + 1) * CELL);
+        const Cbt = P(x0 + (i + 1) * CELL, nbTop, z0 + (j + 1) * CELL);
+        fillQuad(o, W.D, W.C, Cbt, Dbt, 'rgba(0,0,0,0.16)');
       }
     }
   }
@@ -237,10 +216,10 @@ export function createRenderer(container) {
   function draw() {
     const w = window.innerWidth, h = window.innerHeight;
     ctx.clearRect(0, 0, w, h);
-    // 背景（远景天空）
+    // 背景（白色打底：空洞区透出白色，形成「路径地图」观感）
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#8fb8dd');
-    grad.addColorStop(1, '#cfdce6');
+    grad.addColorStop(0, '#ffffff');
+    grad.addColorStop(1, '#ececec');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
     // 1) 地形区块（等距切片，远→近 blit）

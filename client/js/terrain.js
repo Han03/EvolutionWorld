@@ -1,6 +1,7 @@
 // terrain.js - 高度场地形数据（确定性噪声，与 C++ 服务端 terrain.cpp 逐位一致）
 // 供客户端预测（predict.js）、地形网格渲染、水面/河流对齐使用。
-// 地形要素：基础丘陵 + 河流下切（湖泊/河流）+ 山脊抬升（悬崖/不可通行）。
+// 地形要素：基础丘陵 + 河流下切（湖泊/河流）+ 山脊抬升（悬崖/不可通行）
+//         + 路径地图空洞（可到达区域收缩为走廊+空地）+ 地形编辑器编辑层（覆盖）。
 // 原 SDF 体积地形（光线步进）已移除，本模块即世界地图的数据源。
 function _imul32(a, b) {
   // Math.imul 语义
@@ -74,8 +75,118 @@ export function riverBand(x, z) {
   const b2 = 1.0 - Math.abs(x - xc) / RIVER_HALF;
   return Math.max(0.0, Math.max(b1, b2));
 }
-/** 地形高度（世界坐标 xz -> y），与服务端 terrainHeight 逐位一致 */
+// ==================== 路径地图空洞 mask（确定性，与服务端 terrainVoid 逐位一致） ====================
+const MASK_N = 256;
+const MASK_OFF = 128;
+let g_walk = null; // Uint8Array 1=可通行（懒生成缓存）
+function ensureMask() {
+  if (g_walk) return;
+  g_walk = new Uint8Array(MASK_N * MASK_N);
+  const markCircle = (cx, cz, r) => {
+    const x0 = Math.max(0, Math.floor(cx - r) + MASK_OFF);
+    const x1 = Math.min(MASK_N - 1, Math.floor(cx + r) + MASK_OFF);
+    const z0 = Math.max(0, Math.floor(cz - r) + MASK_OFF);
+    const z1 = Math.min(MASK_N - 1, Math.floor(cz + r) + MASK_OFF);
+    const r2 = r * r;
+    for (let gz = z0; gz <= z1; gz++) {
+      for (let gx = x0; gx <= x1; gx++) {
+        const dx = (gx - MASK_OFF) + 0.5 - cx;
+        const dz = (gz - MASK_OFF) + 0.5 - cz;
+        if (dx * dx + dz * dz <= r2) g_walk[gz * MASK_N + gx] = 1;
+      }
+    }
+  };
+  const TWO_PI = 6.283185307179586;
+  // 主城（出生地 / 商店 / 城镇）：中心圆盘
+  markCircle(0, 0, 9.0);
+  // 主干道：6 条，从中心向外随机游走（确定性）
+  const ROADS = 6;
+  for (let i = 0; i < ROADS; i++) {
+    const baseAng = i * (TWO_PI / ROADS) + (hash2i(i * 7 + 1, 13) - 0.5) * 0.5;
+    let px = 0, pz = 0;
+    let dir = baseAng;
+    const steps = 30 + Math.floor(hash2i(i * 3 + 5, 29) * 8); // 30..37
+    const stepLen = 2.0;
+    for (let s = 0; s < steps; s++) {
+      const wob = (hash2i(i * 101 + s * 13 + 3, s * 7 + 11) - 0.5) * 0.9;
+      dir += wob;
+      let da = baseAng - dir;
+      while (da > Math.PI) da -= TWO_PI;
+      while (da < -Math.PI) da += TWO_PI;
+      dir += da * 0.10;
+      px += Math.cos(dir) * stepLen;
+      pz += Math.sin(dir) * stepLen;
+      markCircle(px, pz, 3.6);
+      if (s % 7 === 4) {
+        let bdir = dir + (hash2i(i * 17 + s, s * 3 + 2) - 0.5) * 2.2;
+        let bx = px, bz = pz;
+        for (let bs = 0; bs < 12; bs++) {
+          bdir += (hash2i(i * 31 + bs, s + bs * 5) - 0.5) * 0.7;
+          bx += Math.cos(bdir) * 1.8;
+          bz += Math.sin(bdir) * 1.8;
+          markCircle(bx, bz, 2.8);
+        }
+      }
+    }
+  }
+  // 随机空地（偶尔保留的开阔区）
+  const G = 16;
+  for (let i = 0; i < G; i++) {
+    const ax = (hash2i(i * 131 + 7, 71) - 0.5) * 220.0;
+    const az = (hash2i(i * 211 + 3, 97) - 0.5) * 220.0;
+    const r = 5.5 + hash2i(i * 37, i * 19 + 5) * 6.5; // 5.5..12
+    markCircle(ax, az, r);
+  }
+}
+/** 该点是否路径地图空洞（可到达区域外；服务端/客户端逐位一致） */
+export function terrainVoid(x, z) {
+  ensureMask();
+  const gx = Math.floor(x) + MASK_OFF;
+  const gz = Math.floor(z) + MASK_OFF;
+  if (gx < 0 || gx >= MASK_N || gz < 0 || gz >= MASK_N) return true;
+  return g_walk[gz * MASK_N + gx] === 0;
+}
+
+// ==================== 地形编辑器编辑层（稀疏格子覆盖，与服务端一致） ====================
+// key："x,z" 字符串；cell: {h?, v?}（h=绝对高度覆盖，v=可通行覆盖 1=空洞 0=强制可通行）
+const editMap = new Map();
+function editKey(x, z) { return Math.floor(x) + ',' + Math.floor(z); }
+/** 编辑器/运行时：设置或擦除（传空对象即擦除）某格编辑 */
+export function setEditCell(x, z, { h, v } = {}) {
+  const k = editKey(x, z);
+  const hasH = h !== undefined, hasV = v !== undefined;
+  if (!hasH && !hasV) { editMap.delete(k); return; }
+  const c = {};
+  if (hasH) c.h = h;
+  if (hasV) c.v = v;
+  editMap.set(k, c);
+}
+export function eraseEditCell(x, z) { editMap.delete(editKey(x, z)); }
+export function clearEdit() { editMap.clear(); }
+export function editCellCount() { return editMap.size; }
+/** 序列化为服务端一致格式 {cells: {"x,z": {h?, v?}}} */
+export function getEditCells() {
+  const cells = {};
+  for (const [k, c] of editMap) cells[k] = c;
+  return cells;
+}
+/** 从服务端/编辑器数据加载 {cells: {...}} */
+export function loadEditCells(cells) {
+  editMap.clear();
+  if (!cells) return;
+  for (const [k, c] of Object.entries(cells)) {
+    const cell = {};
+    if (c && c.h !== undefined) cell.h = c.h;
+    if (c && c.v !== undefined) cell.v = c.v;
+    if (cell.h !== undefined || cell.v !== undefined) editMap.set(k, cell);
+  }
+}
+
+/** 地形高度（世界坐标 xz -> y），与服务端 terrainHeight 逐位一致（含编辑层覆盖） */
 export function terrainHeight(x, z) {
+  // 编辑器编辑层优先：绝对高度覆盖
+  const ec = editMap.get(editKey(x, z));
+  if (ec && ec.h !== undefined) return ec.h;
   const base = fbm2(x * 0.006, z * 0.006, 5);
   const detail = fbm2(x * 0.03 + 100.0, z * 0.03 + 100.0, 4) * 0.5;
   let h = (base - 0.5) * 46.0 + (detail - 0.25) * 10.0;
@@ -103,8 +214,12 @@ export function terrainSlope(x, z) {
   const hzm = terrainHeight(x, z - e);
   return Math.max(Math.abs(hx - hxm) / (2 * e), Math.abs(hz - hzm) / (2 * e));
 }
-/** 该点是否不可通行：深水（湖泊/河流床）/ 悬崖/陡坡。与服务端 terrainBlocked 逐位一致 */
+/** 该点是否不可通行：空洞（路径地图）/ 深水（湖泊/河流床）/ 悬崖/陡坡。与服务端 terrainBlocked 逐位一致 */
 export function terrainBlocked(x, z) {
+  // 编辑器编辑层优先：可通行性覆盖
+  const ec = editMap.get(editKey(x, z));
+  if (ec && ec.v !== undefined) return ec.v === 1;
+  if (terrainVoid(x, z)) return true;
   if (terrainHeight(x, z) < WATER_LEVEL) return true;
   if (terrainSlope(x, z) > CLIFF_SLOPE) return true;
   return false;
