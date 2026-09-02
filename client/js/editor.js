@@ -1,10 +1,12 @@
 /**
- * editor.js - EvolutionWorld 世界/剧本编辑器
- * 俯视 2D 编辑器，两种模式：
+ * editor.js - EvolutionWorld 世界/剧本编辑器（2.5D 等距视角）
+ * 使用共享 terrain-renderer.js 渲染，与游戏客户端 renderer.js 同源同构。
+ *
+ * 两种模式：
  *  - 地形：画刷（抬高/降低/铺平/平滑/挖空/恢复），浅灰=可通行 / 白色=空洞，可选高度色带
  *  - 生物出生点（剧本）：新增/拖动/删除怪物、NPC、Boss 出生点，保存后服务端热重载
- * 性能：256×256 格颜色缓存（每格一次地形查询），redraw 仅按可见格逐块填充（O(可见格)），
- *       彻底消除逐像素地形查询卡顿与 DPR 稀疏点阵导致的"多图"伪影。
+ *
+ * 渲染：TerrainRenderer 2.5D 等距投影（与游戏 index.html 共用模块），chunk 流式加载。
  * 交互：WASD/方向键平移 · 滚轮缩放 · 左键画刷/拖拽 · 右键平移。
  * 数据：地形与服务端 terrain.cpp / 游戏 terrain.js 同源；出生点走 /api/spawns(/edit)。
  */
@@ -12,25 +14,28 @@ import {
   terrainHeight, terrainBlocked, setEditCell, clearEdit, loadEditCells,
   getEditCells, editCellCount, WATER_LEVEL,
 } from './terrain.js';
+import { TerrainRenderer, heightColor } from './terrain-renderer.js';
 
 const $ = (id) => document.getElementById(id);
 const BASE = '';
 const WORLD = 128;   // 世界 [-128,128) 米
-const N = 256, OFF = 128;
+const VIEW_RANGE = 160; // 编辑器视距（足够覆盖整个编辑区域）
 
 let token = '', username = '';
 let mode = 'terrain';     // 'terrain' | 'spawn'
 let showHeight = false;
 
-// ---- 视图（世界坐标中心 + 缩放） ----
-const view = { cx: 0, cz: 0, scale: 3 };
-let panning = false, lastPan = { x: 0, y: 0 };
-const keys = {};
+// ---- 共享地形渲染器 ----
+const canvas = $('editor-canvas');
+let tr = null; // TerrainRenderer 实例
+let running = false;
 
 // ---- 画刷 ----
 const brush = { type: 'raise', radius: 4, strength: 1.2, falloff: 'soft', targetH: 8 };
 let hoverWorld = { x: 0, z: 0, in: false };
 let editing = false;
+let panning = false, lastPan = { x: 0, y: 0 };
+const keys = {};
 
 // ---- 生物出生点（剧本） ----
 let spawns = [];          // {kind,type,name,shopId,x,z,count}
@@ -53,218 +58,103 @@ function undo() {
   if (!undoStack.length) return;
   redoStack.push(snapshot());
   restore(undoStack.pop());
-  refreshButtons(); computeAllCells(); redraw();
+  refreshButtons();
+  tr.invalidateAllChunks();
 }
 function redo() {
   if (!redoStack.length) return;
   undoStack.push(snapshot());
   restore(redoStack.pop());
-  refreshButtons(); computeAllCells(); redraw();
+  refreshButtons();
+  tr.invalidateAllChunks();
 }
 function refreshButtons() {
   $('btn-undo').disabled = undoStack.length === 0;
   $('btn-redo').disabled = redoStack.length === 0;
 }
 
-// ---- 画布与颜色缓存 ----
-const canvas = $('editor-canvas');
-const ctx = canvas.getContext('2d');
-let img = null, imgData = null;
-const CELL = new Uint32Array(N * N); // ABGR 格颜色缓存（一次地形查询/格）
-function cellIdx(gx, gz) { return (gz + OFF) * N + (gx + OFF); }
-function pack(r, g, b) { return (255 << 24) | (b << 16) | (g << 8) | r; }
-
-// 高度 -> 地形色带（-2..34m：深蓝→青→绿→黄→棕→白）
-const HSTOPS = [
-  [45, 70, 160], [80, 150, 195], [110, 185, 120],
-  [225, 215, 130], [175, 135, 85], [245, 245, 245],
-];
-function heightColor(h) {
-  const u = Math.max(0, Math.min(1, (h + 2) / 36));
-  const seg = u * (HSTOPS.length - 1);
-  const i = Math.min(HSTOPS.length - 2, Math.floor(seg));
-  const t = seg - i;
-  const a = HSTOPS[i], b = HSTOPS[i + 1];
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ];
-}
-// 基础浅灰（按坡度明暗，同游戏渲染口径）
-function baseGray(gx, gz, h) {
-  const n = terrainHeight(gx + 0.5, gz - 0.5);
-  const s = terrainHeight(gx - 0.5, gz + 0.5);
-  const e = terrainHeight(gx + 1.5, gz + 0.5);
-  const w = terrainHeight(gx + 0.5, gz + 1.5);
-  let slope = 0;
-  if (h < 1e9) slope = Math.abs(h - n) + Math.abs(h - s) + Math.abs(h - e) + Math.abs(h - w);
-  const shade = Math.max(0, Math.min(1, 0.12 * slope / 2));
-  return Math.round(196 * (1 - shade) + 160 * shade);
-}
-function computeCell(gx, gz) {
-  const cx = gx + 0.5, cz = gz + 0.5;
-  if (terrainBlocked(cx, cz)) { CELL[cellIdx(gx, gz)] = 0xFFFFFFFF; return; } // 空洞/深水/悬崖=白
-  const h = terrainHeight(cx, cz);
-  if (showHeight) {
-    const [r, g, b] = heightColor(h);
-    CELL[cellIdx(gx, gz)] = pack(r, g, b);
-  } else {
-    const g = baseGray(gx, gz, h);
-    CELL[cellIdx(gx, gz)] = pack(g, g, g);
+// ---- 高度色带图例 ----
+function updateLegend() {
+  const legend = $('editor-legend');
+  if (!showHeight) { legend.classList.add('hidden'); return; }
+  legend.classList.remove('hidden');
+  if (legend.innerHTML.trim() === '') {
+    legend.innerHTML = '高度色带（米）<div class="legend-bar"></div><div class="legend-scale"><span>-2</span><span>10</span><span>22</span><span>34</span></div>';
   }
 }
-function computeAllCells() {
-  for (let gz = -WORLD; gz < WORLD; gz++)
-    for (let gx = -WORLD; gx < WORLD; gx++) computeCell(gx, gz);
-}
-function updateCells(x0, z0, x1, z1) {
-  const gx0 = Math.max(-WORLD, Math.floor(x0)), gx1 = Math.min(WORLD - 1, Math.floor(x1));
-  const gz0 = Math.max(-WORLD, Math.floor(z0)), gz1 = Math.min(WORLD - 1, Math.floor(z1));
-  for (let gz = gz0; gz <= gz1; gz++)
-    for (let gx = gx0; gx <= gx1; gx++) computeCell(gx, gz);
-}
 
-function resizeCanvas() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.max(2, Math.floor(canvas.clientWidth * dpr));
-  const h = Math.max(2, Math.floor(canvas.clientHeight * dpr));
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w; canvas.height = h;
-    img = ctx.createImageData(w, h);
-    imgData = img.data;
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-}
-
-// 世界 -> 屏幕（CSS 坐标）
-function w2s(wx, wz) {
-  const cw = canvas.width / Math.min(window.devicePixelRatio || 1, 2);
-  const ch = canvas.height / Math.min(window.devicePixelRatio || 1, 2);
-  return { x: (wx - view.cx) * view.scale + cw / 2, y: (wz - view.cz) * view.scale + ch / 2 };
-}
-function s2w(px, py) {
-  const cw = canvas.width / Math.min(window.devicePixelRatio || 1, 2);
-  const ch = canvas.height / Math.min(window.devicePixelRatio || 1, 2);
-  return { x: (px - cw / 2) / view.scale + view.cx, z: (py - ch / 2) / view.scale + view.cz };
-}
-
-// ---- 主渲染：按可见格逐块填充（颜色缓存，性能核心） ----
-function redraw() {
-  if (!img) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = canvas.width, h = canvas.height;
-  const cw = w / dpr, ch = h / dpr;
-  const halfW = cw / 2, halfH = ch / 2;
-  // 背景白（空洞区打底）
-  imgData.fill(0xFFFFFFFF);
-  const gx0 = Math.max(-WORLD, Math.floor((0 - halfW) / view.scale + view.cx));
-  const gx1 = Math.min(WORLD - 1, Math.floor((cw - halfW) / view.scale + view.cx));
-  const gz0 = Math.max(-WORLD, Math.floor((0 - halfH) / view.scale + view.cz));
-  const gz1 = Math.min(WORLD - 1, Math.floor((ch - halfH) / view.scale + view.cz));
-  for (let gz = gz0; gz <= gz1; gz++) {
-    const sy = Math.round((gz - view.cz) * view.scale + halfH);
-    const py0 = Math.max(0, Math.round(sy * dpr));
-    const py1 = Math.min(h, Math.round((sy + 1) * dpr));
-    if (py1 <= py0) continue;
-    for (let gx = gx0; gx <= gx1; gx++) {
-      const sx = Math.round((gx - view.cx) * view.scale + halfW);
-      const px0 = Math.max(0, Math.round(sx * dpr));
-      const px1 = Math.min(w, Math.round((sx + 1) * dpr));
-      if (px1 <= px0) continue;
-      const col = CELL[cellIdx(gx, gz)];
-      const r = col & 0xff, gg = (col >> 8) & 0xff, b = (col >> 16) & 0xff;
-      for (let py = py0; py < py1; py++) {
-        let base = (py * w + px0) * 4;
-        for (let px = px0; px < px1; px++) {
-          imgData[base] = r; imgData[base + 1] = gg; imgData[base + 2] = b; imgData[base + 3] = 255;
-          base += 4;
-        }
-      }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  drawOverlays();
-}
-
-function drawOverlays() {
-  const cw = canvas.width / Math.min(window.devicePixelRatio || 1, 2);
-  const ch = canvas.height / Math.min(window.devicePixelRatio || 1, 2);
-  const halfW = cw / 2, halfH = ch / 2;
-  // 网格线（10m 大格，放大后显示）
-  ctx.strokeStyle = 'rgba(0,0,0,0.07)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  const step = 10 / view.scale;
-  if (step >= 6) {
-    const sx0 = Math.floor((0 - halfW) / view.scale / 10) * 10, sx1 = Math.ceil((cw - halfW) / view.scale / 10) * 10;
-    for (let gx = sx0; gx <= sx1; gx += 10) { const sx = (gx - view.cx) * view.scale + halfW; ctx.moveTo(sx, 0); ctx.lineTo(sx, ch); }
-    const sz0 = Math.floor((0 - halfH) / view.scale / 10) * 10, sz1 = Math.ceil((ch - halfH) / view.scale / 10) * 10;
-    for (let gz = sz0; gz <= sz1; gz += 10) { const sy = (gz - view.cz) * view.scale + halfH; ctx.moveTo(0, sy); ctx.lineTo(cw, sy); }
-  }
-  ctx.stroke();
-  // 坐标轴
-  ctx.strokeStyle = 'rgba(0,0,0,0.18)';
-  ctx.beginPath();
-  const ox = (0 - view.cx) * view.scale + halfW, oy = (0 - view.cz) * view.scale + halfH;
-  if (ox >= 0 && ox <= cw) { ctx.moveTo(ox, 0); ctx.lineTo(ox, ch); }
-  if (oy >= 0 && oy <= ch) { ctx.moveTo(0, oy); ctx.lineTo(cw, oy); }
-  ctx.stroke();
-  // 主城标记
-  const tw = w2s(0, 0);
-  ctx.fillStyle = '#2f6fed';
-  ctx.font = 'bold 10px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('主城', tw.x, tw.y - 7);
-  ctx.strokeStyle = '#2f6fed';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(tw.x, tw.y, 4.5, 0, Math.PI * 2); ctx.stroke();
-
-  // 出生点标记（生物模式 / 地形模式也半透明显示）
-  drawSpawnMarkers(cw, ch, halfW, halfH);
-
-  // 画刷预览（地形模式）
-  if (mode === 'terrain' && hoverWorld.in) {
-    const s = w2s(hoverWorld.x, hoverWorld.z);
-    const R = brush.radius * view.scale;
-    ctx.strokeStyle = 'rgba(255,45,45,0.9)';
-    ctx.lineWidth = 1.6;
-    ctx.setLineDash([5, 4]);
-    ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(2, R), 0, Math.PI * 2); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(255,45,45,0.15)';
-    ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(2, R), 0, Math.PI * 2); ctx.fill();
-  }
-}
+// ---- 出生点样式 ----
 const SPAWN_STYLE = {
   monster: { color: '#e5484d', label: 'M' },
   npc: { color: '#3b82f6', label: 'N' },
   boss: { color: '#a855f7', label: 'B' },
 };
-function drawSpawnMarkers(cw, ch, halfW, halfH) {
+
+// ============================================================================
+// 渲染循环（requestAnimationFrame 持续渲染，保证画刷预览等实时刷新）
+// ============================================================================
+function frame() {
+  if (!running || !tr) return;
+  const ctx = tr.ctx;
+  const cw = tr.cssWidth, ch = tr.cssHeight;
+  if (cw < 2 || ch < 2) { requestAnimationFrame(frame); return; }
+
+  // 更新区块
+  tr.updateChunks(tr.cam.cx, tr.cam.cz, VIEW_RANGE);
+
+  // 清屏 + 背景
+  tr.clear(ctx);
+  tr.drawBackground(ctx);
+
+  // 地形
+  tr.drawChunks(ctx);
+
+  // 网格 + 坐标轴
+  tr.drawGrid(ctx);
+
+  // 主城标记
+  tr.drawOriginMarker(ctx);
+
+  // 出生点标记
+  drawSpawnMarkers(ctx);
+
+  // 画刷预览（地形模式）
+  if (mode === 'terrain' && hoverWorld.in) {
+    tr.drawBrushPreview(ctx, hoverWorld.x, hoverWorld.z, brush.radius);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// ---- 出生点绘制 ----
+function drawSpawnMarkers(ctx) {
   if (!spawns.length) return;
-  const minX = (0 - halfW) / view.scale + view.cx, maxX = (cw - halfW) / view.scale + view.cx;
-  const minZ = (0 - halfH) / view.scale + view.cz, maxZ = (ch - halfH) / view.scale + view.cz;
   ctx.textAlign = 'center';
   ctx.font = 'bold 10px sans-serif';
   for (let i = 0; i < spawns.length; i++) {
     const sp = spawns[i];
-    if (sp.x < minX || sp.x > maxX || sp.z < minZ || sp.z > maxZ) continue;
+    const s = tr.w2s(sp.x, sp.z);
+    // 可见性检查
+    if (s.x < -30 || s.x > tr.cssWidth + 30 || s.y < -30 || s.y > tr.cssHeight + 30) continue;
     const st = SPAWN_STYLE[sp.kind] || SPAWN_STYLE.monster;
-    const s = w2s(sp.x, sp.z);
     const r = sp.kind === 'boss' ? 9 : 7;
-    // 半透明描边（同游戏"悬浮圆球"风格）
+    // 半透明光晕
     ctx.fillStyle = st.color;
     ctx.globalAlpha = 0.25;
     ctx.beginPath(); ctx.arc(s.x, s.y, r + 3, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
+    // 描边 + 填充
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = st.color;
     ctx.beginPath(); ctx.arc(s.x, s.y, r - 1, 0, Math.PI * 2); ctx.fill();
+    // 标签
     ctx.fillStyle = '#fff';
-    ctx.fillText(sp.kind === 'npc' ? (sp.name ? '商' : st.label) : (sp.type ? sp.type[0].toUpperCase() : st.label), s.x, s.y + 3);
+    ctx.fillText(
+      sp.kind === 'npc' ? (sp.name ? '商' : st.label) : (sp.type ? sp.type[0].toUpperCase() : st.label),
+      s.x, s.y + 3
+    );
     // 选中高亮
     if (i === selectedSpawn) {
       ctx.strokeStyle = '#ffd166';
@@ -283,9 +173,11 @@ function drawSpawnMarkers(cw, ch, halfW, halfH) {
   }
 }
 
-// ---- 画刷应用 ----
-function applyBrushAt(wx, wz, push = false) {
-  if (push) pushHistory();
+// ============================================================================
+// 画刷应用
+// ============================================================================
+function applyBrushAt(wx, wz, pushHist = false) {
+  if (pushHist) pushHistory();
   const r = brush.radius;
   const x0 = Math.floor(wx - r), x1 = Math.floor(wx + r);
   const z0 = Math.floor(wz - r), z1 = Math.floor(wz + r);
@@ -320,15 +212,17 @@ function applyBrushAt(wx, wz, push = false) {
       }
     }
   }
-  updateCells(x0 - 1, z0 - 1, x1 + 1, z1 + 1);
+  // 失效受影响的区块（下次渲染时自动重建）
+  tr.invalidateRegion(x0 - 1, z0 - 1, x1 + 1, z1 + 1);
 }
 
-// ---- 出生点操作 ----
-function findSpawnAt(wx, wz, px, py) {
-  // 优先像素距离（屏幕半径 14px），其次世界距离
+// ============================================================================
+// 出生点操作
+// ============================================================================
+function findSpawnAt(px, py) {
   let best = -1, bestD = 1e9;
   for (let i = 0; i < spawns.length; i++) {
-    const s = w2s(spawns[i].x, spawns[i].z);
+    const s = tr.w2s(spawns[i].x, spawns[i].z);
     const d = Math.hypot(s.x - px, s.y - py);
     if (d < bestD && d < 18) { bestD = d; best = i; }
   }
@@ -348,7 +242,6 @@ function addSpawn(wx, wz) {
   selectedSpawn = spawns.length - 1;
   spawnsDirty = true;
   renderSpawnList();
-  redraw();
 }
 function removeSpawn(i) {
   if (i < 0 || i >= spawns.length) return;
@@ -356,7 +249,6 @@ function removeSpawn(i) {
   selectedSpawn = -1;
   spawnsDirty = true;
   renderSpawnList();
-  redraw();
 }
 function renderSpawnList() {
   $('spawn-count-label').textContent = spawns.length;
@@ -375,98 +267,94 @@ function renderSpawnList() {
     div.addEventListener('click', (e) => {
       if (e.target.classList.contains('sp-del')) { removeSpawn(i); return; }
       selectedSpawn = i;
-      renderSpawnList(); redraw();
+      renderSpawnList();
     });
     box.appendChild(div);
   });
 }
 function centerOnSelected() {
   if (selectedSpawn >= 0 && selectedSpawn < spawns.length) {
-    view.cx = spawns[selectedSpawn].x;
-    view.cz = spawns[selectedSpawn].z;
-    redraw();
+    tr.cam.cx = spawns[selectedSpawn].x;
+    tr.cam.cz = spawns[selectedSpawn].z;
   }
 }
 
-// ---- 输入事件 ----
+// ============================================================================
+// 输入事件
+// ============================================================================
 function onMouseMove(ev) {
   const rect = canvas.getBoundingClientRect();
   const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
-  const w = s2w(px, py);
+  const w = tr.s2w(px, py);
   hoverWorld.x = w.x; hoverWorld.z = w.z; hoverWorld.in = true;
+  // 坐标信息
+  const h = terrainHeight(w.x, w.z);
+  const blocked = terrainBlocked(w.x, w.z);
   $('editor-coord').textContent =
-    `x:${Math.floor(w.x)} z:${Math.floor(w.z)} h:${terrainHeight(w.x, w.z).toFixed(1)} ${terrainBlocked(w.x, w.z) ? '■空洞' : '·可通行'} ${mode === 'spawn' ? '·出生点:' + spawns.length : '·编辑格:' + editCellCount()}`;
+    `x:${Math.floor(w.x)} z:${Math.floor(w.z)} h:${h.toFixed(1)} ${blocked ? '■空洞' : '·可通行'} ${mode === 'spawn' ? '·出生点:' + spawns.length : '·编辑格:' + editCellCount()}`;
+  // 右键平移
   if (panning) {
-    view.cx -= (ev.clientX - lastPan.x) / view.scale;
-    view.cz -= (ev.clientY - lastPan.y) / view.scale;
+    tr.pan(ev.clientX - lastPan.x, ev.clientY - lastPan.y);
     lastPan = { x: ev.clientX, y: ev.clientY };
-    redraw();
     return;
   }
+  // 出生点拖动
   if (mode === 'spawn' && dragSpawn) {
     const sp = spawns[dragSpawn.index];
     sp.x = Math.round((w.x - dragSpawn.offX) * 2) / 2;
     sp.z = Math.round((w.z - dragSpawn.offZ) * 2) / 2;
     spawnsDirty = true;
-    renderSpawnList(); redraw();
+    renderSpawnList();
     return;
   }
+  // 地形画刷拖动
   if (mode === 'terrain' && editing) {
     applyBrushAt(w.x, w.z, false);
-    redraw();
   }
-  redraw();
 }
+
 canvas.addEventListener('mousemove', onMouseMove);
 canvas.addEventListener('mousedown', (ev) => {
   const rect = canvas.getBoundingClientRect();
   const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
   if (ev.button === 2) { panning = true; lastPan = { x: ev.clientX, y: ev.clientY }; return; }
   if (ev.button !== 0) return;
-  const w = s2w(px, py);
+  const w = tr.s2w(px, py);
   if (mode === 'spawn') {
-    const idx = findSpawnAt(w.x, w.z, px, py);
+    const idx = findSpawnAt(px, py);
     if (idx >= 0) {
       selectedSpawn = idx;
       dragSpawn = { index: idx, offX: w.x - spawns[idx].x, offZ: w.z - spawns[idx].z };
-      renderSpawnList(); redraw();
+      renderSpawnList();
     } else {
-      addSpawn(w.x, w.z); // 空白处点击 = 新增出生点
+      addSpawn(w.x, w.z);
     }
     return;
   }
   applyBrushAt(w.x, w.z, true);
   editing = true;
-  redraw();
 });
 window.addEventListener('mouseup', () => { editing = false; panning = false; dragSpawn = null; });
 canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
-canvas.addEventListener('mouseleave', () => { hoverWorld.in = false; redraw(); });
+canvas.addEventListener('mouseleave', () => { hoverWorld.in = false; });
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   const rect = canvas.getBoundingClientRect();
-  const { x, z } = s2w(ev.clientX - rect.left, ev.clientY - rect.top);
+  const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
   const k = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-  view.scale = Math.max(0.4, Math.min(12, view.scale * k));
-  view.cx = x - (x - view.cx) / k;
-  view.cz = z - (z - view.cz) / k;
-  redraw();
+  tr.zoomAt(px, py, k);
 }, { passive: false });
 
-// ---- WSAD / 方向键平移 ----
+// ---- WASD / 方向键平移 ----
 function panKey() {
-  const speed = 320 / view.scale; // CSS px/s → 世界单位/s
+  if (!running || !tr) return;
+  const speed = 12 / tr.cam.zoom; // 世界单位/帧
   let dx = 0, dz = 0;
   if (keys.w || keys.arrowup) dz -= speed;
   if (keys.s || keys.arrowdown) dz += speed;
   if (keys.a || keys.arrowleft) dx -= speed;
   if (keys.d || keys.arrowright) dx += speed;
-  if (dx || dz) {
-    view.cx += dx;
-    view.cz += dz;
-    redraw();
-  }
-  requestAnimationFrame(panKey);
+  if (dx || dz) tr.panWorld(dx, dz);
 }
 window.addEventListener('keydown', (e) => {
   const tag = (e.target && e.target.tagName) || '';
@@ -483,7 +371,9 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 
-// ---- 模式切换 ----
+// ============================================================================
+// 模式切换
+// ============================================================================
 function setMode(m) {
   mode = m;
   $('panel-terrain').classList.toggle('hidden', mode !== 'terrain');
@@ -494,29 +384,28 @@ function setMode(m) {
   $('editor-status').textContent = mode === 'terrain'
     ? '就绪（WASD 平移 · 滚轮缩放 · 左键画刷）'
     : `生物出生点（${spawns.length} 个）· WASD 平移 · 左键新增/拖拽`;
-  redraw();
 }
 
-// ---- 工具栏绑定 ----
+// ============================================================================
+// 工具栏绑定
+// ============================================================================
 function bindTools() {
   document.querySelectorAll('input[name="mode"]').forEach((el) => {
     el.addEventListener('change', () => setMode(el.value));
   });
   document.querySelectorAll('input[name="brush"]').forEach((el) => {
-    el.addEventListener('change', () => { brush.type = el.value; redraw(); });
+    el.addEventListener('change', () => { brush.type = el.value; });
   });
   const radius = $('brush-radius'), strength = $('brush-strength');
-  radius.addEventListener('input', () => { brush.radius = parseFloat(radius.value); $('brush-radius-v').textContent = brush.radius + 'm'; redraw(); });
+  radius.addEventListener('input', () => { brush.radius = parseFloat(radius.value); $('brush-radius-v').textContent = brush.radius + 'm'; });
   strength.addEventListener('input', () => { brush.strength = parseFloat(strength.value); $('brush-strength-v').textContent = brush.strength; });
   $('brush-falloff').addEventListener('change', (e) => { brush.falloff = e.target.value; });
   $('brush-target').addEventListener('input', (e) => { brush.targetH = parseFloat(e.target.value) || 0; });
   $('show-height').addEventListener('change', (e) => {
     showHeight = e.target.checked;
-    $('editor-legend').classList.toggle('hidden', !showHeight);
-    if (showHeight && $('editor-legend').innerHTML.trim() === '') {
-      $('editor-legend').innerHTML = '高度色带（米）<div class="legend-bar"></div><div class="legend-scale"><span>-2</span><span>10</span><span>22</span><span>34</span></div>';
-    }
-    computeAllCells(); redraw();
+    tr.showHeight = showHeight;
+    updateLegend();
+    tr.invalidateAllChunks();
   });
   // 出生点
   $('spawn-kind').addEventListener('change', (e) => {
@@ -537,7 +426,7 @@ function bindTools() {
     if (!confirm('清除全部地形编辑，还原为程序化地形？此操作会覆盖服务器上的编辑层。')) return;
     clearEdit();
     await saveTerrain();
-    computeAllCells(); redraw();
+    tr.invalidateAllChunks();
   });
   $('btn-save').addEventListener('click', async () => {
     if (mode === 'spawn') {
@@ -574,7 +463,9 @@ async function saveSpawns() {
   } catch (e) { return false; }
 }
 
-// ---- 登录 ----
+// ============================================================================
+// 登录
+// ============================================================================
 async function post(path, body) {
   const r = await fetch(BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return r.json();
@@ -585,7 +476,12 @@ async function enterEditor(j) {
   $('editor-login').classList.add('hidden');
   $('editor-app').classList.remove('hidden');
   $('editor-user-name').textContent = username;
-  resizeCanvas();
+
+  // 初始化共享地形渲染器
+  tr = new TerrainRenderer({ canvas, worldSize: WORLD, showGrid: true, gridStep: 10 });
+  tr.resize();
+  tr.showHeight = showHeight;
+
   // 加载地形编辑层
   try {
     const r = await fetch(BASE + '/api/terrain/edit');
@@ -598,14 +494,24 @@ async function enterEditor(j) {
     const jd = await r.json();
     if (jd && jd.ok && Array.isArray(jd.spawns)) spawns = jd.spawns;
   } catch (e) {}
-  computeAllCells();
+
   renderSpawnList();
   $('editor-conn').textContent = `已连接 · 地形格 ${editCellCount()} · 出生点 ${spawns.length}`;
   setStatus(`已加载服务器数据（地形 ${editCellCount()} 格 / 出生点 ${spawns.length} 个）。WASD 平移，滚轮缩放。`);
   refreshButtons();
-  redraw();
-  requestAnimationFrame(panKey);
+
+  // 启动渲染循环
+  running = true;
+  requestAnimationFrame(frame);
+  // 键盘平移循环
+  requestAnimationFrame(panKeyLoop);
 }
+function panKeyLoop() {
+  if (!running) return;
+  panKey();
+  requestAnimationFrame(panKeyLoop);
+}
+
 function loginMsg(text, ok) {
   const el = $('editor-login-msg');
   el.textContent = text || '';
@@ -632,8 +538,9 @@ $('editor-register').addEventListener('click', async () => {
   loginMsg(j.ok ? '注册成功，请登录' : (j.error || '注册失败'), !!j.ok);
 });
 
-// ---- 初始化 ----
-window.addEventListener('resize', () => { resizeCanvas(); redraw(); });
-resizeCanvas();
+// ============================================================================
+// 初始化
+// ============================================================================
+window.addEventListener('resize', () => { if (tr) { tr.resize(); } });
 bindTools();
 refreshButtons();

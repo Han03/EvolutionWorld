@@ -29,6 +29,11 @@ jobs:
           wsl -d Ubuntu -- bash -lc "systemctl stop evolution-server 2>/dev/null || true"
           # Deploy build artifacts to stable WSL path (survives runner workspace cleanup)
           wsl -d Ubuntu -- bash -lc "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && echo DEPLOY_OK"
+          # Resolve Windows host IP visible from WSL2 (for MySQL/Redis connectivity)
+          $winHost = (wsl -d Ubuntu -- bash -c "grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}'").Trim()
+          $ewConfig = "mysql_host=$winHost,mysql_port=3306,mysql_user=root,mysql_pass=123456,mysql_db=evolution_world,redis_host=$winHost,redis_port=6379"
+          Write-Output "Windows host IP from WSL2: $winHost"
+          Write-Output "EW_CONFIG: $ewConfig"
           # Point systemd service at the stable path
           $lines = @(
             "[Unit]",
@@ -39,6 +44,7 @@ jobs:
             "WorkingDirectory=/opt/evolutionworld/server",
             "ExecStart=/opt/evolutionworld/server/build/evolution_server",
             "Environment=EW_DEBUG=1",
+            "Environment=EW_CONFIG=$ewConfig",
             "Restart=no",
             "",
             "[Install]",
