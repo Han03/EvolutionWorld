@@ -51,8 +51,13 @@ jobs:
           $ewConfig = "mysql_host=$winHost,mysql_port=3306,mysql_user=root,mysql_pass=123456,mysql_db=evolution_world,redis_host=$winHost,redis_port=6379"
           Write-Output "Windows host IP from WSL2: $winHost"
           Write-Output "EW_CONFIG: $ewConfig"
-          # Start server in a detached session (setsid ensures process survives WSL session exit)
-          wsl -d Ubuntu -- bash -c "cd /opt/evolutionworld/server && EW_DEBUG=1 EW_CONFIG='$ewConfig' setsid nohup ./build/evolution_server > /tmp/evolution_server.log 2>&1 & echo SERVER_STARTED pid=\$!"
+          # Start server and capture startup output
+          # First, try running directly (not in background) to see any crash output
+          $startupOutput = wsl -d Ubuntu -- bash -c "cd /opt/evolutionworld/server && EW_DEBUG=1 EW_CONFIG='$ewConfig' timeout 5 ./build/evolution_server 2>&1 || true"
+          Write-Output "=== Server startup output (5s) ==="
+          Write-Output $startupOutput
+          # Now start in background for real
+          wsl -d Ubuntu -- bash -c "cd /opt/evolutionworld/server && EW_DEBUG=1 EW_CONFIG='$ewConfig' nohup ./build/evolution_server > /tmp/evolution_server.log 2>&1 & disown; sleep 1; ps aux | grep evolution_server | grep -v grep || echo 'Process not found after 1s'"
           Write-Output "Server address: http://localhost:3000"
           # Wait and verify server process is alive and listening
           Start-Sleep -Seconds 5
