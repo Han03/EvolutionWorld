@@ -58,11 +58,12 @@ jobs:
           Start-Sleep -Seconds 5
           wsl -d Ubuntu -- bash -c "echo '=== Server process check ===' && ps aux | grep evolution_server | grep -v grep && echo '=== Port 3000 check ===' && ss -tlnp 2>/dev/null | grep ':3000 ' && echo '=== Server startup log ===' && cat /tmp/evolution_server.log 2>/dev/null || echo 'No log file'"
           # Verify server is actually listening (fail fast if not)
-          $checkResult = wsl -d Ubuntu -- bash -c "curl -sf --max-time 3 http://localhost:3000/api/health 2>/dev/null || echo STARTUP_FAIL"
+          # Try curl first, then wget as fallback
+          $checkResult = wsl -d Ubuntu -- bash -c "curl -sf --max-time 3 http://localhost:3000/api/health 2>/dev/null || wget -qO- --timeout=3 http://localhost:3000/api/health 2>/dev/null || echo STARTUP_FAIL"
           if ($checkResult -match "STARTUP_FAIL" -or -not ($checkResult -match '"ok"')) {
             Write-Output "=== SERVER FAILED TO START ==="
-            Write-Output "curl result: $checkResult"
-            wsl -d Ubuntu -- bash -c "cat /tmp/evolution_server.log 2>/dev/null; echo '---'; ldd /opt/evolutionworld/server/build/evolution_server 2>&1 | grep 'not found' || echo 'All libs found'"
+            Write-Output "curl/wget result: $checkResult"
+            wsl -d Ubuntu -- bash -c "echo '--- Server log ---'; cat /tmp/evolution_server.log 2>/dev/null || echo 'No log'; echo '--- ldd check ---'; ldd /opt/evolutionworld/server/build/evolution_server 2>&1 | grep 'not found' || echo 'All libs found'; echo '--- curl/wget availability ---'; which curl 2>/dev/null || echo 'curl not found'; which wget 2>/dev/null || echo 'wget not found'; echo '--- Process check ---'; ps aux | grep evolution_server | grep -v grep || echo 'No server process'"
             throw "Server did not start properly"
           }
           Write-Output "Server startup verified: $checkResult"
