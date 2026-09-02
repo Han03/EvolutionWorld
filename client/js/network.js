@@ -3,7 +3,7 @@
  * 数据传输方案：二进制帧 + 量化坐标 + AOI 进出 + 增量更新 + 校准快照
  * 扩展：输入上报携带预测位置 px/py/pz（防作弊校验），处理 SELF（回退）与 KICK。
  */
-import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, MSG } from './protocol.js';
+import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, makeFrame, MSG } from './protocol.js';
 export class NetworkClient {
   constructor() {
     this.ws = null;
@@ -31,6 +31,12 @@ export class NetworkClient {
     this.onSkillCast = null; // 技能施放反馈（S2C_SKILL_CAST）
     this.onBuffs = null;     // 自身 Buff（S2C_BUFFS）
     this.onConsole = null;   // 控制台结果（S2C_CONSOLE）
+    // 任务系统回调（S2C_QUEST_*，payload 为原始 Uint8Array，由 quests.js 解码）
+    this.onQuestList = null;
+    this.onQuestProgress = null;
+    this.onQuestResult = null;
+    this.onQuestComplete = null;
+    this.onQuestNotify = null;
     // 协议透传转换监控：每次二进制帧解码为可读对象后触发（dir: 's2c' | 'c2s'，obj 为解码结果）
     this.onProtocol = null;
     // 自身预测位置（解码相对坐标用参考）
@@ -167,6 +173,21 @@ export class NetworkClient {
         case MSG.S2C_CONSOLE:
           if (this.onConsole) this.onConsole(msg);
           break;
+        case MSG.S2C_QUEST_LIST:
+          if (this.onQuestList) this.onQuestList(payload);
+          break;
+        case MSG.S2C_QUEST_PROGRESS:
+          if (this.onQuestProgress) this.onQuestProgress(payload);
+          break;
+        case MSG.S2C_QUEST_RESULT:
+          if (this.onQuestResult) this.onQuestResult(payload);
+          break;
+        case MSG.S2C_QUEST_COMPLETE:
+          if (this.onQuestComplete) this.onQuestComplete(payload);
+          break;
+        case MSG.S2C_QUEST_NOTIFY:
+          if (this.onQuestNotify) this.onQuestNotify(payload);
+          break;
         case MSG.S2C_ERROR:
           console.error('[net]', msg.code, msg.msg);
           break;
@@ -233,6 +254,11 @@ export class NetworkClient {
     if (!this.connected) return;
     this._send(encodeConsole(cmd));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'CONSOLE', cmd });
+  }
+  /** 通用二进制发送：type + payload（ArrayBuffer） */
+  send(type, payload) {
+    if (!this.connected) return;
+    this._send(makeFrame(type, payload));
   }
   close() {
     this.connected = false;

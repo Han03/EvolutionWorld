@@ -265,14 +265,14 @@ void GameData::loadDefaults() {
                   SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1500, 3.0, 0, 1.2, 0, 0,
                   BuffType::NONE, 0, 0, 0, 0, false, false, 2.0);
   // ---- Boss 专属技能（ID 2100+）----
-  // 2100 地裂冲击：Boss AOE，范围伤害 + 击退
+  // 2100 地裂冲击：Boss AOE，范围伤害 + 击退（前摇 1.5s 蓄力提示）
   addDefaultSkill(2100, "地裂冲击", "巨兽踏裂大地，对 6m 内敌人造成 80% 伤害并击退 3 米", "b_s1",
                   SkillTarget::AOE, SkillEffect::DAMAGE, 0, 8000, 0, 6, 0.8, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 0, false, false, 3.0);
-  // 2101 暗影波动：Boss AOE，范围伤害 + 减速
+                  BuffType::NONE, 0, 0, 0, 1500, false, false, 3.0);
+  // 2101 暗影波动：Boss AOE，范围伤害 + 减速（前摇 2s 蓄力提示）
   addDefaultSkill(2101, "暗影波动", "释放暗影波动，对 8m 内敌人造成 60% 伤害并减速 35%（4 秒）", "b_s2",
                   SkillTarget::AOE, SkillEffect::DAMAGE, 0, 10000, 0, 8, 0.6, 0, 0,
-                  BuffType::MOVE_SLOW, 0.35, 4.0, 0, 0);
+                  BuffType::MOVE_SLOW, 0.35, 4.0, 0, 2000, false, false, 0);
   // 新玩家自动习得：普通攻击 / 冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
   starterSkills_ = {1000, 1001, 1002, 1003};
 }

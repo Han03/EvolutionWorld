@@ -87,6 +87,25 @@ struct Config {
   float dropLifetimeSec = 60.0f;     // 地面掉落物存活时间（秒），超时消失
   float pickupRangeM = 2.0f;         // 拾取判定半径（米）
   float shopOpenRangeM = 4.0f;       // 商店 NPC 交互距离（米）
+
+  // ---- 社交系统（好友/公会/聊天）----
+  uint32_t maxFriends = 100;          // 好友上限
+  uint32_t maxFriendRequests = 20;    // 待处理好友请求上限
+  uint32_t maxGuildMembers = 50;      // 公会初始成员上限
+  uint32_t maxGuildApplications = 20; // 公会待审批申请上限
+  uint32_t chatWorldCooldownMs = 5000;// 世界频道发言冷却（毫秒）
+  uint32_t chatMinIntervalMs = 1000;  // 聊天最小间隔（防刷）
+  uint32_t chatMaxLen = 200;          // 单条消息最大字符数
+  uint32_t chatOfflineMaxMsgs = 50;   // 离线信箱上限
+  uint32_t chatWorldHistorySize = 100;// 世界频道历史条数
+  uint32_t guildCreateCost = 1000;    // 创建公会金币消耗
+
+  // ---- 任务系统（大型网游规模，数据驱动）----
+  uint32_t maxActiveQuests = 20;        // 同时进行任务上限
+  uint32_t maxCompletedQuests = 500;    // 已完成记录上限
+  float questTalkRangeM = 4.0f;         // NPC 对话/接取/提交距离（米）
+  float questReachRadius = 5.0f;        // 到达目标默认判定半径（米）
+  uint32_t dailyQuestResetHour = 5;     // 日常任务每日重置时间（小时，服务器时间）
 };
 
 } // namespace ew

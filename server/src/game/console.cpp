@@ -55,7 +55,15 @@ std::string consoleHelpText() {
     "  buffmon <wid> <type> <v> <d> 给指定怪物挂 Buff（调试/测试）\n"
     "  kill <wid|all|monsters|boss> 击杀实体/全部/普通怪/Boss\n"
     "  respawn [all|monsters|boss]  复活死亡实体\n"
-    "  teleport <x> <z>             传送自身\n";
+    "  teleport <x> <z>             传送自身\n"
+    "  quest list                   查看可接任务\n"
+    "  quest active                 查看当前活跃任务\n"
+    "  quest accept <questId>       接受任务\n"
+    "  quest abandon <questId>      放弃任务\n"
+    "  quest turnin <questId>       提交任务\n"
+    "  quest progress <questId>     查看任务目标进度\n"
+    "  quest complete <questId>     强制完成（测试）\n"
+    "  quest reset [daily]          重置日常冷却 / 全部任务\n";
 }
 
 bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
@@ -382,6 +390,116 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     double x = toNum(args[1], 0), z = toNum(args[2], 0);
     bool ok = w.teleportPlayer(ctx.playerId, x, z);
     out(ok ? ("传送至 " + args[1] + "," + args[2]) : "失败：无此玩家");
+    return true;
+  }
+  // ---- 任务系统 ----
+  if (cmd == "quest") {
+    Entity* p = ctx.playerId.empty() ? nullptr : w.findEntity(ctx.playerId);
+    if (!p) { out("需要在线玩家"); return true; }
+    std::string sub = args.size() > 1 ? args[1] : "";
+    if (sub == "list") {
+      auto avail = w.quests().availableQuests(*p);
+      if (avail.empty()) { out("当前无可接任务"); }
+      else {
+        for (const QuestDef* qd : avail) {
+          char buf[256];
+          snprintf(buf, sizeof(buf), "  [%u] %s (%s) Lv%d - %s",
+                   qd->id, qd->name.c_str(), QuestDef::categoryName(qd->category),
+                   qd->levelReq, qd->desc.c_str());
+          out(buf);
+        }
+      }
+      return true;
+    }
+    if (sub == "active") {
+      if (p->activeQuests.empty()) { out("当前无活跃任务"); }
+      else {
+        for (const auto& aq : p->activeQuests) {
+          const QuestDef* qd = w.quests().questDef(aq.questId);
+          if (!qd) continue;
+          char buf[256];
+          snprintf(buf, sizeof(buf), "  [%u] %s - %s",
+                   aq.questId, qd->name.c_str(),
+                   aq.status == 1 ? "可提交" : "进行中");
+          out(buf);
+          for (size_t i = 0; i < qd->objectives.size(); i++) {
+            uint32_t cur = i < aq.progress.size() ? aq.progress[i] : 0;
+            snprintf(buf, sizeof(buf), "    %s %u/%u",
+                     qd->objectives[i].desc.c_str(), cur, qd->objectives[i].required);
+            out(buf);
+          }
+        }
+      }
+      return true;
+    }
+    if (sub == "accept" && args.size() > 2) {
+      uint32_t qid = (uint32_t)toNum(args[2], 0);
+      auto result = w.quests().acceptQuest(p->id, qid);
+      out(result == QUEST_OK ? "接受成功" : ("失败 code=" + std::to_string(result)));
+      return true;
+    }
+    if (sub == "abandon" && args.size() > 2) {
+      uint32_t qid = (uint32_t)toNum(args[2], 0);
+      auto result = w.quests().abandonQuest(p->id, qid);
+      out(result == QUEST_OK ? "放弃成功" : ("失败 code=" + std::to_string(result)));
+      return true;
+    }
+    if (sub == "turnin" && args.size() > 2) {
+      uint32_t qid = (uint32_t)toNum(args[2], 0);
+      auto result = w.quests().turnInQuest(p->id, qid, 0);
+      out(result == QUEST_OK ? "提交成功" : ("失败 code=" + std::to_string(result)));
+      return true;
+    }
+    if (sub == "progress" && args.size() > 2) {
+      uint32_t qid = (uint32_t)toNum(args[2], 0);
+      const ActiveQuest* aq = w.quests().findActiveQuest(*p, qid);
+      if (!aq) { out("任务不在进行中"); return true; }
+      const QuestDef* qd = w.quests().questDef(qid);
+      if (!qd) { out("任务不存在"); return true; }
+      for (size_t i = 0; i < qd->objectives.size(); i++) {
+        uint32_t cur = i < aq->progress.size() ? aq->progress[i] : 0;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "  [%u] %s: %u/%u %s",
+                 qid, qd->objectives[i].desc.c_str(), cur,
+                 qd->objectives[i].required,
+                 cur >= qd->objectives[i].required ? "✓" : "");
+        out(buf);
+      }
+      return true;
+    }
+    if (sub == "complete" && args.size() > 2) {
+      uint32_t qid = (uint32_t)toNum(args[2], 0);
+      // 强制将所有目标进度设为完成
+      for (auto& aq : p->activeQuests) {
+        if (aq.questId == qid) {
+          const QuestDef* qd = w.quests().questDef(qid);
+          if (!qd) break;
+          for (size_t i = 0; i < qd->objectives.size(); i++)
+            aq.progress[i] = qd->objectives[i].required;
+          aq.status = 1;
+          w.markQuestDirty(p->id);
+          out("强制完成目标");
+          return true;
+        }
+      }
+      out("任务不在进行中");
+      return true;
+    }
+    if (sub == "reset") {
+      std::string mode = args.size() > 2 ? args[2] : "all";
+      if (mode == "daily") {
+        p->questCooldown.clear();
+        out("日常冷却已重置");
+      } else {
+        p->activeQuests.clear();
+        p->completedQuests.clear();
+        p->questCooldown.clear();
+        w.markQuestDirty(p->id);
+        out("全部任务已重置");
+      }
+      return true;
+    }
+    out("用法: quest list|active|accept|abandon|turnin|progress|complete|reset");
     return true;
   }
 

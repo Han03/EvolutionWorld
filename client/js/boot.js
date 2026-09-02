@@ -9,7 +9,9 @@ import { EntityViewManager } from './entities.js';
 import { Predictor } from './predict.js';
 import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME, skillDef, skillName } from './items.js';
 import { EVT } from './protocol.js';
+import { Reader } from './protocol.js';
 import { loadEditCells } from './terrain.js';
+import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, toggleQuestPanel, sendQuestList } from './quests.js';
 
 const $ = (id) => document.getElementById(id);
 const overlay = $('login-overlay');
@@ -236,9 +238,17 @@ async function enterWorld(token, username, worldMeta) {
     // 技能简易效果（前摇圈 / AOE 范围圈 / 打断闪红）
     if (ev.evtType === EVT.SKILL_CASTING) {
       const sd = skillDef(ev.b);
+      // 按释放者类型决定颜色：怪物红色、当前玩家橙色、其他玩家绿色
+      const casterEnt = findEntityByWid(ev.wid);
+      let casterColor = sd.color;
+      if (ev.wid === net.selfWid) casterColor = '#ff8c1a';
+      else if (casterEnt && casterEnt.kind === 'monster') casterColor = '#f87171';
+      else if (casterEnt && casterEnt.kind === 'player') casterColor = '#34d399';
       renderer.addSkillEffect({
-        kind: 'cast', wid: ev.wid, x: ev.x, z: ev.z,
-        color: sd.color, durMs: Math.max(200, sd.castMs),
+        kind: 'cast', wid: ev.wid, casterWid: ev.wid,
+        x: ev.x, z: ev.z,
+        color: casterColor, radius: sd.radius || 0,
+        durMs: Math.max(200, sd.castMs),
       });
     } else if (ev.evtType === EVT.SKILL_CANCEL) {
       renderer.clearCasting(ev.wid);
@@ -295,8 +305,10 @@ async function enterWorld(token, username, worldMeta) {
       // 有前摇：本地立即画自身前摇圈（服务器 EVT_SKILL_CASTING 随后到达，同 wid 去重）
       if (msg.castTimeMs > 0) {
         renderer.addSkillEffect({
-          kind: 'cast', wid: net.selfWid, x: msg.x, z: msg.z,
-          color: sd.color, durMs: msg.castTimeMs,
+          kind: 'cast', wid: net.selfWid, casterWid: net.selfWid,
+          x: msg.x, z: msg.z,
+          color: '#ff8c1a', radius: sd.radius || 0,
+          durMs: msg.castTimeMs,
         });
       }
     } else {
@@ -313,6 +325,15 @@ async function enterWorld(token, username, worldMeta) {
   net.onConsole = (msg) => {
     protocolLog('s2c', { type: 'CONSOLE', text: msg.text });
   };
+
+  // 任务系统：S2C_QUEST_* 回调（payload 为原始 Uint8Array，由 quests.js 解码）
+  net.onQuestList = (payload) => decodeQuestList(new Reader(payload));
+  net.onQuestProgress = (payload) => decodeQuestProgress(new Reader(payload));
+  net.onQuestResult = (payload) => decodeQuestResult(new Reader(payload));
+  net.onQuestComplete = (payload) => decodeQuestComplete(new Reader(payload));
+  net.onQuestNotify = (payload) => decodeQuestNotify(new Reader(payload));
+  // 初始化任务 UI（tab 切换 + 关闭按钮 + 全局回调）
+  initQuestUI(net);
 
   net.onSelf = (msg) => {
     // 服务端后校验不通过 → 回退到权威位置
@@ -377,6 +398,11 @@ function protocolLog(dir, msg) {
     case 'SKILLS': detail = `已学=${msg.skills.length} ${msg.skills.map((s) => `${skillName(s.id)}${s.cdMs ? '(cd' + (s.cdMs / 1000).toFixed(0) + 's)' : ''}`).join(' ')}`; break;
     case 'SKILL_CAST': detail = `ok=${msg.ok} skill=${skillName(msg.skillId)} target=${msg.targetWid}`; break;
     case 'BUFFS': detail = `buffs=${msg.buffs.length} ${msg.buffs.map((b) => `#${b.skillId}@${b.value.toFixed(1)}(${b.remainSec.toFixed(1)}s)`).join(' ')}`; break;
+    case 'S2C_QUEST_LIST': detail = '可接任务列表'; break;
+    case 'S2C_QUEST_PROGRESS': detail = '任务进度更新'; break;
+    case 'S2C_QUEST_RESULT': detail = '任务操作结果'; break;
+    case 'S2C_QUEST_COMPLETE': detail = '任务目标完成'; break;
+    case 'S2C_QUEST_NOTIFY': detail = '任务进度通知'; break;
     default: detail = JSON.stringify(msg).slice(0, 80); break;
   }
   line.textContent = `[${dir === 's2c' ? '↓S2C' : '↑C2S'}] ${t} ${detail}`;
@@ -637,6 +663,7 @@ function loop(now) {
       // 死亡：丢弃待处理输入（避免复活后残留触发）
       input.takeAttack(); input.takeSkillSlot();
       input.takeInvToggle(); input.takeShop(); input.takePickup();
+      input.takeQuestToggle();
     } else {
       predictor.applyInput(mv.x, mv.z, jump);
       const pred = predictor.predicted();
@@ -669,6 +696,7 @@ function loop(now) {
   renderBuffBar();
   // 物品系统交互（selfPos 已就绪）
   if (input.takeInvToggle()) toggleInventoryPanel();
+  if (input.takeQuestToggle()) toggleQuestPanel();
   if (input.takeShop()) {
     const npc = findNearbyShopNpc(selfPos.x, selfPos.z, 4);
     if (npc) net.sendShopOpen(npc.wid);

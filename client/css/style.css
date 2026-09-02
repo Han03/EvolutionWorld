@@ -687,3 +687,131 @@ kbd {
 ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
 ::-webkit-scrollbar-thumb { background: rgba(201,168,76,0.25); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(201,168,76,0.4); }
+
+/* ══════════════════════════════════════════
+   任务追踪 HUD（右侧）
+   ══════════════════════════════════════════ */
+.quest-tracker {
+  position: absolute;
+  right: 14px; top: 56px;
+  width: 220px; max-height: 40vh;
+  background: rgba(8,12,20,0.75);
+  border: 1px solid rgba(201,168,76,0.15);
+  border-radius: 6px;
+  padding: 8px 10px;
+  z-index: 6;
+  overflow: hidden;
+  pointer-events: none;
+}
+.quest-tracker-title {
+  color: var(--gold); font-size: 11px; font-weight: 700;
+  letter-spacing: 1px; margin-bottom: 6px;
+  border-bottom: 1px solid rgba(201,168,76,0.12);
+  padding-bottom: 4px;
+}
+.quest-tracker-list { overflow: hidden; }
+.quest-tracker-empty { color: var(--text-dim); font-size: 10px; padding: 4px 0; }
+.quest-track-item { margin-bottom: 6px; }
+.quest-track-completable { opacity: 1; }
+.quest-track-name {
+  font-size: 11px; font-weight: 600; color: var(--text-primary);
+  border-left: 2px solid var(--gold); padding-left: 6px;
+  margin-bottom: 2px;
+}
+.quest-track-obj {
+  font-size: 10px; color: var(--text-secondary);
+  padding-left: 10px; line-height: 1.5;
+}
+.quest-track-obj-done { color: #81c784; }
+.quest-track-completable .quest-track-name { color: #81c784; }
+
+/* ══════════════════════════════════════════
+   任务日志面板
+   ══════════════════════════════════════════ */
+.quest-panel {
+  width: 480px;
+}
+.quest-tabs {
+  display: flex; gap: 0;
+  border-bottom: 1px solid rgba(201,168,76,0.15);
+}
+.quest-tab {
+  flex: 1; padding: 8px 0;
+  background: rgba(201,168,76,0.04);
+  border: none; border-bottom: 2px solid transparent;
+  color: var(--text-secondary); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+  letter-spacing: 1px;
+}
+.quest-tab:hover { background: rgba(201,168,76,0.08); color: var(--text-primary); }
+.quest-tab.active {
+  background: rgba(201,168,76,0.1);
+  border-bottom-color: var(--gold);
+  color: var(--gold-light);
+}
+.quest-content {
+  padding: 10px; max-height: 55vh; overflow-y: auto;
+}
+.quest-empty {
+  color: var(--text-dim); font-size: 12px; padding: 24px 0; text-align: center;
+}
+.quest-card {
+  background: rgba(201,168,76,0.04);
+  border: 1px solid rgba(201,168,76,0.1);
+  border-radius: 6px; padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.quest-card.quest-completable {
+  border-color: rgba(129,199,132,0.4);
+  background: rgba(129,199,132,0.04);
+}
+.quest-card-header {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+}
+.quest-cat { font-size: 11px; font-weight: 700; }
+.quest-name { font-size: 13px; font-weight: 700; color: var(--text-primary); flex: 1; }
+.quest-level { font-size: 10px; color: var(--text-secondary); }
+.quest-status { font-size: 11px; color: #81c784; font-weight: 600; }
+.quest-desc {
+  font-size: 11px; color: var(--text-secondary); margin-bottom: 6px;
+  line-height: 1.5;
+}
+.quest-objectives { margin-bottom: 6px; }
+.quest-obj {
+  font-size: 11px; color: var(--text-primary); margin-bottom: 4px;
+  padding-left: 8px; border-left: 2px solid rgba(201,168,76,0.2);
+}
+.quest-obj-done { color: #81c784; border-left-color: #81c784; }
+.quest-progress-bar {
+  height: 4px; background: rgba(201,168,76,0.1);
+  border-radius: 2px; margin-top: 2px; overflow: hidden;
+}
+.quest-progress-fill {
+  height: 100%; background: linear-gradient(90deg, var(--gold), var(--gold-light));
+  border-radius: 2px; transition: width 0.3s;
+}
+.quest-obj-done .quest-progress-fill { background: linear-gradient(90deg, #66bb6a, #81c784); }
+.quest-rewards {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
+}
+.quest-reward {
+  font-size: 10px; color: var(--gold); background: rgba(201,168,76,0.06);
+  padding: 2px 6px; border-radius: 3px;
+  border: 1px solid rgba(201,168,76,0.12);
+}
+.quest-btns { display: flex; gap: 6px; }
+.quest-btn {
+  background: linear-gradient(180deg, rgba(201,168,76,0.2) 0%, rgba(201,168,76,0.1) 100%);
+  color: var(--gold-light); border: 1px solid rgba(201,168,76,0.3);
+  border-radius: 4px; padding: 4px 14px; font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.quest-btn:hover {
+  background: linear-gradient(180deg, rgba(201,168,76,0.3) 0%, rgba(201,168,76,0.15) 100%);
+  border-color: var(--gold);
+}
+.quest-btn-accept { background: linear-gradient(180deg, rgba(129,199,132,0.2) 0%, rgba(129,199,132,0.1) 100%); color: #81c784; border-color: rgba(129,199,132,0.3); }
+.quest-btn-accept:hover { background: linear-gradient(180deg, rgba(129,199,132,0.3) 0%, rgba(129,199,132,0.15) 100%); border-color: #81c784; }
+.quest-btn-turnin { background: linear-gradient(180deg, rgba(129,199,132,0.25) 0%, rgba(129,199,132,0.12) 100%); color: #81c784; border-color: rgba(129,199,132,0.4); }
+.quest-btn-abandon { background: rgba(229,115,115,0.08); color: #e57373; border-color: rgba(229,115,115,0.2); }
+.quest-btn-abandon:hover { background: rgba(229,115,115,0.15); border-color: rgba(229,115,115,0.4); }

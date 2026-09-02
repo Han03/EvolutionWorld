@@ -126,12 +126,15 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
     if (w_.skillsDirty().count(player->id)) buf += w_.skillsFrame(*player);
     // Buff 变化：补发 S2C_BUFFS
     if (w_.buffsDirty().count(player->id)) buf += w_.buffsFrame(*player);
+    // 任务进度变化：补发 S2C_QUEST_PROGRESS
+    if (w_.questDirty().count(player->id)) buf += w_.quests().questProgressFrame(*player);
     if (!buf.empty()) out_[player->id] = std::move(buf);
   }
   w_.clearStatsDirty();
   w_.clearInvDirty();
   w_.clearSkillsDirty();
   w_.clearBuffsDirty();
+  w_.clearQuestDirty();
   return out_;
 }
 } // namespace ew

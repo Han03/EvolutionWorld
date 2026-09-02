@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cmath>
 #include "util/json.h"
+#include "game/quests.h"
 namespace ew {
 struct Vec3 {
   double x = 0, y = 0, z = 0;
@@ -78,6 +79,10 @@ struct Entity {
   uint64_t castStartMs = 0; // 开始施放时刻（服务端单调时钟 ms）
   uint32_t castTargetWid = 0;
   double castTx = 0, castTz = 0; // 施放落点（用于 AOE）
+  // 任务系统（大型网游规模，数据驱动）
+  std::vector<ActiveQuest> activeQuests;            // 进行中的任务
+  std::unordered_set<uint32_t> completedQuests;     // 已完成任务 ID 集合
+  std::unordered_map<uint32_t, uint64_t> questCooldown; // 日常任务冷却：questId -> nextAvailableMs
   // NPC 专属：所属商店 ID（0=普通 NPC）
   uint32_t shopId = 0;
   bool isBoss = false;          // 是否为世界 Boss（全局共享实体）

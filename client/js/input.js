@@ -11,6 +11,7 @@ export class InputState {
     this.shopQueued = false;   // B：附近商店 NPC 打开商店
     this.invToggleQueued = false; // I：切换背包/装备面板
     this.pickupQueued = false; // E：主动拾取
+    this.questToggleQueued = false; // L：切换任务日志面板
     this.skillQueued = 0;      // 技能栏热键（1-8）：最近一次按下的技能 ID
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space') {
@@ -28,6 +29,9 @@ export class InputState {
       }
       if (e.code === 'KeyE') {
         this.pickupQueued = true;
+      }
+      if (e.code === 'KeyL') {
+        this.questToggleQueued = true;
       }
       // 技能栏热键：1-9 数字 → 槽 1-9；0/-/= → 槽 10/11/12；Q/R/T/Y → 槽 13-16
       if (e.code.startsWith('Digit')) {
@@ -107,6 +111,12 @@ export class InputState {
   takePickup() {
     const s = this.pickupQueued;
     this.pickupQueued = false;
+    return s;
+  }
+  /** 消费任务面板切换信号（L） */
+  takeQuestToggle() {
+    const s = this.questToggleQueued;
+    this.questToggleQueued = false;
     return s;
   }
   /** 消费技能栏热键信号（数字 1-8 → 技能槽位） */

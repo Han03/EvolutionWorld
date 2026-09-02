@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
   store.init();
 
   World world(cfg);
+  world.setStore(&store); // 注入存储层（社交系统持久化用）
   // 生物出生点：加载 data/spawns.json（有则覆盖默认确定性出生点，无则用内置默认）
   {
     std::string sp = cfg.dataDir + "/spawns.json";

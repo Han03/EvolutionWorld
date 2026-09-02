@@ -4,6 +4,7 @@
 #include <cstdio>
 #include "ai.h"
 #include "net/protocol.h"
+#include "store/store.h"
 #include <algorithm>
 #include <cmath>
 namespace ew {
@@ -26,6 +27,11 @@ World::World(const Config& cfg)
     : cfg_(cfg), physics_(cfg), chunks_(*this, cfg),
       aoi_(cfg.aoiCellSizeM), rng_((uint32_t)cfg.worldSeed ^ 0x51ab) {
   spawns_.loadDefaults(cfg);   // 确定性默认出生点（可被 data/spawns.json 覆盖）
+  // 初始化社交系统
+  friends_ = std::make_unique<FriendSystem>(*this);
+  guilds_ = std::make_unique<GuildSystem>(*this);
+  chat_ = std::make_unique<ChatSystem>(*this);
+  quests_ = std::make_unique<QuestSystem>(*this);
   addSystem(10, "input", inputSystem);
   addSystem(20, "move", moveSystem);
   addSystem(30, "ai", aiSystem);
@@ -38,6 +44,12 @@ World::World(const Config& cfg)
   // 配置系统：内置默认数据 + 可选 JSON 覆盖（data/items.json / monsters.json / shop.json）
   data_.loadDefaults();
   data_.loadFromJson(cfg.dataDir);
+  // 任务系统：内置默认任务 + 可选 JSON 覆盖
+  quests_->init();
+}
+Store& World::store() {
+  // 存储层引用（社交系统持久化用，由 main 通过 setStore 注入）
+  return *store_;
 }
 void World::addSystem(int priority, const std::string& name, SystemFn fn) {
   systems_.push_back({priority, {name, std::move(fn)}});
@@ -209,6 +221,8 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   // 荆棘反伤：目标（怪物/Boss）若有 THORNS Buff，反弹部分伤害给攻击者
   thornsReflect(*t, *p, dmg);
   if (t->hp <= 0) onVictimDeath(*t, *p, nowMs);
+  // 任务钩子：击杀怪物后检测任务进度
+  quests_->onMonsterKill(*p, t->monsterType);
   return true;
 }
 // 目标死亡统一处理（普攻/技能共用）：Boss 复活 / 普通怪物失活+复活 + 掉落
@@ -587,6 +601,8 @@ bool World::giveItem(const std::string& playerId, uint32_t itemId, uint16_t coun
   p->pl.inventory[itemId] += count;
   markInvDirty(playerId);
   markStatsDirty(playerId);
+  // 任务钩子：发放物品后检测收集任务进度
+  quests_->onItemAcquired(*p, itemId, count);
   return true;
 }
 bool World::giveGold(const std::string& playerId, int64_t amount) {
@@ -726,7 +742,11 @@ bool World::playerPickup(const std::string& playerId, uint32_t dropWid) {
   if (p->pos.dist2D(d->pos) > cfg_.pickupRangeM) return false;
   // 转移（金币是物品，都进背包/钱包）
   if (d->dropGold > 0) p->pl.gold += d->dropGold;
-  if (d->dropItemId > 0) p->pl.inventory[d->dropItemId] += 1;
+  if (d->dropItemId > 0) {
+    p->pl.inventory[d->dropItemId] += 1;
+    // 任务钩子：拾取物品后检测收集任务进度
+    quests_->onItemAcquired(*p, d->dropItemId, 1);
+  }
   despawnDrop(d->id);
   return true;
 }
@@ -848,6 +868,9 @@ void World::recomputeStats(Entity& p) {
 void World::markStatsDirty(const std::string& playerId) {
   statsDirty_.insert(playerId);
 }
+void World::markQuestDirty(const std::string& playerId) {
+  questDirty_.insert(playerId);
+}
 
 // 世界共享事件：推入本 tick 队列（netcode 每 tick 全区广播后清空）
 void World::pushEvent(uint8_t type, uint32_t wid, uint32_t b, int32_t x, int32_t z) {
@@ -955,6 +978,8 @@ static void moveSystem(World& w, double dt) {
     Entity* p = w.findEntity(pid);
     if (!p || p->dead) continue;  // 死亡玩家静止（等待复活）
     moveEntityCollide(w, *p, p->input.targetVX, p->input.targetVZ, dt);
+    // 任务钩子：移动后检测到达目标
+    w.quests().onPlayerMove(*p);
   }
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;

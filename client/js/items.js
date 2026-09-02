@@ -76,6 +76,14 @@ export const SKILL_DEFS = {
   1015: { name: '疾风步', icon: '💨', color: '#69f0ae', desc: '移速+50%·8s', key: 'R', castMs: 300, radius: 0 },
   1016: { name: '猛击', icon: '🔨', color: '#ffca28', desc: '180% AOE + 击退6m', key: 'T', castMs: 500, radius: 3 },
   1017: { name: '生命涌动', icon: '💚', color: '#81c784', desc: '回血 25/s·8s', key: 'Y', castMs: 400, radius: 0 },
+  // ---- 怪物专属技能 ----
+  2001: { name: '撕咬', icon: '🦷', color: '#f87171', desc: '100% + 流血', key: '', castMs: 0, radius: 0 },
+  2002: { name: '利爪挥击', icon: '🐾', color: '#f87171', desc: '100% + 减速', key: '', castMs: 0, radius: 0 },
+  2003: { name: '骨刺投掷', icon: '🦴', color: '#f87171', desc: '90% + 减防', key: '', castMs: 0, radius: 0 },
+  2004: { name: '石像冲击', icon: '🗿', color: '#f87171', desc: '120% + 击退', key: '', castMs: 0, radius: 0 },
+  // ---- Boss 专属技能 ----
+  2100: { name: '地裂冲击', icon: '💥', color: '#f87171', desc: '80% AOE + 击退3m', key: '', castMs: 1500, radius: 6 },
+  2101: { name: '暗影波动', icon: '🌑', color: '#f87171', desc: '60% AOE + 减速35%', key: '', castMs: 2000, radius: 8 },
 };
 export function skillDef(id) {
   return SKILL_DEFS[id] || { name: `技能#${id}`, icon: '❔', color: '#aaa', desc: '', key: '' };

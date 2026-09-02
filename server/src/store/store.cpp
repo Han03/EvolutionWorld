@@ -66,6 +66,75 @@ public:
   }
   bool cacheDel(const std::string& key) override { cache_.erase(key); return true; }
 
+  // ---- 社交系统：好友 ----
+  bool addFriend(const std::string& a, const std::string& b) override {
+    friends_[a].push_back({b, nowMs()});
+    friends_[b].push_back({a, nowMs()});
+    return true;
+  }
+  bool removeFriend(const std::string& a, const std::string& b) override {
+    auto removeFrom = [&](const std::string& from, const std::string& target) {
+      auto& vec = friends_[from];
+      vec.erase(std::remove_if(vec.begin(), vec.end(),
+          [&](const auto& p) { return p.first == target; }), vec.end());
+    };
+    removeFrom(a, b);
+    removeFrom(b, a);
+    return true;
+  }
+  std::vector<std::pair<std::string, uint64_t>> loadFriends(const std::string& username) override {
+    auto it = friends_.find(username);
+    if (it == friends_.end()) return {};
+    return it->second;
+  }
+  bool addBlock(const std::string& a, const std::string& b) override {
+    blocks_[a].push_back(b);
+    return true;
+  }
+  bool removeBlock(const std::string& a, const std::string& b) override {
+    auto& vec = blocks_[a];
+    vec.erase(std::remove(vec.begin(), vec.end(), b), vec.end());
+    return true;
+  }
+  std::vector<std::string> loadBlocks(const std::string& username) override {
+    auto it = blocks_.find(username);
+    if (it == blocks_.end()) return {};
+    return it->second;
+  }
+
+  // ---- 社交系统：公会 ----
+  bool saveGuild(const GuildSave& g) override { guilds_[g.guildId] = g; return true; }
+  bool loadGuild(uint32_t guildId, GuildSave& out) override {
+    auto it = guilds_.find(guildId);
+    if (it == guilds_.end()) return false;
+    out = it->second;
+    return true;
+  }
+  bool deleteGuild(uint32_t guildId) override { guilds_.erase(guildId); return true; }
+  bool saveGuildMembers(uint32_t guildId, const std::string& membersJson) override {
+    guildMembers_[guildId] = membersJson;
+    return true;
+  }
+  std::string loadGuildMembers(uint32_t guildId) override {
+    auto it = guildMembers_.find(guildId);
+    if (it == guildMembers_.end()) return "";
+    return it->second;
+  }
+  std::vector<uint32_t> loadAllGuildIds() override {
+    std::vector<uint32_t> ids;
+    for (const auto& [id, _] : guilds_) ids.push_back(id);
+    return ids;
+  }
+  // 任务系统内存存储
+  bool saveQuests(const std::string& username, const std::string& questsJson) override {
+    playerQuests_[username] = questsJson;
+    return true;
+  }
+  std::string loadQuests(const std::string& username) override {
+    auto it = playerQuests_.find(username);
+    return it == playerQuests_.end() ? "" : it->second;
+  }
+
   // 供 Store 门面在降级/路由时访问
   const std::unordered_map<std::string, UserRecord>& users() const { return users_; }
   std::unordered_map<std::string, UserRecord>& usersMut() { return users_; }
@@ -75,6 +144,12 @@ private:
   std::unordered_map<std::string, PlayerSave> saves_;
   std::unordered_map<std::string, MemSession> sessions_;
   std::unordered_map<std::string, MemCacheEntry> cache_;
+  // 社交系统内存存储
+  std::unordered_map<std::string, std::vector<std::pair<std::string, uint64_t>>> friends_; // username -> [(friend, sinceMs)]
+  std::unordered_map<std::string, std::vector<std::string>> blocks_; // username -> [blocked...]
+  std::unordered_map<uint32_t, GuildSave> guilds_;
+  std::unordered_map<uint32_t, std::string> guildMembers_; // guildId -> membersJson
+  std::unordered_map<std::string, std::string> playerQuests_; // username -> questsJson
 };
 
 // ============ 配置解析（环境变量） ============
@@ -249,6 +324,81 @@ bool Store::cacheGet(const std::string& key, std::string& out) {
 void Store::cacheDel(const std::string& key) {
   memory_->cacheDel(key);
   if (redis_) redis_->cacheDel(key);
+}
+
+// ---- 社交系统：好友 ----
+void Store::addFriend(const std::string& a, const std::string& b) {
+  memory_->addFriend(a, b);
+  if (mysql_) mysql_->addFriend(a, b);
+}
+void Store::removeFriend(const std::string& a, const std::string& b) {
+  memory_->removeFriend(a, b);
+  if (mysql_) mysql_->removeFriend(a, b);
+}
+std::vector<std::pair<std::string, uint64_t>> Store::loadFriends(const std::string& username) {
+  auto result = memory_->loadFriends(username);
+  if (!result.empty()) return result;
+  if (mysql_) return mysql_->loadFriends(username);
+  return {};
+}
+void Store::addBlock(const std::string& a, const std::string& b) {
+  memory_->addBlock(a, b);
+  if (mysql_) mysql_->addBlock(a, b);
+}
+void Store::removeBlock(const std::string& a, const std::string& b) {
+  memory_->removeBlock(a, b);
+  if (mysql_) mysql_->removeBlock(a, b);
+}
+std::vector<std::string> Store::loadBlocks(const std::string& username) {
+  auto result = memory_->loadBlocks(username);
+  if (!result.empty()) return result;
+  if (mysql_) return mysql_->loadBlocks(username);
+  return {};
+}
+
+// ---- 社交系统：公会 ----
+void Store::saveGuild(const GuildSave& g) {
+  memory_->saveGuild(g);
+  if (mysql_) mysql_->saveGuild(g);
+}
+bool Store::loadGuild(uint32_t guildId, GuildSave& out) {
+  if (mysql_ && mysql_->loadGuild(guildId, out)) return true;
+  return memory_->loadGuild(guildId, out);
+}
+void Store::deleteGuild(uint32_t guildId) {
+  memory_->deleteGuild(guildId);
+  if (mysql_) mysql_->deleteGuild(guildId);
+}
+void Store::saveGuildMembers(uint32_t guildId, const std::string& membersJson) {
+  memory_->saveGuildMembers(guildId, membersJson);
+  if (mysql_) mysql_->saveGuildMembers(guildId, membersJson);
+}
+std::string Store::loadGuildMembers(uint32_t guildId) {
+  if (mysql_) {
+    auto result = mysql_->loadGuildMembers(guildId);
+    if (!result.empty()) return result;
+  }
+  return memory_->loadGuildMembers(guildId);
+}
+std::vector<uint32_t> Store::loadAllGuildIds() {
+  if (mysql_) {
+    auto ids = mysql_->loadAllGuildIds();
+    if (!ids.empty()) return ids;
+  }
+  return memory_->loadAllGuildIds();
+}
+
+// ---- 任务系统 ----
+void Store::saveQuests(const std::string& username, const std::string& questsJson) {
+  memory_->saveQuests(username, questsJson);
+  if (mysql_) mysql_->saveQuests(username, questsJson);
+}
+std::string Store::loadQuests(const std::string& username) {
+  if (mysql_) {
+    std::string q = mysql_->loadQuests(username);
+    if (!q.empty()) return q;
+  }
+  return memory_->loadQuests(username);
 }
 
 } // namespace ew

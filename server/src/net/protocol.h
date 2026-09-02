@@ -36,6 +36,34 @@ enum MsgType : uint8_t {
   C2S_USE_ITEM  = 0x09, // 使用消耗品（itemId + 数量）
   C2S_CAST_SKILL= 0x0A, // 施放技能（skillId + 目标 wid + 落点 x/z）
   C2S_CONSOLE   = 0x0B, // 控制台命令（utf-8 文本；EW_DEBUG 或常开门控）
+  // ---- 任务系统 C2S ----
+  C2S_QUEST_ACCEPT  = 0x0C, // 接受任务 (u32: questId)
+  C2S_QUEST_ABANDON = 0x0D, // 放弃任务 (u32: questId)
+  C2S_QUEST_TURNIN  = 0x0E, // 提交任务 (u32: questId, u32: npcWid)
+  C2S_QUEST_LIST    = 0x0F, // 请求可接任务列表
+  C2S_QUEST_TRACK   = 0x17, // 请求任务进度详情
+  C2S_TALK_NPC      = 0x18, // 与 NPC 对话（触发任务目标）(u32: npcWid)
+  // ---- 社交系统 C2S ----
+  C2S_FRIEND_ADD     = 0x10, // 发送好友请求 (str: targetUsername, str: message)
+  C2S_FRIEND_ACCEPT  = 0x11, // 接受请求 (str: fromUsername)
+  C2S_FRIEND_REJECT  = 0x12, // 拒绝请求 (str: fromUsername)
+  C2S_FRIEND_REMOVE  = 0x13, // 删除好友 (str: targetUsername)
+  C2S_FRIEND_BLOCK   = 0x14, // 拉黑 (str: targetUsername)
+  C2S_FRIEND_UNBLOCK = 0x15, // 取消拉黑 (str: targetUsername)
+  C2S_FRIEND_LIST    = 0x16, // 请求好友列表
+  C2S_GUILD_CREATE   = 0x20, // 创建公会 (str: name)
+  C2S_GUILD_DISBAND  = 0x21, // 解散公会
+  C2S_GUILD_APPLY    = 0x22, // 申请入会 (uint32: guildId)
+  C2S_GUILD_APPROVE  = 0x23, // 审批入会 (str: applicantName, u8: approve)
+  C2S_GUILD_KICK     = 0x24, // 踢出成员 (str: targetName)
+  C2S_GUILD_PROMOTE  = 0x25, // 晋升 (str: targetName)
+  C2S_GUILD_DEMOTE   = 0x26, // 降级 (str: targetName)
+  C2S_GUILD_LEAVE    = 0x27, // 退出公会
+  C2S_GUILD_TRANSFER = 0x28, // 转让会长 (str: targetName)
+  C2S_GUILD_NOTICE   = 0x29, // 编辑公告 (str: notice)
+  C2S_GUILD_INFO     = 0x2A, // 请求公会信息
+  C2S_GUILD_LIST     = 0x2B, // 请求公会列表（搜索）
+  C2S_CHAT_SEND      = 0x30, // 发送聊天消息 (u8: channel, str: target, str: content)
   // S2C
   S2C_HELLO   = 0x81, // 握手（world 参数 + 自身完整状态）
   S2C_SNAPSHOT= 0x82, // 校准快照（周期全量，自愈）
@@ -56,6 +84,25 @@ enum MsgType : uint8_t {
   S2C_SKILL_CAST = 0x91, // 技能施放反馈（success + skillId + 目标 wid + 落点）
   S2C_BUFFS    = 0x92, // 自身 Buff 列表（skillId/type/value/remain）
   S2C_CONSOLE  = 0x93, // 控制台命令结果（utf-8 文本，逐行）
+  // ---- 社交系统 S2C ----
+  S2C_FRIEND_REQUEST = 0xA0, // 收到好友请求 (str: from, str: message)
+  S2C_FRIEND_LIST    = 0xA1, // 好友列表 (u16: count, [str: name, u8: online, str: remark]...)
+  S2C_FRIEND_STATUS  = 0xA2, // 好友上下线 (str: name, u8: online)
+  S2C_FRIEND_RESULT  = 0xA3, // 操作结果 (u8: opCode, u8: resultCode)
+  S2C_GUILD_INFO     = 0xB0, // 公会完整信息（成员列表/公告/设置）
+  S2C_GUILD_RESULT   = 0xB1, // 操作结果 (u8: opCode, u8: code, payload)
+  S2C_GUILD_NOTIFY   = 0xB2, // 公会事件通知（新成员/踢出/公告变更等）
+  S2C_GUILD_LIST     = 0xB3, // 公会搜索列表
+  S2C_GUILD_APPLY_N  = 0xB4, // 新入会申请通知（在线官员收到）
+  S2C_CHAT_MSG       = 0xC0, // 收到聊天消息 (u8: channel, str: sender, u32: senderWid, str: content, u64: timestamp)
+  S2C_CHAT_HISTORY   = 0xC1, // 历史消息批量 (u16: count, [ChatMessage...])
+  S2C_CHAT_RESULT    = 0xC2, // 发送结果 (u8: code, str: errorMsg)
+  // ---- 任务系统 S2C ----
+  S2C_QUEST_LIST     = 0xD0, // 可接任务列表
+  S2C_QUEST_PROGRESS = 0xD1, // 活跃任务进度
+  S2C_QUEST_RESULT   = 0xD2, // 操作结果（接受/放弃/提交）
+  S2C_QUEST_COMPLETE = 0xD3, // 任务完成通知（目标全部达成）
+  S2C_QUEST_NOTIFY   = 0xD4, // 任务目标进度更新推送
 };
 // ---------- 共享事件类型（S2C_EVENT payload 首字节） ----------
 enum EvtType : uint8_t {
@@ -233,5 +280,113 @@ bool decodePickup(const std::string& payload, PickupMsg& out);
 bool decodeEquip(const std::string& payload, EquipMsg& out);
 bool decodeUseItem(const std::string& payload, UseItemMsg& out);
 bool decodeCastSkill(const std::string& payload, CastSkillMsg& out);
+
+// ---------- 社交系统 C2S 消息结构 ----------
+struct FriendAddMsg { std::string targetName; std::string message; };
+struct FriendAcceptMsg { std::string fromUser; };
+struct FriendRejectMsg { std::string fromUser; };
+struct FriendRemoveMsg { std::string targetName; };
+struct FriendBlockMsg { std::string targetName; };
+struct FriendUnblockMsg { std::string targetName; };
+
+struct GuildCreateMsg { std::string name; };
+struct GuildApplyMsg { uint32_t guildId = 0; };
+struct GuildApproveMsg { std::string applicantName; uint8_t approve = 0; };
+struct GuildKickMsg { std::string targetName; };
+struct GuildPromoteMsg { std::string targetName; };
+struct GuildDemoteMsg { std::string targetName; };
+struct GuildTransferMsg { std::string targetName; };
+struct GuildNoticeMsg { std::string notice; };
+struct GuildListMsg { std::string keyword; };
+
+struct ChatSendMsg { uint8_t channel = 0; std::string target; std::string content; };
+
+// ---------- 任务系统 C2S 消息结构 ----------
+struct QuestAcceptMsg { uint32_t questId = 0; };
+struct QuestAbandonMsg { uint32_t questId = 0; };
+struct QuestTurnInMsg { uint32_t questId = 0; uint32_t npcWid = 0; };
+struct TalkNpcMsg { uint32_t npcWid = 0; };
+
+// 公会信息数据（供 S2C_GUILD_INFO 编码）
+struct GuildMemberData {
+  std::string username;
+  uint8_t role = 0;
+  uint64_t joinMs = 0;
+  uint64_t lastActiveMs = 0;
+  uint64_t contributionPts = 0;
+  std::string title;
+  bool online = false;
+};
+struct GuildInfoData {
+  uint32_t guildId = 0;
+  std::string name;
+  std::string notice;
+  std::string leaderUsername;
+  uint32_t memberCount = 0;
+  uint32_t maxMembers = 50;
+  uint64_t level = 1;
+  uint64_t exp = 0;
+  uint32_t logo = 0;
+  uint64_t createdMs = 0;
+  std::vector<GuildMemberData> members;
+};
+struct GuildBriefData {
+  uint32_t guildId = 0;
+  std::string name;
+  uint32_t memberCount = 0;
+  uint64_t level = 1;
+  uint32_t logo = 0;
+};
+// 聊天消息数据（供 S2C_CHAT_HISTORY 编码）
+struct ChatMsgData {
+  uint8_t channel = 0;
+  std::string senderName;
+  uint32_t senderWid = 0;
+  std::string targetName;
+  std::string content;
+  uint64_t timestampMs = 0;
+};
+
+bool decodeFriendAdd(const std::string& payload, FriendAddMsg& out);
+bool decodeFriendAccept(const std::string& payload, FriendAcceptMsg& out);
+bool decodeFriendReject(const std::string& payload, FriendRejectMsg& out);
+bool decodeFriendRemove(const std::string& payload, FriendRemoveMsg& out);
+bool decodeFriendBlock(const std::string& payload, FriendBlockMsg& out);
+bool decodeFriendUnblock(const std::string& payload, FriendUnblockMsg& out);
+bool decodeGuildCreate(const std::string& payload, GuildCreateMsg& out);
+bool decodeGuildApply(const std::string& payload, GuildApplyMsg& out);
+bool decodeGuildApprove(const std::string& payload, GuildApproveMsg& out);
+bool decodeGuildKick(const std::string& payload, GuildKickMsg& out);
+bool decodeGuildPromote(const std::string& payload, GuildPromoteMsg& out);
+bool decodeGuildDemote(const std::string& payload, GuildDemoteMsg& out);
+bool decodeGuildTransfer(const std::string& payload, GuildTransferMsg& out);
+bool decodeGuildNotice(const std::string& payload, GuildNoticeMsg& out);
+bool decodeGuildList(const std::string& payload, GuildListMsg& out);
+bool decodeChatSend(const std::string& payload, ChatSendMsg& out);
+
+// ---------- 任务系统 C2S 解码 ----------
+bool decodeQuestAccept(const std::string& payload, QuestAcceptMsg& out);
+bool decodeQuestAbandon(const std::string& payload, QuestAbandonMsg& out);
+bool decodeQuestTurnIn(const std::string& payload, QuestTurnInMsg& out);
+bool decodeTalkNpc(const std::string& payload, TalkNpcMsg& out);
+
+// ---------- 社交系统 S2C 编码 ----------
+// 好友系统
+std::string friendRequestFrame(const std::string& from, const std::string& message);
+std::string friendListFrame(const std::vector<std::tuple<std::string, bool, std::string>>& friends);
+std::string friendStatusFrame(const std::string& name, bool online);
+std::string friendResultFrame(uint8_t opCode, uint8_t resultCode);
+// 公会系统
+std::string guildInfoFrame(const struct GuildInfoData& g);
+std::string guildResultFrame(uint8_t opCode, uint8_t code, const std::string& extra = "");
+std::string guildNotifyFrame(uint8_t eventType, const std::string& data);
+std::string guildListFrame(const std::vector<struct GuildBriefData>& guilds);
+std::string guildApplyNotifyFrame(const std::string& applicant, uint32_t guildId);
+// 聊天系统
+std::string chatMsgFrame(uint8_t channel, const std::string& sender, uint32_t senderWid,
+                         const std::string& content, uint64_t timestampMs);
+std::string chatHistoryFrame(const std::vector<struct ChatMsgData>& msgs);
+std::string chatResultFrame(uint8_t code, const std::string& errorMsg);
+
 } // namespace proto
 } // namespace ew

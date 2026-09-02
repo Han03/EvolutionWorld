@@ -49,6 +49,11 @@ private:
   void periodicSavePlayers();
   void sendTo(Conn& c, const std::string& frame);
   int fdOfPlayer(const std::string& playerId) const;
+  // 社交系统辅助方法
+  void sendToPlayer(const std::string& username, const std::string& frame);
+  void broadcastToFriends(const std::string& username, const std::string& frame);
+  void broadcastToGuild(uint32_t guildId, const std::string& frame);
+  void broadcastWorld(const std::string& frame);
   static uint64_t steadyMs();
   const Config& cfg_;
   World& world_;

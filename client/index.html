@@ -102,7 +102,13 @@
     <div class="hud-controls">
       <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
       <div><kbd>Space</kbd> 跳跃 · <kbd>J</kbd> 攻击 · <kbd>B</kbd> 商店 · <kbd>E</kbd> 拾取</div>
-      <div><kbd>I</kbd> 背包/装备 · <kbd>1-8</kbd> 技能</div>
+      <div><kbd>I</kbd> 背包/装备 · <kbd>L</kbd> 任务日志 · <kbd>1-8</kbd> 技能</div>
+    </div>
+
+    <!-- ── 右侧：任务追踪 HUD ── -->
+    <div id="quest-tracker" class="quest-tracker">
+      <div class="quest-tracker-title">任务追踪</div>
+      <div id="quest-tracker-list" class="quest-tracker-list"></div>
     </div>
 
     <!-- ── 左下角：协议监控（替代聊天栏位置） ── -->
@@ -135,6 +141,21 @@
       <button id="shop-close" class="panel-close">✕</button>
     </div>
     <div id="shop-list" class="shop-list"></div>
+  </div>
+
+  <!-- ═══════════ 任务日志面板 ═══════════ -->
+  <div id="quest-panel" class="panel quest-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">📜</span>
+      <span>任务日志</span>
+      <button id="quest-close" class="panel-close">✕</button>
+    </div>
+    <div class="quest-tabs">
+      <button class="quest-tab active" data-tab="available">可接任务</button>
+      <button class="quest-tab" data-tab="active">进行中</button>
+      <button class="quest-tab" data-tab="completed">已完成</button>
+    </div>
+    <div id="quest-content" class="quest-content"></div>
   </div>
 
   <!-- ═══════════ 提示浮层 ═══════════ -->

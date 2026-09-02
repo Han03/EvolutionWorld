@@ -144,6 +144,21 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
     ai.targetVZ = 0;
     return;
   }
+  // 前摇结算：怪物施放中的技能到期后结算
+  if (e.castingSkillId != 0) {
+    const SkillDef* csd = w.data().skill(e.castingSkillId);
+    if (csd && nowMs >= e.castStartMs + (uint64_t)csd->castTimeMs) {
+      Entity* ct = w.findByWid(e.castTargetWid);
+      if (ct && ct->active && ct->hp > 0) {
+        w.pushEvent(proto::EVT_SKILL, e.wid, csd->id, proto::qAbs(ct->pos.x), proto::qAbs(ct->pos.z));
+        w.applySkillToTarget(e, *ct, *csd, 0.9 + rng01() * 0.2);
+      }
+      e.castingSkillId = 0;
+    } else {
+      ai.targetVX = ai.targetVZ = 0; // 前摇中静止
+      return;
+    }
+  }
   // 感知：清理失效仇恨（离线/死亡玩家）
   for (auto it = e.aggro.begin(); it != e.aggro.end();) {
     Entity* pl = w.findByWid(it->first);
@@ -179,8 +194,18 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         if (sd) {
           e.lastAttackMs = nowMs;
           e.skillCd[sd->id] = nowMs + (uint64_t)sd->cooldownMs;
-          w.pushEvent(proto::EVT_SKILL, e.wid, sd->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
-          w.applySkillToTarget(e, *target, *sd, 0.9 + rng01() * 0.2);
+          if (sd->castTimeMs > 0) {
+            // 有前摇：进入施放状态（广播 EVT_SKILL_CASTING 供客户端显示范围提示）
+            e.castingSkillId = sd->id;
+            e.castStartMs = nowMs;
+            e.castTargetWid = target->wid;
+            e.castTx = target->pos.x;
+            e.castTz = target->pos.z;
+            w.pushEvent(proto::EVT_SKILL_CASTING, e.wid, sd->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
+          } else {
+            w.pushEvent(proto::EVT_SKILL, e.wid, sd->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
+            w.applySkillToTarget(e, *target, *sd, 0.9 + rng01() * 0.2);
+          }
         }
       }
     } else {
@@ -301,6 +326,26 @@ void tickBossAi(World& w, Entity& e, double dt) {
     }
     return;
   }
+  // 前摇结算：Boss 施放中的技能到期后结算
+  if (e.castingSkillId != 0) {
+    const SkillDef* csd = w.data().skill(e.castingSkillId);
+    if (csd && nowMs >= e.castStartMs + (uint64_t)csd->castTimeMs) {
+      // AOE 技能：对范围内所有玩家施加效果
+      double aoeRange = csd->radius > 0 ? csd->radius : 6.0;
+      w.pushEvent(proto::EVT_SKILL, e.wid, csd->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
+      for (const auto& pid : w.players()) {
+        Entity* pl = w.findEntity(pid);
+        if (!pl || pl->hp <= 0) continue;
+        if (pl->pos.dist2D(e.pos) <= aoeRange) {
+          w.applySkillToTarget(e, *pl, *csd, 1.0);
+        }
+      }
+      e.castingSkillId = 0;
+    } else {
+      e.ai.targetVX = e.ai.targetVZ = 0; // 前摇中静止
+      return;
+    }
+  }
   // IDLE：脱战回血 + 侦测仇恨
   if (e.bossState == BS_IDLE) {
     if (e.hp < e.maxHp) {
@@ -354,17 +399,27 @@ void tickBossAi(World& w, Entity& e, double dt) {
         w.applySkillToTarget(e, *target, *atkSkill, 0.9 + rng01() * 0.2);
         e.aggro[target->wid] -= target->lastDamageMs == nowMs ? 0 : 0; // 仇恨衰减由 applySkillToTarget 内的 aggro 增长平衡
       }
-      // 范围技能（AOE，独立冷却，全区广播）
+      // 范围技能（AOE，独立冷却，有前摇则进入施放状态）
       const SkillDef* aoeSkill = pickBossAoeSkill(w, e, nowMs);
       if (aoeSkill) {
         e.skillCd[aoeSkill->id] = nowMs + (uint64_t)aoeSkill->cooldownMs;
-        w.pushEvent(proto::EVT_SKILL, e.wid, aoeSkill->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
-        const double aoeRange = aoeSkill->radius > 0 ? aoeSkill->radius : 6.0;
-        for (const auto& pid : w.players()) {
-          Entity* pl = w.findEntity(pid);
-          if (!pl || pl->hp <= 0) continue;
-          if (pl->pos.dist2D(e.pos) <= aoeRange) {
-            w.applySkillToTarget(e, *pl, *aoeSkill, 1.0);
+        if (aoeSkill->castTimeMs > 0) {
+          // 有前摇：进入施放状态（广播 EVT_SKILL_CASTING 供客户端显示范围提示）
+          e.castingSkillId = aoeSkill->id;
+          e.castStartMs = nowMs;
+          e.castTargetWid = 0;
+          e.castTx = e.pos.x;
+          e.castTz = e.pos.z;
+          w.pushEvent(proto::EVT_SKILL_CASTING, e.wid, aoeSkill->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
+        } else {
+          w.pushEvent(proto::EVT_SKILL, e.wid, aoeSkill->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
+          const double aoeRange = aoeSkill->radius > 0 ? aoeSkill->radius : 6.0;
+          for (const auto& pid : w.players()) {
+            Entity* pl = w.findEntity(pid);
+            if (!pl || pl->hp <= 0) continue;
+            if (pl->pos.dist2D(e.pos) <= aoeRange) {
+              w.applySkillToTarget(e, *pl, *aoeSkill, 1.0);
+            }
           }
         }
       }

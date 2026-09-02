@@ -175,6 +175,35 @@ export function createRenderer(container) {
         if (life >= 1) { effects.splice(i, 1); continue; }
         const [x, y] = ellipsePath(ef.x, terrainHeight(ef.x, ef.z) + 1.2, ef.z, 1.6);
         const R = Math.max(16 * zr, 1.6 * ENTITY_PX * zr);
+        // 范围指示器（技能作用范围边框 + 前摇填充）
+        if (ef.radius > 0 && ef.casterWid) {
+          let cx = ef.x, cz = ef.z;
+          for (const e of state.entities) {
+            if (e.wid === ef.casterWid) { cx = e.x; cz = e.z; break; }
+          }
+          const gy = terrainHeight(cx, cz);
+          const [ccx, ccy] = ellipsePath(cx, gy, cz, ef.radius);
+          const rr = Math.max(4, ef.radius * ENTITY_PX * zr);
+          const col = ef.color || '#f87171';
+          // 范围边框（虚线椭圆）
+          ctx.beginPath();
+          ctx.ellipse(ccx, ccy, rr, rr * 0.5, 0, 0, Math.PI * 2);
+          ctx.strokeStyle = hexToRgba(col, 0.5);
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // 前摇填充（向目标方向逐渐扩展的扇形）
+          const dir = Math.atan2(cz - ef.z, cx - ef.x) + Math.PI; // 施法者→目标方向
+          const sweep = Math.PI * 2 * Math.min(1, life);
+          ctx.beginPath();
+          ctx.moveTo(ccx, ccy);
+          ctx.ellipse(ccx, ccy, rr, rr * 0.5, 0, dir, dir + sweep);
+          ctx.closePath();
+          ctx.fillStyle = hexToRgba(col, 0.15 + 0.15 * life);
+          ctx.fill();
+        }
+        // 前摇进度圈（目标位置）
         ctx.beginPath();
         ctx.ellipse(x, y, R, R * 0.5, 0, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(0,0,0,0.35)';

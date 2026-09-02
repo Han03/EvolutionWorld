@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <vector>
 #include <functional>
+#include <memory>
 #include "entity.h"
 #include "chunk.h"
 #include "physics.h"
@@ -11,9 +12,14 @@
 #include "aoi.h"
 #include "items.h"
 #include "spawns.h"
+#include "friends.h"
+#include "guild.h"
+#include "chat.h"
+#include "quests.h"
 #include "util/random.h"
 #include "../config.h"
 namespace ew {
+class Store; // 前置声明
 // 世界共享事件（S2C_EVENT 数据源：伤害/死亡/复活/技能），由 netcode 每 tick 全区广播
 struct SharedEvent {
   uint8_t type;        // proto::EvtType
@@ -25,6 +31,9 @@ class World {
 public:
   explicit World(const Config& cfg);
   ~World() = default;
+  // 存储层引用（社交系统持久化用，由 main 注入）
+  void setStore(Store* s) { store_ = s; }
+  Store& store();
   // 生命周期
   void seedWorld();
   void tick();  // 每 tickMs 调用一次
@@ -166,6 +175,20 @@ public:
   void killPlayer(Entity& p, Entity* killer);
   // 通用技能效果施加：伤害/Buff/击退/死亡/吸血（玩家→怪物、怪物→玩家 均可用）
   void applySkillToTarget(Entity& caster, Entity& target, const SkillDef& sd, double variance);
+  // ---- 社交系统（好友/公会/聊天）----
+  FriendSystem& friends() { return *friends_; }
+  const FriendSystem& friends() const { return *friends_; }
+  GuildSystem& guilds() { return *guilds_; }
+  const GuildSystem& guilds() const { return *guilds_; }
+  ChatSystem& chat() { return *chat_; }
+  const ChatSystem& chat() const { return *chat_; }
+  // ---- 任务系统（大型网游规模，数据驱动） ----
+  QuestSystem& quests() { return *quests_; }
+  const QuestSystem& quests() const { return *quests_; }
+  // 任务进度变化后标记，netcode 每 tick 补发 S2C_QUEST_PROGRESS
+  void markQuestDirty(const std::string& playerId);
+  const std::unordered_set<std::string>& questDirty() const { return questDirty_; }
+  void clearQuestDirty() { questDirty_.clear(); }
 private:
   void addEntity(Entity&& e);
   void despawnEntity(const std::string& id);
@@ -207,6 +230,8 @@ private:
   // 需要补发 S2C_SKILLS / S2C_BUFFS 的玩家（技能/冷却/Buff 变化）
   std::unordered_set<std::string> skillsDirty_;
   std::unordered_set<std::string> buffsDirty_;
+  // 需要补发 S2C_QUEST_PROGRESS 的玩家（任务进度/状态变化）
+  std::unordered_set<std::string> questDirty_;
   std::string bossFrame_;
   bool bossDirty_ = true;
   uint32_t aliveBoss_ = 0;
@@ -214,5 +239,11 @@ private:
   int64_t entitySeq_ = 0;
   int64_t wireSeq_ = 0;
   Mulberry32 rng_;
+  // 社交系统
+  Store* store_ = nullptr;
+  std::unique_ptr<FriendSystem> friends_;
+  std::unique_ptr<GuildSystem> guilds_;
+  std::unique_ptr<ChatSystem> chat_;
+  std::unique_ptr<QuestSystem> quests_;
 };
 } // namespace ew

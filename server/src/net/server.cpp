@@ -325,6 +325,14 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
           player->pl.gold = ps.gold;
           applySaveItems(world_, *player, ps); // 恢复背包/装备（JSON）
           world_.recomputeStats(*player);
+          // 恢复任务数据
+          if (!ps.questsJson.empty()) {
+            world_.quests().deserializeQuests(*player, ps.questsJson);
+          } else {
+            // 尝试从独立任务存储加载
+            std::string qj = store_.loadQuests(username);
+            if (!qj.empty()) world_.quests().deserializeQuests(*player, qj);
+          }
           fprintf(stderr, "[save] %s 从存档恢复位置 (%.1f,%.1f,%.1f) hp=%.0f gold=%u\n",
                   username.c_str(), ps.x, ps.y, ps.z, ps.hp, ps.gold);
         } else {
@@ -341,6 +349,8 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         enqueue(c, wsEncodeFrame(WS_BINARY, proto::statsFrame(*player)));
         // 技能系统：登录即下发已学技能 + 冷却（服务端权威）
         enqueue(c, wsEncodeFrame(WS_BINARY, world_.skillsFrame(*player)));
+        // 任务系统：登录即下发活跃任务进度
+        enqueue(c, wsEncodeFrame(WS_BINARY, world_.quests().questProgressFrame(*player)));
         return;
       }
     }
@@ -782,6 +792,323 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
         if (r.str(cmd)) handleConsoleLine(c.playerId, cmd);
         break;
       }
+      // ---- 社交系统：好友 ----
+      case proto::C2S_FRIEND_ADD: {
+        proto::FriendAddMsg m;
+        if (proto::decodeFriendAdd(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.friends().sendRequest(p->username, m.targetName, m.message);
+          sendTo(c, proto::friendResultFrame(FRIEND_OP_ADD, (uint8_t)result));
+          if (result == FRIEND_OK) {
+            // 通知目标玩家收到好友请求
+            sendToPlayer(m.targetName, proto::friendRequestFrame(p->username, m.message));
+          }
+        }
+        break;
+      }
+      case proto::C2S_FRIEND_ACCEPT: {
+        proto::FriendAcceptMsg m;
+        if (proto::decodeFriendAccept(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.friends().acceptRequest(p->username, m.fromUser);
+          sendTo(c, proto::friendResultFrame(FRIEND_OP_ACCEPT, (uint8_t)result));
+          if (result == FRIEND_OK) {
+            // 通知双方好友列表更新
+            sendToPlayer(m.fromUser, proto::friendStatusFrame(p->username, true));
+            sendTo(c, proto::friendStatusFrame(m.fromUser, true));
+          }
+        }
+        break;
+      }
+      case proto::C2S_FRIEND_REJECT: {
+        proto::FriendRejectMsg m;
+        if (proto::decodeFriendReject(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.friends().rejectRequest(p->username, m.fromUser);
+          sendTo(c, proto::friendResultFrame(FRIEND_OP_REJECT, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_FRIEND_REMOVE: {
+        proto::FriendRemoveMsg m;
+        if (proto::decodeFriendRemove(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.friends().removeFriend(p->username, m.targetName);
+          sendTo(c, proto::friendResultFrame(FRIEND_OP_REMOVE, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_FRIEND_BLOCK: {
+        proto::FriendBlockMsg m;
+        if (proto::decodeFriendBlock(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.friends().blockUser(p->username, m.targetName);
+          sendTo(c, proto::friendResultFrame(FRIEND_OP_BLOCK, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_FRIEND_UNBLOCK: {
+        proto::FriendUnblockMsg m;
+        if (proto::decodeFriendUnblock(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.friends().unblockUser(p->username, m.targetName);
+          sendTo(c, proto::friendResultFrame(FRIEND_OP_UNBLOCK, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_FRIEND_LIST: {
+        Entity* p = world_.findEntity(c.playerId);
+        if (!p) break;
+        auto list = world_.friends().buildFriendList(p->username);
+        sendTo(c, proto::friendListFrame(list));
+        break;
+      }
+      // ---- 社交系统：公会 ----
+      case proto::C2S_GUILD_CREATE: {
+        proto::GuildCreateMsg m;
+        if (proto::decodeGuildCreate(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().createGuild(p->username, m.name);
+          sendTo(c, proto::guildResultFrame(0, (uint8_t)result));
+          if (result == GUILD_OK) {
+            uint32_t gid = world_.guilds().getPlayerGuildId(p->username);
+            proto::GuildInfoData info;
+            if (world_.guilds().buildGuildInfo(gid, info)) {
+              sendTo(c, proto::guildInfoFrame(info));
+            }
+          }
+        }
+        break;
+      }
+      case proto::C2S_GUILD_DISBAND: {
+        Entity* p = world_.findEntity(c.playerId);
+        if (!p) break;
+        auto result = world_.guilds().disbandGuild(p->username);
+        sendTo(c, proto::guildResultFrame(1, (uint8_t)result));
+        break;
+      }
+      case proto::C2S_GUILD_APPLY: {
+        proto::GuildApplyMsg m;
+        if (proto::decodeGuildApply(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().applyToGuild(p->username, m.guildId, "");
+          sendTo(c, proto::guildResultFrame(2, (uint8_t)result));
+          if (result == GUILD_OK) {
+            // 通知公会在线官员
+            const Guild* g = world_.guilds().getGuild(m.guildId);
+            if (g) {
+              std::string notifyFrame = proto::guildApplyNotifyFrame(p->username, m.guildId);
+              for (const auto& mem : g->members) {
+                if (mem.role <= GUILD_OFFICER && world_.findPlayerByUsername(mem.username)) {
+                  sendToPlayer(mem.username, notifyFrame);
+                }
+              }
+            }
+          }
+        }
+        break;
+      }
+      case proto::C2S_GUILD_APPROVE: {
+        proto::GuildApproveMsg m;
+        if (proto::decodeGuildApprove(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().approveApplication(p->username, m.applicantName, m.approve != 0);
+          sendTo(c, proto::guildResultFrame(3, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_GUILD_KICK: {
+        proto::GuildKickMsg m;
+        if (proto::decodeGuildKick(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().kickMember(p->username, m.targetName);
+          sendTo(c, proto::guildResultFrame(4, (uint8_t)result));
+          if (result == GUILD_OK) {
+            sendToPlayer(m.targetName, proto::guildNotifyFrame(GUILD_NOTIFY_KICKED, p->username));
+          }
+        }
+        break;
+      }
+      case proto::C2S_GUILD_PROMOTE: {
+        proto::GuildPromoteMsg m;
+        if (proto::decodeGuildPromote(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().promoteMember(p->username, m.targetName);
+          sendTo(c, proto::guildResultFrame(5, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_GUILD_DEMOTE: {
+        proto::GuildDemoteMsg m;
+        if (proto::decodeGuildDemote(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().demoteMember(p->username, m.targetName);
+          sendTo(c, proto::guildResultFrame(6, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_GUILD_LEAVE: {
+        Entity* p = world_.findEntity(c.playerId);
+        if (!p) break;
+        auto result = world_.guilds().leaveGuild(p->username);
+        sendTo(c, proto::guildResultFrame(7, (uint8_t)result));
+        break;
+      }
+      case proto::C2S_GUILD_TRANSFER: {
+        proto::GuildTransferMsg m;
+        if (proto::decodeGuildTransfer(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().transferLeadership(p->username, m.targetName);
+          sendTo(c, proto::guildResultFrame(8, (uint8_t)result));
+        }
+        break;
+      }
+      case proto::C2S_GUILD_NOTICE: {
+        proto::GuildNoticeMsg m;
+        if (proto::decodeGuildNotice(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.guilds().editNotice(p->username, m.notice);
+          sendTo(c, proto::guildResultFrame(9, (uint8_t)result));
+          if (result == GUILD_OK) {
+            uint32_t gid = world_.guilds().getPlayerGuildId(p->username);
+            broadcastToGuild(gid, proto::guildNotifyFrame(GUILD_NOTIFY_NOTICE, m.notice));
+          }
+        }
+        break;
+      }
+      case proto::C2S_GUILD_INFO: {
+        Entity* p = world_.findEntity(c.playerId);
+        if (!p) break;
+        uint32_t gid = world_.guilds().getPlayerGuildId(p->username);
+        if (gid == 0) break;
+        proto::GuildInfoData info;
+        if (world_.guilds().buildGuildInfo(gid, info)) {
+          sendTo(c, proto::guildInfoFrame(info));
+        }
+        break;
+      }
+      case proto::C2S_GUILD_LIST: {
+        proto::GuildListMsg m;
+        if (proto::decodeGuildList(f.payload, m)) {
+          auto guilds = world_.guilds().searchGuilds(m.keyword);
+          std::vector<proto::GuildBriefData> briefs;
+          for (const auto& g : guilds) {
+            proto::GuildBriefData b;
+            b.guildId = g.guildId;
+            b.name = g.name;
+            b.memberCount = g.memberCount;
+            b.level = g.level;
+            b.logo = g.logo;
+            briefs.push_back(b);
+          }
+          sendTo(c, proto::guildListFrame(briefs));
+        }
+        break;
+      }
+      // ---- 社交系统：聊天 ----
+      case proto::C2S_CHAT_SEND: {
+        proto::ChatSendMsg m;
+        if (proto::decodeChatSend(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          auto result = world_.chat().sendMessage(p->username, (ChatChannel)m.channel, m.target, m.content);
+          sendTo(c, proto::chatResultFrame((uint8_t)result.code, ""));
+          if (result.code == CHAT_OK || result.code == CHAT_ERR_TARGET_OFFLINE) {
+            // 发送给接收者
+            std::string chatFrame = proto::chatMsgFrame(
+                (uint8_t)result.msg.channel, result.msg.senderName,
+                result.msg.senderWid, result.msg.content, result.msg.timestampMs);
+            for (const auto& recipient : result.recipients) {
+              sendToPlayer(recipient, chatFrame);
+            }
+          }
+        }
+        break;
+      }
+      // ---- 任务系统 ----
+      case proto::C2S_QUEST_ACCEPT: {
+        proto::QuestAcceptMsg m;
+        if (proto::decodeQuestAccept(f.payload, m)) {
+          auto result = world_.quests().acceptQuest(c.playerId, m.questId);
+          sendTo(c, world_.quests().questResultFrame(QUEST_OP_ACCEPT, (uint8_t)result, m.questId));
+          if (result == QUEST_OK) {
+            sendTo(c, world_.quests().questProgressFrame(*world_.findEntity(c.playerId)));
+          }
+        }
+        break;
+      }
+      case proto::C2S_QUEST_ABANDON: {
+        proto::QuestAbandonMsg m;
+        if (proto::decodeQuestAbandon(f.payload, m)) {
+          auto result = world_.quests().abandonQuest(c.playerId, m.questId);
+          sendTo(c, world_.quests().questResultFrame(QUEST_OP_ABANDON, (uint8_t)result, m.questId));
+          if (result == QUEST_OK) {
+            Entity* p = world_.findEntity(c.playerId);
+            if (p) sendTo(c, world_.quests().questProgressFrame(*p));
+          }
+        }
+        break;
+      }
+      case proto::C2S_QUEST_TURNIN: {
+        proto::QuestTurnInMsg m;
+        if (proto::decodeQuestTurnIn(f.payload, m)) {
+          auto result = world_.quests().turnInQuest(c.playerId, m.questId, m.npcWid);
+          sendTo(c, world_.quests().questResultFrame(QUEST_OP_TURNIN, (uint8_t)result, m.questId));
+          if (result == QUEST_OK) {
+            Entity* p = world_.findEntity(c.playerId);
+            if (p) {
+              sendTo(c, world_.quests().questProgressFrame(*p));
+              sendTo(c, proto::inventoryFrame(*p));
+              sendTo(c, proto::statsFrame(*p));
+              sendTo(c, world_.skillsFrame(*p));
+            }
+          }
+        }
+        break;
+      }
+      case proto::C2S_QUEST_LIST: {
+        Entity* p = world_.findEntity(c.playerId);
+        if (!p) break;
+        sendTo(c, world_.quests().questListFrame(*p));
+        break;
+      }
+      case proto::C2S_QUEST_TRACK: {
+        Entity* p = world_.findEntity(c.playerId);
+        if (!p) break;
+        sendTo(c, world_.quests().questProgressFrame(*p));
+        break;
+      }
+      case proto::C2S_TALK_NPC: {
+        proto::TalkNpcMsg m;
+        if (proto::decodeTalkNpc(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          // 校验 NPC 距离
+          Entity* npc = world_.findByWid(m.npcWid);
+          if (!npc || npc->kind != EntityKind::Npc) break;
+          if (p->pos.dist2D(npc->pos) > cfg_.questTalkRangeM) break;
+          // 触发任务目标
+          world_.quests().onTalkNpc(*p, m.npcWid);
+          // 返回可接/可提交任务列表（NPC 交互弹窗）
+          sendTo(c, world_.quests().questListFrame(*p));
+          sendTo(c, world_.quests().questProgressFrame(*p));
+        }
+        break;
+      }
       default:
         return;
     }
@@ -921,8 +1248,11 @@ void GameServer::savePlayerToStore(const Entity& e) {
   ps.gold = e.pl.gold;
   ps.equipJson = serializeEquip(e.pl.equip);
   ps.inventoryJson = serializeInventory(e.pl.inventory);
+  ps.questsJson = world_.quests().serializeQuests(e);
   ps.updatedAtMs = world_.tickCount() * (uint64_t)cfg_.tickMs;
   store_.savePlayer(ps);
+  // 任务数据单独存储（便于独立加载）
+  store_.saveQuests(e.username, ps.questsJson);
 }
 void GameServer::periodicSavePlayers() {
   for (const auto& pid : world_.players()) {
@@ -952,6 +1282,42 @@ void GameServer::broadcastTick() {
               (double)accBytes / 1024.0 / s,
               (unsigned long long)accFrames, (unsigned long long)accTicks, conns_.size());
       lastLog = now; accBytes = 0; accFrames = 0; accTicks = 0;
+    }
+  }
+}
+// ---- 社交系统辅助方法 ----
+void GameServer::sendToPlayer(const std::string& username, const std::string& frame) {
+  Entity* p = world_.findPlayerByUsername(username);
+  if (!p) return;
+  int fd = fdOfPlayer(p->id);
+  if (fd < 0) return;
+  auto it = conns_.find(fd);
+  if (it != conns_.end() && it->second.phase == Conn::Ws) {
+    enqueue(it->second, wsEncodeFrame(WS_BINARY, frame));
+  }
+}
+void GameServer::broadcastToFriends(const std::string& username, const std::string& frame) {
+  auto friends = world_.friends().getFriends(username);
+  for (const auto& f : friends) {
+    sendToPlayer(f, frame);
+  }
+}
+void GameServer::broadcastToGuild(uint32_t guildId, const std::string& frame) {
+  const Guild* g = world_.guilds().getGuild(guildId);
+  if (!g) return;
+  for (const auto& m : g->members) {
+    sendToPlayer(m.username, frame);
+  }
+}
+void GameServer::broadcastWorld(const std::string& frame) {
+  for (const auto& pid : world_.players()) {
+    Entity* p = world_.findEntity(pid);
+    if (!p) continue;
+    int fd = fdOfPlayer(p->id);
+    if (fd < 0) continue;
+    auto it = conns_.find(fd);
+    if (it != conns_.end() && it->second.phase == Conn::Ws) {
+      enqueue(it->second, wsEncodeFrame(WS_BINARY, frame));
     }
   }
 }

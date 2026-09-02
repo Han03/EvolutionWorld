@@ -9,6 +9,9 @@ export const MSG = {
   C2S_SHOP_OPEN: 0x05, C2S_SHOP_BUY: 0x06, C2S_PICKUP: 0x07,
   C2S_EQUIP: 0x08, C2S_USE_ITEM: 0x09,
   C2S_CAST_SKILL: 0x0A, C2S_CONSOLE: 0x0B,
+  // 任务系统 C2S
+  C2S_QUEST_ACCEPT: 0x0C, C2S_QUEST_ABANDON: 0x0D, C2S_QUEST_TURNIN: 0x0E,
+  C2S_QUEST_LIST: 0x0F, C2S_QUEST_TRACK: 0x17, C2S_TALK_NPC: 0x18,
   // S2C
   S2C_HELLO: 0x81, S2C_SNAPSHOT: 0x82, S2C_ENTER: 0x83,
   S2C_LEAVE: 0x84, S2C_UPDATE: 0x85, S2C_SELF: 0x86,
@@ -16,6 +19,9 @@ export const MSG = {
   S2C_BOSS: 0x8B,
   S2C_SHOP: 0x8C, S2C_INVENTORY: 0x8D, S2C_LOOT: 0x8E, S2C_STATS: 0x8F,
   S2C_SKILLS: 0x90, S2C_SKILL_CAST: 0x91, S2C_BUFFS: 0x92, S2C_CONSOLE: 0x93,
+  // 任务系统 S2C
+  S2C_QUEST_LIST: 0xD0, S2C_QUEST_PROGRESS: 0xD1, S2C_QUEST_RESULT: 0xD2,
+  S2C_QUEST_COMPLETE: 0xD3, S2C_QUEST_NOTIFY: 0xD4,
 };
 // 世界共享事件类型（S2C_EVENT 首字节）
 export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7 };
@@ -354,6 +360,13 @@ export function parseS2C(type, payload, refX, refY, refZ) {
       const text = r.str();
       return { type, text };
     }
+    case MSG.S2C_QUEST_LIST:
+    case MSG.S2C_QUEST_PROGRESS:
+    case MSG.S2C_QUEST_RESULT:
+    case MSG.S2C_QUEST_COMPLETE:
+    case MSG.S2C_QUEST_NOTIFY:
+      // 任务消息由 quests.js 独立解码（需要 Reader 实例），此处返回 type 占位
+      return { type };
     case MSG.S2C_EVENT: {
       const evtType = r.u8();
       const wid = r.u32();

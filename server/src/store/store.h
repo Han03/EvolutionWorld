@@ -36,6 +36,21 @@ struct PlayerSave {
   uint32_t gold = 0;
   std::string equipJson;    // 例如 {"helm":1001,"weapon":1501} 或空
   std::string inventoryJson;// 例如 {"2001":5,"3001":3} 或空
+  std::string questsJson;     // 任务数据 JSON（活跃/已完成/冷却）或空
+};
+
+// 公会存档（MySQL 持久化用）
+struct GuildSave {
+  uint32_t guildId = 0;
+  std::string name;
+  std::string notice;
+  std::string leaderUsername;
+  uint32_t memberCount = 0;
+  uint32_t maxMembers = 50;
+  uint64_t level = 1;
+  uint64_t exp = 0;
+  uint32_t logo = 0;
+  uint64_t createdMs = 0;
 };
 
 // 存储后端抽象
@@ -66,6 +81,26 @@ public:
   virtual bool cacheSet(const std::string& key, const std::string& val, uint32_t ttlSec) = 0;
   virtual bool cacheGet(const std::string& key, std::string& out) = 0;
   virtual bool cacheDel(const std::string& key) = 0;
+
+  // ---- 社交系统：好友 ----
+  virtual bool addFriend(const std::string& a, const std::string& b) { (void)a; (void)b; return true; }
+  virtual bool removeFriend(const std::string& a, const std::string& b) { (void)a; (void)b; return true; }
+  virtual std::vector<std::pair<std::string, uint64_t>> loadFriends(const std::string& username) { (void)username; return {}; }
+  virtual bool addBlock(const std::string& a, const std::string& b) { (void)a; (void)b; return true; }
+  virtual bool removeBlock(const std::string& a, const std::string& b) { (void)a; (void)b; return true; }
+  virtual std::vector<std::string> loadBlocks(const std::string& username) { (void)username; return {}; }
+
+  // ---- 社交系统：公会 ----
+  virtual bool saveGuild(const GuildSave& g) { (void)g; return true; }
+  virtual bool loadGuild(uint32_t guildId, GuildSave& out) { (void)guildId; (void)out; return false; }
+  virtual bool deleteGuild(uint32_t guildId) { (void)guildId; return true; }
+  virtual bool saveGuildMembers(uint32_t guildId, const std::string& membersJson) { (void)guildId; (void)membersJson; return true; }
+  virtual std::string loadGuildMembers(uint32_t guildId) { (void)guildId; return ""; }
+  virtual std::vector<uint32_t> loadAllGuildIds() { return {}; }
+
+  // ---- 任务系统：玩家任务数据 ----
+  virtual bool saveQuests(const std::string& username, const std::string& questsJson) { (void)username; (void)questsJson; return true; }
+  virtual std::string loadQuests(const std::string& username) { (void)username; return ""; }
 };
 
 // 存储配置（环境变量驱动，见 store.cpp 解析）
@@ -116,6 +151,26 @@ public:
   void cacheSet(const std::string& key, const std::string& val, uint32_t ttlSec);
   bool cacheGet(const std::string& key, std::string& out);
   void cacheDel(const std::string& key);
+
+  // ---- 社交系统：好友（内存必写 + MySQL 尽力）----
+  void addFriend(const std::string& a, const std::string& b);
+  void removeFriend(const std::string& a, const std::string& b);
+  std::vector<std::pair<std::string, uint64_t>> loadFriends(const std::string& username);
+  void addBlock(const std::string& a, const std::string& b);
+  void removeBlock(const std::string& a, const std::string& b);
+  std::vector<std::string> loadBlocks(const std::string& username);
+
+  // ---- 社交系统：公会（内存必写 + MySQL 尽力）----
+  void saveGuild(const GuildSave& g);
+  bool loadGuild(uint32_t guildId, GuildSave& out);
+  void deleteGuild(uint32_t guildId);
+  void saveGuildMembers(uint32_t guildId, const std::string& membersJson);
+  std::string loadGuildMembers(uint32_t guildId);
+  std::vector<uint32_t> loadAllGuildIds();
+
+  // ---- 任务系统：玩家任务数据（内存必写 + MySQL 尽力）----
+  void saveQuests(const std::string& username, const std::string& questsJson);
+  std::string loadQuests(const std::string& username);
 
 private:
   const Config& cfg_;

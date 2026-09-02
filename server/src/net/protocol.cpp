@@ -383,5 +383,200 @@ bool decodeAttack(const std::string& payload, AttackMsg& out) {
   out.slot = slot;
   return true;
 }
+// ---------- 社交系统 C2S 解码 ----------
+bool decodeFriendAdd(const std::string& payload, FriendAddMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName) && r.str(out.message);
+}
+bool decodeFriendAccept(const std::string& payload, FriendAcceptMsg& out) {
+  Reader r(payload);
+  return r.str(out.fromUser);
+}
+bool decodeFriendReject(const std::string& payload, FriendRejectMsg& out) {
+  Reader r(payload);
+  return r.str(out.fromUser);
+}
+bool decodeFriendRemove(const std::string& payload, FriendRemoveMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeFriendBlock(const std::string& payload, FriendBlockMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeFriendUnblock(const std::string& payload, FriendUnblockMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeGuildCreate(const std::string& payload, GuildCreateMsg& out) {
+  Reader r(payload);
+  return r.str(out.name);
+}
+bool decodeGuildApply(const std::string& payload, GuildApplyMsg& out) {
+  Reader r(payload);
+  return r.u32(out.guildId);
+}
+bool decodeGuildApprove(const std::string& payload, GuildApproveMsg& out) {
+  Reader r(payload);
+  return r.str(out.applicantName) && r.u8(out.approve);
+}
+bool decodeGuildKick(const std::string& payload, GuildKickMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeGuildPromote(const std::string& payload, GuildPromoteMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeGuildDemote(const std::string& payload, GuildDemoteMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeGuildTransfer(const std::string& payload, GuildTransferMsg& out) {
+  Reader r(payload);
+  return r.str(out.targetName);
+}
+bool decodeGuildNotice(const std::string& payload, GuildNoticeMsg& out) {
+  Reader r(payload);
+  return r.str(out.notice);
+}
+bool decodeGuildList(const std::string& payload, GuildListMsg& out) {
+  Reader r(payload);
+  return r.str(out.keyword);
+}
+bool decodeChatSend(const std::string& payload, ChatSendMsg& out) {
+  Reader r(payload);
+  return r.u8(out.channel) && r.str(out.target) && r.str(out.content);
+}
+// ---------- 社交系统 S2C 编码 ----------
+std::string friendRequestFrame(const std::string& from, const std::string& message) {
+  Writer w;
+  w.str(from);
+  w.str(message);
+  return frame(S2C_FRIEND_REQUEST, w.data());
+}
+std::string friendListFrame(const std::vector<std::tuple<std::string, bool, std::string>>& friends) {
+  Writer w;
+  w.u16((uint16_t)friends.size());
+  for (const auto& [name, online, remark] : friends) {
+    w.str(name);
+    w.u8(online ? 1 : 0);
+    w.str(remark);
+  }
+  return frame(S2C_FRIEND_LIST, w.data());
+}
+std::string friendStatusFrame(const std::string& name, bool online) {
+  Writer w;
+  w.str(name);
+  w.u8(online ? 1 : 0);
+  return frame(S2C_FRIEND_STATUS, w.data());
+}
+std::string friendResultFrame(uint8_t opCode, uint8_t resultCode) {
+  Writer w;
+  w.u8(opCode);
+  w.u8(resultCode);
+  return frame(S2C_FRIEND_RESULT, w.data());
+}
+std::string guildInfoFrame(const GuildInfoData& g) {
+  Writer w;
+  w.u32(g.guildId);
+  w.str(g.name);
+  w.str(g.notice);
+  w.str(g.leaderUsername);
+  w.u32(g.memberCount);
+  w.u32(g.maxMembers);
+  w.u32((uint32_t)g.level);
+  w.u32((uint32_t)g.exp);
+  w.u32(g.logo);
+  w.u32((uint32_t)g.createdMs);
+  w.u16((uint16_t)g.members.size());
+  for (const auto& m : g.members) {
+    w.str(m.username);
+    w.u8(m.role);
+    w.u32((uint32_t)m.joinMs);
+    w.u32((uint32_t)m.lastActiveMs);
+    w.u32((uint32_t)m.contributionPts);
+    w.str(m.title);
+    w.u8(m.online ? 1 : 0);
+  }
+  return frame(S2C_GUILD_INFO, w.data());
+}
+std::string guildResultFrame(uint8_t opCode, uint8_t code, const std::string& extra) {
+  Writer w;
+  w.u8(opCode);
+  w.u8(code);
+  w.str(extra);
+  return frame(S2C_GUILD_RESULT, w.data());
+}
+std::string guildNotifyFrame(uint8_t eventType, const std::string& data) {
+  Writer w;
+  w.u8(eventType);
+  w.str(data);
+  return frame(S2C_GUILD_NOTIFY, w.data());
+}
+std::string guildListFrame(const std::vector<GuildBriefData>& guilds) {
+  Writer w;
+  w.u16((uint16_t)guilds.size());
+  for (const auto& g : guilds) {
+    w.u32(g.guildId);
+    w.str(g.name);
+    w.u32(g.memberCount);
+    w.u32((uint32_t)g.level);
+    w.u32(g.logo);
+  }
+  return frame(S2C_GUILD_LIST, w.data());
+}
+std::string guildApplyNotifyFrame(const std::string& applicant, uint32_t guildId) {
+  Writer w;
+  w.str(applicant);
+  w.u32(guildId);
+  return frame(S2C_GUILD_APPLY_N, w.data());
+}
+std::string chatMsgFrame(uint8_t channel, const std::string& sender, uint32_t senderWid,
+                         const std::string& content, uint64_t timestampMs) {
+  Writer w;
+  w.u8(channel);
+  w.str(sender);
+  w.u32(senderWid);
+  w.str(content);
+  w.u32((uint32_t)timestampMs);
+  return frame(S2C_CHAT_MSG, w.data());
+}
+std::string chatHistoryFrame(const std::vector<ChatMsgData>& msgs) {
+  Writer w;
+  w.u16((uint16_t)msgs.size());
+  for (const auto& m : msgs) {
+    w.u8(m.channel);
+    w.str(m.senderName);
+    w.u32(m.senderWid);
+    w.str(m.targetName);
+    w.str(m.content);
+    w.u32((uint32_t)m.timestampMs);
+  }
+  return frame(S2C_CHAT_HISTORY, w.data());
+}
+std::string chatResultFrame(uint8_t code, const std::string& errorMsg) {
+  Writer w;
+  w.u8(code);
+  w.str(errorMsg);
+  return frame(S2C_CHAT_RESULT, w.data());
+}
+// ---------- 任务系统 C2S 解码 ----------
+bool decodeQuestAccept(const std::string& payload, QuestAcceptMsg& out) {
+  Reader r(payload);
+  return r.u32(out.questId);
+}
+bool decodeQuestAbandon(const std::string& payload, QuestAbandonMsg& out) {
+  Reader r(payload);
+  return r.u32(out.questId);
+}
+bool decodeQuestTurnIn(const std::string& payload, QuestTurnInMsg& out) {
+  Reader r(payload);
+  return r.u32(out.questId) && r.u32(out.npcWid);
+}
+bool decodeTalkNpc(const std::string& payload, TalkNpcMsg& out) {
+  Reader r(payload);
+  return r.u32(out.npcWid);
+}
 } // namespace proto
 } // namespace ew
