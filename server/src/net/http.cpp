@@ -67,7 +67,15 @@ std::string httpBuildResponse(int code, const std::string& status,
   res += "Content-Length: " + std::to_string(body.size()) + "\r\n";
   res += "Connection: close\r\n";
   res += "Access-Control-Allow-Origin: *\r\n";
-  res += "Cache-Control: no-store\r\n";
+  res += "X-Content-Type-Options: nosniff\r\n";
+  // HTML/JS/CSS 使用 no-cache（允许缓存但每次须重验证），避免 Edge 对 no-store 的 HTML 触发下载
+  if (contentType.find("text/html") != std::string::npos ||
+      contentType.find("javascript") != std::string::npos ||
+      contentType.find("text/css") != std::string::npos) {
+    res += "Cache-Control: no-cache\r\n";
+  } else {
+    res += "Cache-Control: no-store\r\n";
+  }
   res += "\r\n";
   res += body;
   return res;

@@ -34,7 +34,7 @@ html, body {
 }
 
 #app { position: fixed; inset: 0; }
-#app canvas { display: block; }
+#app canvas { display: block; width: 100%; height: 100%; }
 
 .hidden { display: none !important; }
 

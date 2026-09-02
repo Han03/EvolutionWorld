@@ -1,0 +1,8 @@
+# Shell 脚本必须使用 LF：CRLF 会让 bash 报 "$'\r': command not found" 之类的语法错误
+*.sh text eol=lf
+
+# Windows 侧脚本保持 CRLF
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

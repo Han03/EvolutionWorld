@@ -13,3 +13,6 @@ server/src/data/
 artifacts/
 *.log
 .DS_Store
+
+# 本机 WSL 部署脚本生成的 LF 副本（由 deploy/deploy-local.ps1 自动生成）
+deploy/.deploy_wsl.local.sh

@@ -7,7 +7,11 @@
   "scripts": {
     "start": "node server/src/index.js",
     "dev": "node --watch server/src/index.js",
-    "test:api": "node server/src/scripts/ws-smoke-test.mjs"
+    "test:api": "node server/src/scripts/ws-smoke-test.mjs",
+    "deploy:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy/deploy-local.ps1",
+    "deploy:wsl:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy/deploy-local.ps1 -Clean",
+    "deploy:wsl:status": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy/deploy-local.ps1 -Status",
+    "deploy:wsl:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy/deploy-local.ps1 -StopOnly"
   },
   "engines": {
     "node": ">=18"

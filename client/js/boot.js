@@ -85,6 +85,18 @@ function showMsg(text, ok) {
   el.className = 'msg' + (ok ? ' ok' : '');
 }
 
+// ---- 登录态持久化（localStorage）----
+const SESSION_KEY = 'ew_session';
+function saveSession(token, username) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token, username })); } catch (_) {}
+}
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (_) { return null; }
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+}
+
 let loggingIn = false; // 防重入：submit 按钮会同时触发 click+submit，避免双重连接
 async function doLogin(username, password) {
   if (loggingIn) return;
@@ -92,6 +104,7 @@ async function doLogin(username, password) {
   showMsg('登录中…', false);
   try {
     const data = await net.login(username, password);
+    saveSession(data.token, data.user.username);
     await enterWorld(data.token, data.user.username, data.world);
   } catch (e) {
     showMsg(e.message);
@@ -154,11 +167,16 @@ async function enterWorld(token, username, worldMeta) {
     return;
   }
 
-  // 等待 hello（拿到 selfWid 与世界参数）
+  // 等待 hello（拿到 selfWid 与世界参数），超时 5 秒视为 token 无效
   if (!net.hello) {
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        net.onHello = null;
+        reject(new Error('服务器未响应'));
+      }, 5000);
       const old = net.onHello;
       net.onHello = (msg) => {
+        clearTimeout(timer);
         old && old(msg);
         resolve();
       };
@@ -740,11 +758,27 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-// 供自动化测试暂停/恢复渲染（不影响正常用户）
-// 面板关闭按钮
-window.addEventListener('DOMContentLoaded', () => {
+// ---------------- 自动重连（刷新页面恢复会话） ----------------
+window.addEventListener('DOMContentLoaded', async () => {
+  // 面板关闭按钮
   const ic = $('inv-close'); if (ic) ic.addEventListener('click', closeInventoryPanel);
   const sc = $('shop-close'); if (sc) sc.addEventListener('click', closeShopPanel);
+
+  // 尝试从 localStorage 恢复会话
+  const session = loadSession();
+  if (!session || !session.token) return;
+  // 填充用户名到输入框（方便失败后重新登录）
+  $('username').value = session.username || '';
+  showMsg('正在恢复会话…', false);
+  try {
+    // 用已保存的 token 直接建立 WebSocket 连接（服务端 verifyToken 校验有效性）
+    await enterWorld(session.token, session.username, null);
+  } catch (e) {
+    clearSession();
+    showMsg('会话已过期，请重新登录');
+    $('loading').classList.add('hidden');
+    $('login-overlay').classList.remove('hidden');
+  }
 });
 
 window.__ewPause = () => {
