@@ -10,6 +10,7 @@
 #include "collision.h"
 #include "aoi.h"
 #include "items.h"
+#include "spawns.h"
 #include "util/random.h"
 #include "../config.h"
 namespace ew {
@@ -27,6 +28,13 @@ public:
   // 生命周期
   void seedWorld();
   void tick();  // 每 tickMs 调用一次
+  // ---- 生物出生点（大型网游规模：数据驱动 + 剧本编辑器热重载） ----
+  const SpawnConfig& spawns() const { return spawns_; }
+  SpawnConfig& spawnsMut() { return spawns_; }
+  // 应用新出生点配置（fromJson → 持久化 data/spawns.json → 热重载世界生物）
+  bool applySpawns(const std::string& json, const std::string& dataDir);
+  // 热重载：清空现有种子生物（m_*/n_*/boss_*）并按当前出生点配置重建
+  void reseedCreatures();
   // 实体管理
   Entity* spawnPlayer(const std::string& username, Vec3* spawnHint = nullptr);
   void despawnPlayer(const std::string& id);
@@ -158,6 +166,11 @@ public:
   void killPlayer(Entity& p, Entity* killer);
 private:
   void addEntity(Entity&& e);
+  void despawnEntity(const std::string& id);
+  // 按出生点生成一只生物（monster/npc/boss）
+  void spawnFromPoint(const SpawnPoint& sp);
+  // 按出生点生成一个城镇 NPC（就近找干地，可带商店/名称）
+  void spawnNpcAt(const SpawnPoint& sp);
   // 怪物死亡掉落：金币 + 按概率表掉物品（生成地面掉落物实体）
   void rollDrops(Entity& killer, Entity& victim);
   void spawnDrop(double x, double z, uint32_t itemId, uint32_t gold);
@@ -171,8 +184,9 @@ private:
   void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
-  void spawnBoss(int idx, double homeX, double homeZ);
+  void spawnBossAt(double homeX, double homeZ, const std::string& name);
   const Config& cfg_;
+  SpawnConfig spawns_;   // 生物出生点配置（默认确定性生成，可 JSON 覆盖/编辑器修改）
   GameData data_;
   Physics physics_;
   Collision collision_;

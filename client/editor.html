@@ -3,82 +3,119 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EvolutionWorld · 地形编辑器</title>
+  <title>EvolutionWorld · 世界/剧本编辑器</title>
   <link rel="stylesheet" href="./css/style.css" />
   <link rel="stylesheet" href="./css/editor.css" />
 </head>
 <body>
-  <!-- 登录 -->
   <div id="editor-login" class="editor-login">
     <div class="login-card">
-      <h1 class="title">EVOLUTION<span>WORLD</span></h1>
-      <p class="subtitle">地形编辑器 · 路径地图画刷系统</p>
-      <form id="editor-login-form" autocomplete="off">
-        <label>账号</label>
+      <h2>EVOLUTIONWORLD · 世界/剧本编辑器</h2>
+      <div class="subtitle">地形画刷 + 生物出生点（剧本）编辑</div>
+      <form id="editor-login-form">
         <input id="editor-user" type="text" placeholder="2-16 位字母/数字/中文" maxlength="16" />
-        <label>密码</label>
         <input id="editor-pass" type="password" placeholder="6-64 位" maxlength="64" />
         <div id="editor-login-msg" class="msg"></div>
         <div class="btn-row">
+          <button type="submit" id="editor-login-btn" class="btn btn-primary">登 录</button>
           <button type="button" id="editor-register" class="btn btn-ghost">注册</button>
-          <button type="submit" id="editor-login-btn" class="btn btn-primary">登录编辑器</button>
         </div>
       </form>
       <div class="hint">浅灰=可通行 · 白色=空洞(不可通行)<br/>地图为「路径地图」：主干道走廊 + 分支 + 随机空地</div>
     </div>
   </div>
 
-  <!-- 编辑器主体 -->
   <div id="editor-app" class="hidden">
     <div class="editor-topbar">
-      <div class="editor-title">EVOLUTIONWORLD · 地形编辑器</div>
+      <div class="editor-title">EVOLUTIONWORLD · 世界/剧本编辑器</div>
       <div class="editor-user" id="editor-user-name">-</div>
-      <a class="editor-link" href="./index.html" target="_blank">进入游戏</a>
+      <a class="editor-link" href="./index.html" target="_blank">进入游戏 ↗</a>
       <div class="editor-conn" id="editor-conn">未加载</div>
     </div>
-
     <div class="editor-body">
-      <!-- 画刷工具栏 -->
       <div class="editor-tools" id="editor-tools">
+        <!-- 模式切换 -->
         <div class="tool-group">
-          <div class="tool-label">画刷类型</div>
-          <label class="tool-row"><input type="radio" name="brush" value="raise" checked /><span>⤴ 抬高</span></label>
-          <label class="tool-row"><input type="radio" name="brush" value="lower" /><span>⤵ 降低</span></label>
-          <label class="tool-row"><input type="radio" name="brush" value="flatten" /><span>▦ 铺平</span></label>
-          <label class="tool-row"><input type="radio" name="brush" value="smooth" /><span>◍ 平滑</span></label>
-          <label class="tool-row"><input type="radio" name="brush" value="void" /><span>✕ 删除地区(挖空)</span></label>
-          <label class="tool-row"><input type="radio" name="brush" value="fill" /><span>▣ 增加地区(恢复)</span></label>
-        </div>
-        <div class="tool-group">
-          <div class="tool-label">画刷参数</div>
-          <div class="tool-row"><span class="tool-name">大小 (米)</span><input type="range" id="brush-radius" min="1" max="16" step="0.5" value="4" /><b id="brush-radius-v">4m</b></div>
-          <div class="tool-row"><span class="tool-name">力度 (米/次)</span><input type="range" id="brush-strength" min="0.2" max="5" step="0.1" value="1.2" /><b id="brush-strength-v">1.2</b></div>
-          <div class="tool-row"><span class="tool-name">强度曲线</span>
-            <select id="brush-falloff">
-              <option value="soft" selected>平滑边 (soft)</option>
-              <option value="hard">硬边 (hard)</option>
-            </select>
+          <div class="tool-label">编辑模式</div>
+          <div class="tool-row">
+            <label><input type="radio" name="mode" value="terrain" checked /><span>🗺 地形</span></label>
+            <label><input type="radio" name="mode" value="spawn" /><span>👾 生物出生点</span></label>
           </div>
-          <div class="tool-row"><span class="tool-name">目标高度 (铺平)</span><input type="number" id="brush-target" value="8" min="-12" max="34" step="1" /><span>m</span></div>
-          <div class="tool-row"><span class="tool-name">显示高度色带</span><input type="checkbox" id="show-height" /></div>
+          <div class="tool-row tool-tip" id="mode-tip">画刷编辑地形：浅灰=可通行 / 白=空洞</div>
         </div>
+
+        <!-- 地形画刷面板 -->
+        <div id="panel-terrain">
+          <div class="tool-group">
+            <div class="tool-label">画刷类型</div>
+            <label class="tool-row"><input type="radio" name="brush" value="raise" checked /><span>⤴ 抬高</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="lower" /><span>⤵ 降低</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="flatten" /><span>▦ 铺平</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="smooth" /><span>◍ 平滑</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="void" /><span>✕ 删除地区(挖空)</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="fill" /><span>▣ 增加地区(恢复)</span></label>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">画刷参数</div>
+            <div class="tool-row"><span class="tool-name">大小 (米)</span><input type="range" id="brush-radius" min="1" max="16" step="0.5" value="4" /><b id="brush-radius-v">4m</b></div>
+            <div class="tool-row"><span class="tool-name">力度 (米/次)</span><input type="range" id="brush-strength" min="0.2" max="5" step="0.1" value="1.2" /><b id="brush-strength-v">1.2</b></div>
+            <div class="tool-row"><span class="tool-name">强度曲线</span>
+              <select id="brush-falloff">
+                <option value="soft" selected>平滑边 (soft)</option>
+                <option value="hard">硬边 (hard)</option>
+              </select>
+            </div>
+            <div class="tool-row"><span class="tool-name">目标高度 (铺平)</span><input type="number" id="brush-target" value="8" min="-12" max="34" step="1" /><span>m</span></div>
+            <div class="tool-row"><span class="tool-name">显示高度色带</span><input type="checkbox" id="show-height" /></div>
+          </div>
+        </div>
+
+        <!-- 生物出生点面板（剧本） -->
+        <div id="panel-spawn" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">新增出生点</div>
+            <div class="tool-row"><span class="tool-name">类型</span>
+              <select id="spawn-kind">
+                <option value="monster">怪物</option>
+                <option value="npc">NPC</option>
+                <option value="boss">Boss</option>
+              </select>
+            </div>
+            <div class="tool-row" id="spawn-type-row"><span class="tool-name">子类型</span>
+              <select id="spawn-type">
+                <option value="wolf">野狼 wolf</option>
+                <option value="goblin">哥布林 goblin</option>
+                <option value="skeleton">骷髅兵 skeleton</option>
+                <option value="gargoyle">石像鬼 gargoyle</option>
+              </select>
+            </div>
+            <div class="tool-row" id="spawn-count-row"><span class="tool-name">数量</span><input type="number" id="spawn-count" value="1" min="1" max="50" step="1" /></div>
+            <div class="tool-row tool-tip">点击地图空白处 = 新增出生点<br/>左键拖动标记 = 移动出生点<br/>点击标记选中 → 按 Del 或下方按钮删除</div>
+            <div class="tool-row"><button id="btn-spawn-del" class="btn btn-ghost">🗑 删除选中</button></div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">出生点列表 (<span id="spawn-count-label">0</span>)</div>
+            <div id="spawn-list" class="spawn-list"></div>
+          </div>
+        </div>
+
         <div class="tool-group tool-actions">
           <button id="btn-undo" class="btn btn-ghost">↶ 撤销</button>
           <button id="btn-redo" class="btn btn-ghost">↷ 重做</button>
           <button id="btn-reset" class="btn btn-ghost">重置(还原程序化)</button>
           <button id="btn-save" class="btn btn-primary">💾 保存到服务器</button>
         </div>
-        <div class="tool-group tool-status" id="editor-status">就绪（画刷拖动左键应用，右键拖动平移，滚轮缩放）</div>
+        <div class="tool-group tool-status" id="editor-status">就绪（WASD 平移 · 滚轮缩放 · 左键画刷/拖拽）</div>
         <div class="tool-group tool-info">
           <div>世界中心为出生地/商店（城镇 + 6 条主干道）</div>
-          <div>保存后：游戏客户端下次进入自动加载；当前在线玩家亦实时生效</div>
+          <div>保存后：游戏客户端下次进入自动加载；当前在线玩家亦实时生效（生物热重载）</div>
         </div>
       </div>
 
-      <!-- 地图画布（俯视 2D：浅灰=可通行 / 白=空洞） -->
       <div class="editor-canvas-wrap">
         <canvas id="editor-canvas"></canvas>
         <div id="editor-coord" class="editor-coord">x:0 z:0 h:- void:-</div>
+        <div id="editor-legend" class="editor-legend hidden"></div>
       </div>
     </div>
   </div>

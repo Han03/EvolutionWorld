@@ -59,6 +59,15 @@ int main(int argc, char** argv) {
   store.init();
 
   World world(cfg);
+  // 生物出生点：加载 data/spawns.json（有则覆盖默认确定性出生点，无则用内置默认）
+  {
+    std::string sp = cfg.dataDir + "/spawns.json";
+    if (world.spawnsMut().loadFile(sp)) {
+      fprintf(stderr, "[spawns] 加载出生点配置 %s（%zu 个出生点）\n", sp.c_str(), world.spawns().size());
+    } else {
+      fprintf(stderr, "[spawns] 无 %s，使用内置默认出生点（%zu 个）\n", sp.c_str(), world.spawns().size());
+    }
+  }
   world.seedWorld();
   // 地形编辑器编辑层：启动加载 data/terrain_edit.json（无则跳过，不影响功能）
   {

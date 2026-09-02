@@ -56,3 +56,39 @@
   font: 12px/1.6 monospace; padding: 4px 10px; border-radius: 6px;
   pointer-events: none;
 }
+
+/* ---- 世界/剧本编辑器：模式切换 / 出生点面板 / 图例 ---- */
+.tool-tip { color: #888; font-size: 12px; line-height: 1.7; margin-top: 4px; }
+.tool-row label { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #333; }
+#panel-spawn { display: flex; flex-direction: column; gap: 12px; }
+.hidden { display: none !important; }
+
+/* 出生点列表 */
+.spawn-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.spawn-item {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: #333;
+  padding: 3px 5px; border-radius: 5px; cursor: pointer;
+  background: #fafbfc; border: 1px solid #e6e8ee;
+}
+.spawn-item.sel { background: #e8f0ff; border-color: #2f6fed; }
+.sp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.sp-txt { flex: 0 0 auto; }
+.sp-pos { flex: 1; color: #777; font-family: monospace; }
+.sp-del { flex: none; border: none; background: none; color: #c33; cursor: pointer; font-size: 12px; padding: 0 3px; }
+.sp-del:hover { color: #900; }
+
+/* 高度色带图例 */
+.editor-legend {
+  position: absolute; top: 10px; right: 10px;
+  width: 150px; padding: 6px 8px;
+  background: rgba(0,0,0,0.7); color: #fff; border-radius: 6px;
+  font: 11px/1.5 monospace; pointer-events: none;
+}
+.legend-bar {
+  height: 12px; border-radius: 3px; margin: 4px 0;
+  background: linear-gradient(to right,
+    rgb(45,70,160), rgb(80,150,195), rgb(110,185,120),
+    rgb(225,215,130), rgb(175,135,85), rgb(245,245,245));
+}
+.legend-scale { display: flex; justify-content: space-between; }

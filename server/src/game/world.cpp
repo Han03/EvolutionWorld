@@ -12,11 +12,6 @@ static Mulberry32 gAiRng(0xC0FFEE);
 static double rng01() { return gAiRng.next(); }
 // 世界 Boss 固定锚点（确定性，可调）
 // 世界 Boss 锚点：远离城镇/出生点安全区（>=40m），且位于可通行地图区域（用与地形 mask 一致的采样选定）
-static const std::vector<std::pair<double, double>> kBossAnchors = {
-  {-79.5, -73.5}, {74.5, 38.5}, {-47.5, 44.5},
-};
-// 位置哈希 → 怪物类型（确定性：复活后类型不变）
-static const char* monsterTypeAt(double x, double z);
 // 默认系统（前向声明，定义在文件后部）
 static void inputSystem(World& w, double dt);
 static void moveSystem(World& w, double dt);
@@ -30,6 +25,7 @@ static void dropSystem(World& w, double dt);
 World::World(const Config& cfg)
     : cfg_(cfg), physics_(cfg), chunks_(*this, cfg),
       aoi_(cfg.aoiCellSizeM), rng_((uint32_t)cfg.worldSeed ^ 0x51ab) {
+  spawns_.loadDefaults(cfg);   // 确定性默认出生点（可被 data/spawns.json 覆盖）
   addSystem(10, "input", inputSystem);
   addSystem(20, "move", moveSystem);
   addSystem(30, "ai", aiSystem);
@@ -60,61 +56,10 @@ void World::addEntity(Entity&& e) {
   aoi_.move(entities_[id].wid, entities_[id].pos.x, entities_[id].pos.z);
 }
 void World::seedWorld() {
-  // 怪物：远离城镇/出生点（环形 20-110m），保证出生点附近安全区无怪物
-  for (int i = 0; i < cfg_.monsterCount; i++) {
-    double x, y, z;
-    randomSpawn(rng_, x, y, z, 20.0, 110.0);
-    // 按位置哈希稳定分配怪物类型（4 种：野狼/哥布林/骷髅/石像鬼）
-    const char* type = monsterTypeAt(x, z);
-    Entity m = makeMonster(nextEntityId("m"), type);
-    applyMonsterStats(m, type);
-    m.pos = {x, terrainHeight(x, z) + m.radius + 0.3, z};
-    m.ai.homeX = m.pos.x;
-    m.ai.homeZ = m.pos.z;
-    addEntity(std::move(m));
-  }
-  // 功能性 NPC（商店等）：全部布置在出生点/主城附近（开放空地内），
-  // 固定锚点 + 就近找干地兜底；商店老板守店不游走。
-  const double npcAnchors[][2] = {  // 主城圆盘内的固定锚点（含出生点周边）
-    {6.0, 6.0}, {0.0, 6.0}, {6.0, 0.0}, {-6.0, 6.0}, {6.0, -6.0},
-    {0.0, -6.0}, {-6.0, 0.0}, {-3.0, 7.0}, {7.0, -3.0}, {-7.0, -3.0},
-    {3.0, -7.0}, {-7.0, 3.0}
-  };
-  for (int i = 0; i < cfg_.npcCount; i++) {
-    Entity n = makeNpc(nextEntityId("n"));
-    // 目标锚点：就近找可通行干地（主城圆盘内），找不到才回退随机
-    double hx = npcAnchors[i % (sizeof(npcAnchors) / sizeof(npcAnchors[0]))][0];
-    double hz = npcAnchors[i % (sizeof(npcAnchors) / sizeof(npcAnchors[0]))][1];
-    double sx = hx, sz = hz;
-    bool found = false;
-    for (double r = 0; r <= 12 && !found; r += 2) {
-      for (int k = 0; k < 16 && !found; k++) {
-        double a = (double)k / 16.0 * 6.28318;
-        double px = hx + std::cos(a) * r, pz = hz + std::sin(a) * r;
-        if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; }
-      }
-    }
-    if (!found) { randomSpawn(rng_, sx, sz, n.pos.y, 0.0, 20.0); sx = n.pos.x; sz = n.pos.z; }
-    n.pos = {sx, terrainHeight(sx, sz) + n.radius + 0.3, sz};
-    n.ai.homeX = n.pos.x;
-    n.ai.homeZ = n.pos.z;
-    if (i == 0) {
-      // 商店 NPC（功能性）：出生点附近固定锚点，出售全部物品，守店不游走
-      n.shopId = 1;
-      n.name = "商店老板·全能杂货铺";
-      n.ai.aiState = 0; // IDLE 不游走（守店）
-      fprintf(stderr, "[shopnpc] spawn id=%s pos=(%.2f,%.2f,%.2f) home=(%.2f,%.2f)\n",
-              n.id.c_str(), n.pos.x, n.pos.y, n.pos.z, n.ai.homeX, n.ai.homeZ);
-    }
-    addEntity(std::move(n));
-  }
-  // 世界 Boss：全区共享实体（全局模拟 + Zone 广播）
-  int bossN = std::min(cfg_.bossCount, (int)kBossAnchors.size());
-  for (int i = 0; i < bossN; i++) {
-    spawnBoss(i, kBossAnchors[i].first, kBossAnchors[i].second);
-  }
+  // 数据驱动出生点：从 spawns_（默认确定性生成 或 data/spawns.json 覆盖）刷出全部生物
+  for (const auto& sp : spawns_.list()) spawnFromPoint(sp);
 }
-void World::spawnBoss(int idx, double hx, double hz) {
+void World::spawnBossAt(double hx, double hz, const std::string& name) {
   Entity b = makeMonster(nextEntityId("boss"), "gargoyle");
   b.isBoss = true;
   b.radius = 1.4;
@@ -123,7 +68,7 @@ void World::spawnBoss(int idx, double hx, double hz) {
   b.attack = cfg_.bossAttack;
   b.defense = cfg_.bossDefense;
   b.level = 60;
-  b.name = idx == 0 ? "荒原巨兽" : (idx == 1 ? "深渊领主" : "冰霜女王");
+  b.name = name.empty() ? "荒原巨兽" : name;
   // 在锚点附近找干地出生
   double bx = hx, bz = hz;
   bool found = false;
@@ -139,6 +84,61 @@ void World::spawnBoss(int idx, double hx, double hz) {
   b.ai.homeZ = bz;
   addEntity(std::move(b));
   aliveBoss_++;
+}
+// 按出生点生成一只生物（monster/npc/boss）
+void World::spawnFromPoint(const SpawnPoint& sp) {
+  if (sp.kind == SP_MONSTER) {
+    for (int i = 0; i < sp.count; i++)
+      spawnMonster(sp.type.empty() ? "wolf" : sp.type, sp.x, sp.z);
+  } else if (sp.kind == SP_NPC) {
+    spawnNpcAt(sp);
+  } else if (sp.kind == SP_BOSS) {
+    spawnBossAt(sp.x, sp.z, sp.name);
+  }
+}
+// 按出生点生成一个城镇 NPC：就近找干地，可带商店/名称
+void World::spawnNpcAt(const SpawnPoint& sp) {
+  Entity n = makeNpc(nextEntityId("n"));
+  double hx = sp.x, hz = sp.z;
+  double sx = hx, sz = hz;
+  bool found = false;
+  for (double r = 0; r <= 12 && !found; r += 2) {
+    for (int k = 0; k < 16 && !found; k++) {
+      double a = (double)k / 16.0 * 6.28318;
+      double px = hx + std::cos(a) * r, pz = hz + std::sin(a) * r;
+      if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; }
+    }
+  }
+  n.pos = {sx, terrainHeight(sx, sz) + n.radius + 0.3, sz};
+  n.ai.homeX = n.pos.x;
+  n.ai.homeZ = n.pos.z;
+  if (sp.shopId) { n.shopId = sp.shopId; n.ai.aiState = 0; } // 守店不游走
+  if (!sp.name.empty()) n.name = sp.name;
+  if (sp.shopId) {
+    fprintf(stderr, "[shopnpc] spawn id=%s pos=(%.2f,%.2f,%.2f) home=(%.2f,%.2f)\n",
+            n.id.c_str(), n.pos.x, n.pos.y, n.pos.z, n.ai.homeX, n.ai.homeZ);
+  }
+  addEntity(std::move(n));
+}
+// 热重载：清空现有种子生物（m_*/n_*/boss_*）并按当前出生点配置重建
+void World::reseedCreatures() {
+  std::vector<std::string> toRemove;
+  for (const auto& [id, e] : entities_) {
+    if (e.kind == EntityKind::Player) continue;
+    if (id.rfind("m_", 0) == 0 || id.rfind("n_", 0) == 0 || id.rfind("boss_", 0) == 0)
+      toRemove.push_back(id);
+  }
+  for (const auto& id : toRemove) despawnEntity(id);
+  aliveBoss_ = 0;
+  seedWorld();
+  fprintf(stderr, "[spawns] 热重载完成：%zu 个出生点 → 重建世界生物\n", spawns_.size());
+}
+// 应用新出生点配置：fromJson → 持久化 data/spawns.json → 热重载世界生物
+bool World::applySpawns(const std::string& json, const std::string& dataDir) {
+  if (!spawns_.fromJson(json)) return false;
+  spawns_.saveFile(dataDir + "/spawns.json");
+  reseedCreatures();
+  return true;
 }
 Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
   Entity p = makePlayer(nextEntityId("p"), username);
@@ -653,15 +653,6 @@ Json World::entitiesStatus(double px, double pz, double range, int limit) const 
   return arr;
 }
 // ---------- 物品/属性/商店/掉落 实现 ----------
-// 位置哈希 → 怪物类型（确定性：复活后类型不变）
-// 初始刷怪类型：按距离城镇分层（弱怪近、强怪远）——大型 MMO 阶梯刷怪区
-static const char* monsterTypeAt(double x, double z) {
-  double d = std::hypot(x, z);
-  if (d < 45.0) return "wolf";       // 近郊：野狼（弱）
-  if (d < 65.0) return "goblin";     // 中郊：哥布林
-  if (d < 90.0) return "skeleton";   // 远郊：骷髅兵
-  return "gargoyle";                 // 边境：石像鬼（强）
-}
 void World::applyMonsterStats(Entity& m, const std::string& type) {
   const MonsterDef* def = data_.monster(type);
   if (!def) return;
@@ -714,14 +705,16 @@ void World::spawnDrop(double x, double z, uint32_t itemId, uint32_t gold) {
   pushEvent(proto::EVT_DROP, (uint32_t)d.wid, itemId, (int32_t)gold, 0);
 }
 // 移除地面掉落物
-void World::despawnDrop(const std::string& id) {
+void World::despawnEntity(const std::string& id) {
   auto it = entities_.find(id);
   if (it == entities_.end()) return;
   widToId_.erase(it->second.wid);
   aoi_.remove(it->second.wid);
   chunks_.removeEntity(it->second);
-  entities_.erase(it);
+  entities_.erase(id);
 }
+// 移除地面掉落物
+void World::despawnDrop(const std::string& id) { despawnEntity(id); }
 // 拾取地面掉落物
 bool World::playerPickup(const std::string& playerId, uint32_t dropWid) {
   Entity* p = findEntity(playerId);

@@ -534,6 +534,40 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
 
   // ---- 地形编辑器编辑层接口（编辑器：读取/保存） ----
   // GET: 返回当前编辑层 {ok, count, cells: {"x,z": {h?,v?}}}（公开读取，与客户端 terrain.js 一致）
+  // 生物出生点配置：GET 读取当前出生点列表（剧本编辑器用）
+  if (path == "/api/spawns" && req.method == "GET") {
+    Json r = Json::object();
+    r["ok"] = true;
+    r["count"] = (int64_t)world_.spawns().size();
+    Json root = Json::parse(world_.spawns().toJson());
+    r["spawns"] = root["spawns"];
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存出生点 {token, spawns:[...]} -> 校验后应用 + 持久化 data/spawns.json + 热重载世界生物
+  if (path == "/api/spawns/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("spawns") || in.at("spawns").type() != Json::Type::Array) {
+        r["error"] = "spawns array required";
+      } else {
+        Json root = Json::object(); root["spawns"] = in.at("spawns");
+        if (world_.applySpawns(root.dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.spawns().size();
+          code = 200;
+        } else { r["error"] = "bad spawns"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
   if (path == "/api/terrain/edit" && req.method == "GET") {
     Json r = Json::object();
     r["ok"] = true;
