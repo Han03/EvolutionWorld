@@ -54,9 +54,18 @@ jobs:
           # Start server directly in background (systemctl hangs when user WSL session is active)
           wsl -d Ubuntu -- bash -c "cd /opt/evolutionworld/server && EW_DEBUG=1 EW_CONFIG='$ewConfig' nohup ./build/evolution_server > /tmp/evolution_server.log 2>&1 & echo SERVER_STARTED pid=\$!"
           Write-Output "Server address: http://localhost:3000"
-          # Wait a moment then check if server process is alive and show startup log
+          # Wait and verify server process is alive and listening
           Start-Sleep -Seconds 5
-          wsl -d Ubuntu -- bash -c "echo '=== Server process check ===' && ps aux | grep evolution_server | grep -v grep && echo '=== Port 3000 check ===' && ss -tlnp 2>/dev/null | grep ':3000 ' && echo '=== Server startup log (first 50 lines) ===' && head -50 /tmp/evolution_server.log 2>/dev/null || echo 'No log file'"
+          wsl -d Ubuntu -- bash -c "echo '=== Server process check ===' && ps aux | grep evolution_server | grep -v grep && echo '=== Port 3000 check ===' && ss -tlnp 2>/dev/null | grep ':3000 ' && echo '=== Server startup log ===' && cat /tmp/evolution_server.log 2>/dev/null || echo 'No log file'"
+          # Verify server is actually listening (fail fast if not)
+          $checkResult = wsl -d Ubuntu -- bash -c "curl -sf --max-time 3 http://localhost:3000/api/health 2>/dev/null || echo STARTUP_FAIL"
+          if ($checkResult -match "STARTUP_FAIL" -or -not ($checkResult -match '"ok"')) {
+            Write-Output "=== SERVER FAILED TO START ==="
+            Write-Output "curl result: $checkResult"
+            wsl -d Ubuntu -- bash -c "cat /tmp/evolution_server.log 2>/dev/null; echo '---'; ldd /opt/evolutionworld/server/build/evolution_server 2>&1 | grep 'not found' || echo 'All libs found'"
+            throw "Server did not start properly"
+          }
+          Write-Output "Server startup verified: $checkResult"
 
       - name: Health check
         run: |
