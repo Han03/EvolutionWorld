@@ -199,11 +199,12 @@ async function enterWorld(token, username, worldMeta) {
   net.onUpdate = (ups) => entities.applyUpdate(ups);
   net.onSnapshot = (snap) => entities.applySnapshot(snap.entities);
 
-  // 世界 Boss 全局共享状态（S2C_BOSS）：更新渲染 + HUD 顶栏
+  // 世界 Boss 全局共享状态（S2C_BOSS）：更新渲染 + HUD 顶栏；位置作为另一路权威校正（走确定性外推）
   net.onBoss = (b) => {
     bossStates.set(b.wid, b);
     renderer.setBossState(b);
     updateBossHud();
+    entities.applyBossPos(b.wid, b.x, b.y, b.z);
   };
   // 世界共享事件（S2C_EVENT）：伤害/死亡/复活/技能
   net.onEvent = (ev) => {

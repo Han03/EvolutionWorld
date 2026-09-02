@@ -23,12 +23,9 @@ Entity* pickAggroTarget(World& w, Entity& e) {
   return best ? w.findByWid(best) : nullptr;
 }
 
-// 应用减速 Buff（MOVE_SLOW 比例 0..1，多 Buff 取最大减速）
+// 应用减速 Buff（MOVE_SLOW 比例 0..1，多 Buff 取最大减速；复用 Entity::moveScale 与协议广播一致）
 static double slowedSpeed(const Entity& e, double base) {
-  double slow = 0;
-  for (const auto& b : e.buffs)
-    if (b.type == (uint8_t)BuffType::MOVE_SLOW && b.remainSec > 0) slow = std::max(slow, b.value);
-  return base * (1.0 - slow);
+  return base * e.moveScale();
 }
 
 bool moveToward(Entity& e, const Vec3& t, double speed, double arriveDist) {
@@ -39,6 +36,51 @@ bool moveToward(Entity& e, const Vec3& t, double speed, double arriveDist) {
   e.ai.targetVX = dx * inv * speed;
   e.ai.targetVZ = dz * inv * speed;
   return false;
+}
+
+// ---------------- 确定性巡逻 waypoint 环（去随机化） ----------------
+// 怪物出生后围绕出生点逆时针遍历固定 waypoint 环，取代 rng01() 随机掉头与越界回拉抖动。
+// 环参数由出生点坐标确定性哈希生成（同 seed 跨服/跨重启一致）；每个 waypoint 就近吸附到干地，
+// 避免走进空洞/水面。客户端无需复刻本公式——它只消费服务端广播的移动意图（targetVX/VZ）。
+static uint32_t hash2(double x, double z, uint32_t seed) {
+  uint32_t h = (uint32_t)std::lround(x * 13.7) * 73856093u
+             ^ (uint32_t)std::lround(z * 7.3) * 19349663u
+             ^ seed ^ 0x9e3779b9u;
+  h ^= h >> 16;
+  h *= 0x85ebca6bu;
+  h ^= h >> 13;
+  return h;
+}
+static bool waypointOk(double x, double z) {
+  return !terrainBlocked(x, z) && terrainHeight(x, z) > kWaterLevel + 1.0;
+}
+// waypoint 命中空洞/水面 → 就近确定性搜索最近干地
+static void snapWaypoint(double& wx, double& wz) {
+  if (waypointOk(wx, wz)) return;
+  for (double rr = 1.0; rr <= 7.0; rr += 1.0) {
+    for (int k = 0; k < 24; k++) {
+      double a = (double)k / 24.0 * 6.2831853;
+      double px = wx + std::cos(a) * rr, pz = wz + std::sin(a) * rr;
+      if (waypointOk(px, pz)) { wx = px; wz = pz; return; }
+    }
+  }
+}
+static void initWaypoints(const Config& cfg, Entity& e) {
+  auto& ai = e.ai;
+  ai.wpCount = 6;
+  ai.wpR = std::max(3.0, cfg.monsterPatrolRadius * 0.5);
+  ai.wpPhase = (double)(hash2(ai.homeX, ai.homeZ, 0x51ab7c9a) & 0xFFFF) / 65535.0 * 6.283185307;
+  ai.wpIdx = 0;
+  ai.wpInit = true;
+  ai.timer = cfg.monsterPatrolPauseSec;
+}
+static void waypointTarget(const Config& cfg, Entity& e, double& wx, double& wz) {
+  auto& ai = e.ai;
+  if (!ai.wpInit) initWaypoints(cfg, e);
+  double ang = ai.wpPhase + (double)ai.wpIdx * (6.283185307 / (double)ai.wpCount);
+  wx = ai.homeX + std::cos(ang) * ai.wpR;
+  wz = ai.homeZ + std::sin(ang) * ai.wpR;
+  snapWaypoint(wx, wz);
 }
 
 // ---------------- 调度器（时间片轮转 + 距离分级 + AOI 激活） ----------------
@@ -134,25 +176,26 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
     return;
   }
   ai.aiState = AS_PATROL;
-  // 空洞/障碍前卡住 → 立即换巡逻方向（避免一直顶墙）
+  // 确定性 waypoint 环：卡住（空洞/悬崖/实体墙）→ 推进到下一个 waypoint（确定性，无随机）
   if (ai.stuckT > 1.5) {
-    ai.dirX = rng01() * 2.0 - 1.0;
-    ai.dirZ = rng01() * 2.0 - 1.0;
-    ai.timer = cfg.monsterPatrolPauseSec + rng01() * 2.0;
+    ai.wpIdx = (ai.wpIdx + 1) % ai.wpCount;
     ai.stuckT = 0;
+    ai.timer = 0;
   }
-  ai.timer -= dt;
-  if (ai.timer <= 0) {
-    ai.dirX = rng01() * 2.0 - 1.0;
-    ai.dirZ = rng01() * 2.0 - 1.0;
-    ai.timer = cfg.monsterPatrolPauseSec + rng01() * 2.0;
-  }
-  if (homeD > cfg.monsterPatrolRadius * 0.6) {
-    // 巡逻越界微回拉
-    moveToward(e, {ai.homeX, e.pos.y, ai.homeZ}, slowedSpeed(e, ai.speed * 0.6), 2.0);
+  double wx, wz;
+  waypointTarget(cfg, e, wx, wz);
+  const double arrive = std::hypot(wx - e.pos.x, wz - e.pos.z);
+  if (arrive <= cfg.monsterPatrolArrive) {
+    // 到达 waypoint：暂停后去下一个（固定 pause 时长，无随机）
+    ai.timer -= dt;
+    if (ai.timer <= 0) {
+      ai.wpIdx = (ai.wpIdx + 1) % ai.wpCount;
+      ai.timer = cfg.monsterPatrolPauseSec;
+    }
+    ai.targetVX = ai.targetVZ = 0;
   } else {
-    ai.targetVX = ai.dirX * ai.speed;
-    ai.targetVZ = ai.dirZ * ai.speed;
+    // 朝当前 waypoint 匀速移动（含减速 buff 倍率），越界回拉抖动已移除
+    moveToward(e, {wx, e.pos.y, wz}, slowedSpeed(e, ai.speed), cfg.monsterPatrolArrive);
   }
 }
 

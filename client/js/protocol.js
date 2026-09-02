@@ -21,7 +21,7 @@ export const MSG = {
 export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7 };
 // Boss 状态（S2C_BOSS.state）
 export const BOSS_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
-export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04 };
+export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04, INTENT: 0x08 };
 export const KIND = { PLAYER: 1, MONSTER: 2, NPC: 3, ITEM: 4 };
 export const ST = { MOVING: 0x01, GROUNDED: 0x02 };
 
@@ -169,11 +169,21 @@ export function decodeEntityFull(r, refX, refY, refZ) {
   } else {
     name = r.str();
   }
+  // AI 意图块（怪物/NPC/Boss，与服务端 writeEntityFull 对应）：半径 + aiState + 目标速度 + 速度倍率
+  let radius = 0, aiState = 0, tx = 0, tz = 0, speedMult = 100;
+  if (kind === KIND.MONSTER || kind === KIND.NPC) {
+    radius = dq(r.u16());
+    aiState = r.u8();
+    tx = dq(r.i16());
+    tz = dq(r.i16());
+    speedMult = r.u8();
+  }
   return {
     wid, kind, state,
     x: dq(dx) + refX, y: dq(dy) + refY, z: dq(dz) + refZ,
     vx: dq(vx), vz: dq(vz),
     name, itemId, gold,
+    radius, aiState, tx, tz, speedMult,
   };
 }
 /** 解析一个 S2C 消息，返回 {type, ...}；ref = 自身预测位置 */
@@ -220,10 +230,19 @@ export function parseS2C(type, payload, refX, refY, refZ) {
         const mask = r.u8();
         const u = { wid, mask };
         if (mask & MASK.POS) {
-          u.dx = r.i16(); u.dy = r.i16(); u.dz = r.i16();
+          // 绝对坐标（相对量 + 自身 ref），与 ENTER/SNAPSHOT 的 decodeEntityFull 一致
+          u.x = dq(r.i16()) + refX;
+          u.y = dq(r.i16()) + refY;
+          u.z = dq(r.i16()) + refZ;
         }
-        if (mask & MASK.VEL) { u.vx = r.i16(); u.vz = r.i16(); }
+        if (mask & MASK.VEL) { u.vx = dq(r.i16()); u.vz = dq(r.i16()); }
         if (mask & MASK.STATE) u.state = r.u8();
+        if (mask & MASK.INTENT) {
+          u.aiState = r.u8();
+          u.tx = dq(r.i16());
+          u.tz = dq(r.i16());
+          u.speedMult = r.u8();
+        }
         updates.push(u);
       }
       return { type, updates };

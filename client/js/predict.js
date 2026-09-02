@@ -12,7 +12,7 @@
  */
 import { terrainHeight, terrainBlocked } from './terrain.js';
 
-const CFG = {
+export const PHYS = {
   GRAVITY: -9.81,
   JUMP_VELOCITY: 7.0,
   MAX_MOVE_SPEED: 7.0,
@@ -21,9 +21,11 @@ const CFG = {
   RADIUS: 0.55,
   TICK_MS: 50, // 与服务端 tick 对齐
 };
+const CFG = PHYS;
+
 // 2.5D 静态地形碰撞（与服务端 collision.cpp 逐位一致）：
 // 圆盘（半径 r）是否与不可通行（湖泊/河流/悬崖/陡坡）重叠：中心 + 圆周 8 点采样
-function circleBlocked(x, z, r) {
+export function circleBlocked(x, z, r) {
   if (terrainBlocked(x, z)) return true;
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
@@ -33,7 +35,7 @@ function circleBlocked(x, z, r) {
 }
 // 沿轴滑动回退（与服务端 Collision::slideMove 一致）：实体已从 (ox,oz) 移到 (nx,nz)，
 // 与障碍重叠时逐轴尝试，模拟沿墙滑动
-function slideMove(e, ox, oz, nx, nz, r) {
+export function slideMove(e, ox, oz, nx, nz, r) {
   if (!circleBlocked(nx, nz, r)) { e.x = nx; e.z = nz; return false; }
   // X 轴单独尝试（沿 X 滑动 → 结果 (nx, oz)）
   const okX = !circleBlocked(nx, oz, r);
@@ -50,6 +52,49 @@ function slideMove(e, ox, oz, nx, nz, r) {
     e.x = ox; e.z = oz;
   }
   return true;
+}
+
+/**
+ * 通用确定性物理步进（服务端权威，与 moveEntityCollide + Physics::step + setHorizontalVelocity 逐位一致）：
+ * 给定 sim 状态 {x,y,z,vx,vy,vz,grounded,radius} 与目标水平速度 (tx,tz)，推进一个 dt 步长。
+ * 玩家预测（Predictor）与怪物/AI 外推（entities.js）复用同一实现，保证客户端推演与服务端一致。
+ */
+export function stepSim(s, tx, tz, dt) {
+  const ox = s.x, oz = s.z;
+  // 1) 水平速度向目标逼近（加速度模型，同服务端 Physics::setHorizontalVelocity）
+  let nvx, nvz;
+  {
+    const dx = tx - s.vx, dz = tz - s.vz;
+    const d = Math.hypot(dx, dz);
+    const accel = PHYS.ACCELERATION * dt;
+    if (d <= accel) { nvx = tx; nvz = tz; }
+    else { const k = accel / d; nvx = s.vx + dx * k; nvz = s.vz + dz * k; }
+  }
+  // 2) 重力（同服务端 Physics::step）
+  let nvy = s.vy + PHYS.GRAVITY * dt;
+  // 3) 水平摩擦
+  const hSpeed = Math.hypot(nvx, nvz);
+  if (hSpeed > 0) {
+    const ns = Math.max(0, hSpeed - PHYS.FRICTION * dt);
+    const sc = ns / hSpeed;
+    nvx *= sc; nvz *= sc;
+  }
+  // 4) 积分位置（ox/oz 在积分前取值，供滑动回退——与服务端一致）
+  let nx = s.x + nvx * dt;
+  let ny = s.y + nvy * dt;
+  let nz = s.z + nvz * dt;
+  // 5) 2.5D 静态地形碰撞：圆盘与不可通行重叠 → 沿轴滑动回退
+  if (circleBlocked(nx, nz, s.radius)) {
+    const tmp = { x: nx, z: nz };
+    slideMove(tmp, ox, oz, nx, nz, s.radius);
+    nx = tmp.x; nz = tmp.z;
+  }
+  // 6) 地表碰撞（滑动后重新贴地）
+  const gy = terrainHeight(nx, nz);
+  const foot = gy + s.radius;
+  let gnd;
+  if (ny <= foot) { ny = foot; nvy = 0; gnd = true; } else { gnd = false; }
+  s.x = nx; s.y = ny; s.z = nz; s.vx = nvx; s.vy = nvy; s.vz = nvz; s.grounded = gnd;
 }
 
 export class Predictor {
@@ -121,9 +166,6 @@ export class Predictor {
   /** 单次 50ms 物理步进（必须与服务端 physics.cpp + inputSystem 一致） */
   _tickStep() {
     const dt = CFG.TICK_MS / 1000;
-    const v = this.vel;
-    const p = this.pos;
-
     // 1) 输入 → 目标水平速度（归一化 * maxSpeed）
     const len = Math.hypot(this.moveX, this.moveZ);
     let tx = 0, tz = 0;
@@ -131,66 +173,24 @@ export class Predictor {
       tx = (this.moveX / len) * CFG.MAX_MOVE_SPEED;
       tz = (this.moveZ / len) * CFG.MAX_MOVE_SPEED;
     }
-
     // 2) 跳跃（边沿，仅地面）
     if (this._jumpQueued) {
       this._jumpQueued = false;
       if (this.grounded) {
-        v.y = CFG.JUMP_VELOCITY;
+        this.vel.y = CFG.JUMP_VELOCITY;
         this.grounded = false;
       }
     }
-
-    // 3) 水平速度向目标逼近（加速度模型，同服务端）
-    {
-      const dx = tx - v.x;
-      const dz = tz - v.z;
-      const d = Math.hypot(dx, dz);
-      const accel = CFG.ACCELERATION * dt;
-      if (d <= accel) {
-        v.x = tx;
-        v.z = tz;
-      } else {
-        const k = accel / d;
-        v.x += dx * k;
-        v.z += dz * k;
-      }
-    }
-
-    // 4) 重力
-    v.y += CFG.GRAVITY * dt;
-
-    // 5) 水平摩擦
-    const hSpeed = Math.hypot(v.x, v.z);
-    if (hSpeed > 0) {
-      const ns = Math.max(0, hSpeed - CFG.FRICTION * dt);
-      const s = ns / hSpeed;
-      v.x *= s;
-      v.z *= s;
-    }
-
-    // 6) 积分（先记录积分前位置，供滑动回退用——与服务端 moveEntityCollide 在 physics.step 前取 ox/oz 一致）
-    const ox = p.x, oz = p.z;
-    p.x += v.x * dt;
-    p.y += v.y * dt;
-    p.z += v.z * dt;
-
-    // 7) 2.5D 静态地形碰撞：圆盘与不可通行（空洞/湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
-    //    （与服务端 moveEntityCollide 逐位一致，保证预测不被服务端回退）
-    if (circleBlocked(p.x, p.z, CFG.RADIUS)) {
-      slideMove(p, ox, oz, p.x, p.z, CFG.RADIUS);
-    }
-
-    // 8) 地表碰撞（滑动后重新贴地，与服务端一致）
-    const gy = terrainHeight(p.x, p.z);
-    const foot = gy + CFG.RADIUS;
-    if (p.y <= foot) {
-      p.y = foot;
-      v.y = 0;
-      this.grounded = true;
-    } else {
-      this.grounded = false;
-    }
+    // 3-8) 通用确定性物理步进（与服务端 moveEntityCollide 逐位一致；与怪物外推复用同一实现）
+    const sim = {
+      x: this.pos.x, y: this.pos.y, z: this.pos.z,
+      vx: this.vel.x, vy: this.vel.y, vz: this.vel.z,
+      grounded: this.grounded, radius: CFG.RADIUS,
+    };
+    stepSim(sim, tx, tz, dt);
+    this.pos.x = sim.x; this.pos.y = sim.y; this.pos.z = sim.z;
+    this.vel.x = sim.vx; this.vel.y = sim.vy; this.vel.z = sim.vz;
+    this.grounded = sim.grounded;
   }
 
   /** 服务端校正回退：硬拉到权威位置（rollback） */

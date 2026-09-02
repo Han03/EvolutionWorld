@@ -2,24 +2,43 @@
  * 实体数据管理（二进制协议版，Canvas 2D 俯视渲染）
  *  - 当前角色：橙色圆球 + 半透明白色描边
  *  - 其他玩家：绿色圆球 / 怪物：红色圆球 / NPC：蓝色圆球
- * 实体以数字 wid 为键；ENTER 创建、LEAVE 删除、UPDATE 增量更新、SNAPSHOT 校准重建。
- * 仅管理数据 + 位置插值，渲染由 renderer（Canvas2D）完成。
+ *
+ * 怪物同步（消除 rubber-banding，重构后）：
+ *  - 服务端广播「移动意图」（aiState + 目标速度 + 速度倍率）+ 权威位置/瞬时速度；
+ *  - 客户端对每个怪物/NPC/Boss 维护一份与服务端同款物理的确定性推演（sim，复用 predict.js stepSim），
+ *    收到意图后按 20Hz 步进外推，不再用指数衰减朝最新位置追赶；
+ *  - 渲染走「快照插值」：hist 存最近 4 个推演快照，渲染时钟落后一拍（renderClock ≤ simTime-1），
+ *    在两份快照间线性插值平滑输出 60fps——抖动吸收 + 无追尾过冲；
+ *  - 收到新权威位置时分级处理：偏差≤噪声阈值忽略（信任外推）→ 偏差≤快照阈值平滑收敛归位 →
+ *    超阈值硬快照（瞬移，仅网络级失步触发）。
  */
-import { KIND } from './protocol.js';
+import { KIND, MASK } from './protocol.js';
+import { stepSim, PHYS } from './predict.js';
+
 const KIND_NAME = { [KIND.PLAYER]: 'player', [KIND.MONSTER]: 'monster', [KIND.NPC]: 'npc', [KIND.ITEM]: 'item' };
+const TICK_SEC = PHYS.TICK_MS / 1000;      // 0.05s（与服务端 tick 对齐）
+const SNAP_M = 3.0;                        // 权威位置偏差超此值 → 硬快照（瞬移）
+const CONVERGE_M = 0.15;                   // 偏差低于此值 → 噪声内忽略（信任确定性外推）
+const CORR_RATE = 0.35;                    // 平滑收敛：每 tick 收敛剩余偏差的比例
+const CORR_MAX_TICKS = 8;                  // 平滑收敛最大持续 tick 数
+const AI_KINDS = new Set(['monster', 'npc']);
+
 export class EntityViewManager {
   // 死亡动画时长（ms）：淡出 + 下沉
-  DEATH_ANIM_MS = 1100;  constructor(selfWid) {
+  DEATH_ANIM_MS = 1100;
+  constructor(selfWid) {
     this.selfWid = selfWid;
-    this.views = new Map(); // wid -> {wid,kind,name,x,y,z,tx,ty,tz,state,dying,dyingAt}
+    this.views = new Map(); // wid -> view
   }
   _kindName(kind) { return KIND_NAME[kind] || 'monster'; }
+  _isAi(v) { return AI_KINDS.has(v.kind); }
+
   /** ENTER：实体进入视野 */
   applyEnter(entities) {
     for (const e of entities) {
       if (e.wid === this.selfWid) continue;
       if (this.views.has(e.wid)) {
-        this._setTarget(e.wid, e.x, e.y, e.z);
+        this._onAuthoritative(this.views.get(e.wid), e);
       } else {
         this._create(e);
       }
@@ -53,15 +72,31 @@ export class EntityViewManager {
     v.dyingAt = 0;
     v.leavePending = false;
   }
-  /** UPDATE：增量更新（相对坐标已在协议层解码为绝对） */
+  /** UPDATE：增量更新（位置已在协议层解码为绝对坐标） */
   applyUpdate(updates) {
     for (const u of updates) {
       const v = this.views.get(u.wid);
       if (!v) continue;
-      if (u.mask & 0x01) {
-        v.tx = u.dx / 100; v.ty = u.dy / 100; v.tz = u.dz / 100;
+      if (this._isAi(v)) {
+        // —— AI 实体（怪物/NPC/Boss）：确定性外推 + 权威校正 ——
+        if (u.mask & MASK.POS) {
+          const vx = (u.mask & MASK.VEL) ? u.vx : undefined;
+          const vz = (u.mask & MASK.VEL) ? u.vz : undefined;
+          this._authoritativePos(v, u.x, u.y, u.z, vx, vz);
+        }
+        if (u.mask & MASK.INTENT) {
+          v.intent.has = true;
+          v.intent.state = u.aiState;
+          v.intent.tx = u.tx;
+          v.intent.tz = u.tz;
+          v.intent.mult = u.speedMult !== undefined ? u.speedMult : 100;
+        }
+        if (u.state !== undefined) v.state = u.state;
+      } else {
+        // —— 其他玩家：保持轻量 lerp（玩家移动由自身输入驱动，无意图可外推）——
+        if (u.mask & MASK.POS) { v.tx = u.x; v.ty = u.y; v.tz = u.z; }
+        if (u.state !== undefined) v.state = u.state;
       }
-      if (u.state !== undefined) v.state = u.state;
     }
   }
   /** SNAPSHOT：校准重建（丢包/失步自愈） */
@@ -71,7 +106,7 @@ export class EntityViewManager {
       if (e.wid === this.selfWid) continue;
       seen.add(e.wid);
       if (this.views.has(e.wid)) {
-        this._setTarget(e.wid, e.x, e.y, e.z);
+        this._onAuthoritative(this.views.get(e.wid), e);
       } else {
         this._create(e);
       }
@@ -80,35 +115,155 @@ export class EntityViewManager {
       if (!seen.has(wid)) this.views.delete(wid);
     }
   }
-  _setTarget(wid, x, y, z) {
+  /** 世界 Boss 全局共享帧（S2C_BOSS）：位置作为另一路权威校正（与实体 UPDATE 一致） */
+  applyBossPos(wid, x, y, z) {
     const v = this.views.get(wid);
-    if (!v) return;
-    v.tx = x; v.ty = y; v.tz = z;
+    if (!v || !this._isAi(v)) return;
+    this._authoritativePos(v, x, y, z, undefined, undefined);
   }
+
+  // —— AI 实体：创建 / 权威校正 / 确定性推演 / 快照插值 ——
   _create(e) {
-    this.views.set(e.wid, {
+    const v = {
       wid: e.wid,
       kind: this._kindName(e.kind),
       name: e.name || (e.kind === KIND.PLAYER ? `玩家${e.wid}` : ''),
-      x: e.x, y: e.y, z: e.z,
-      tx: e.x, ty: e.y, tz: e.z,
       state: e.state,
-    });
+      dying: false,
+    };
+    if (this._isAi(v)) {
+      // 确定性推演状态（世界绝对坐标；radius 来自服务端广播，碰撞逐位一致）
+      v.sim = {
+        x: e.x, y: e.y, z: e.z,
+        vx: e.vx || 0, vy: 0, vz: e.vz || 0,
+        grounded: true,
+        radius: e.radius || 0.5,
+      };
+      // 移动意图（ENTER 全量即携带；缺失时回退为惯性滑行 = 步骤①纯客户端外推）
+      v.intent = {
+        has: e.aiState !== undefined,
+        state: e.aiState !== undefined ? e.aiState : 0,
+        tx: e.tx !== undefined ? e.tx : (e.vx || 0),
+        tz: e.tz !== undefined ? e.tz : (e.vz || 0),
+        mult: e.speedMult !== undefined ? e.speedMult : 100,
+      };
+      v.hist = [{ t: 0, x: e.x, y: e.y, z: e.z }];
+      v.simTime = 0;
+      v.renderClock = 0;
+      v.acc = 0;
+      v.corr = null;
+      v.x = e.x; v.y = e.y; v.z = e.z;
+    } else {
+      v.x = e.x; v.y = e.y; v.z = e.z;
+      v.tx = e.x; v.ty = e.y; v.tz = e.z;
+    }
+    this.views.set(e.wid, v);
   }
-  /** 每帧插值（简单 lerp，朝向目标平滑）；死亡动画播完且收到过 LEAVE 才移除
-   *  （仍在世界的实体（死亡 Boss/其他玩家）保持隐形视图，EVT_RESPAWN 时恢复可见） */
+  /** 已有实体收到权威数据（ENTER/SNAPSHOT 全量） */
+  _onAuthoritative(v, e) {
+    if (this._isAi(v)) {
+      this._authoritativePos(v, e.x, e.y, e.z, e.vx, e.vz);
+      if (e.aiState !== undefined) {
+        v.intent.has = true;
+        v.intent.state = e.aiState;
+        v.intent.tx = e.tx;
+        v.intent.tz = e.tz;
+        v.intent.mult = e.speedMult !== undefined ? e.speedMult : 100;
+      }
+      if (e.radius) v.sim.radius = e.radius;
+    } else {
+      v.tx = e.x; v.ty = e.y; v.tz = e.z;
+    }
+  }
+  /** 权威位置校正：噪声忽略 / 平滑收敛 / 硬快照 */
+  _authoritativePos(v, x, y, z, vx, vz) {
+    const s = v.sim;
+    const d = Math.hypot(x - s.x, z - s.z);
+    if (d > SNAP_M) {
+      // 网络级失步：硬快照（清历史避免跨缝隙插值）
+      s.x = x; s.y = y; s.z = z;
+      if (vx !== undefined) { s.vx = vx; s.vz = vz; }
+      v.hist = [{ t: v.simTime, x, y, z }];
+      v.renderClock = v.simTime;
+      v.corr = null;
+    } else if (d > CONVERGE_M) {
+      // 小偏差（行为切换/实体分离/LOD 间隙）：平滑收敛归位
+      v.corr = { tx: x, tz: z, k: CORR_RATE, ticks: CORR_MAX_TICKS };
+    }
+    // else：噪声内，信任确定性外推，不打断平滑
+  }
+  /** 单 tick 确定性推演（与服务端 moveEntityCollide 同款物理） */
+  _simTick(v) {
+    const s = v.sim;
+    const it = v.intent;
+    // 目标速度：意图驱动；无意图回退为当前速度惯性滑行（步骤①纯客户端外推）
+    let tx = it.has ? it.tx : s.vx;
+    let tz = it.has ? it.tz : s.vz;
+    // 平滑收敛：把 sim 位置向权威目标缓动（每 tick 收敛剩余偏差的一部分）
+    if (v.corr) {
+      const dx = v.corr.tx - s.x, dz = v.corr.tz - s.z;
+      const rem = Math.hypot(dx, dz);
+      if (rem <= 0.02) {
+        s.x = v.corr.tx; s.z = v.corr.tz;
+        v.corr = null;
+      } else {
+        s.x += dx * v.corr.k;
+        s.z += dz * v.corr.k;
+        if (--v.corr.ticks <= 0) v.corr = null;
+      }
+    }
+    stepSim(s, tx, tz, TICK_SEC);
+    v.simTime += 1;
+    v.hist.push({ t: v.simTime, x: s.x, y: s.y, z: s.z });
+    if (v.hist.length > 4) v.hist.shift();
+  }
+  /** 从推演快照插值渲染（落后一拍缓冲） */
+  _renderFromHist(v) {
+    const h = v.hist;
+    if (h.length === 0) { v.x = v.sim.x; v.y = v.sim.y; v.z = v.sim.z; return; }
+    const rt = Math.max(0, Math.min(v.simTime - 1, v.renderClock));
+    if (rt <= h[0].t) { v.x = h[0].x; v.y = h[0].y; v.z = h[0].z; return; }
+    const last = h[h.length - 1];
+    if (rt >= last.t) { v.x = last.x; v.y = last.y; v.z = last.z; return; }
+    for (let i = 0; i < h.length - 1; i++) {
+      if (rt >= h[i].t && rt <= h[i + 1].t) {
+        const span = h[i + 1].t - h[i].t;
+        const f = span > 0 ? (rt - h[i].t) / span : 0;
+        v.x = h[i].x + (h[i + 1].x - h[i].x) * f;
+        v.y = h[i].y + (h[i + 1].y - h[i].y) * f;
+        v.z = h[i].z + (h[i + 1].z - h[i].z) * f;
+        return;
+      }
+    }
+    v.x = last.x; v.y = last.y; v.z = last.z;
+  }
+  /** 每帧推进：AI 实体确定性外推 + 快照插值；其他玩家轻量 lerp */
   update(dt) {
-    const k = 9;
-    const f = Math.min(1, dt * k);
     const now = performance.now();
     for (const [wid, v] of this.views) {
       if (v.dying && v.leavePending && now - v.dyingAt >= this.DEATH_ANIM_MS) {
         this.views.delete(wid);
         continue;
       }
-      v.x += (v.tx - v.x) * f;
-      v.y += (v.ty - v.y) * f;
-      v.z += (v.tz - v.z) * f;
+      if (this._isAi(v)) {
+        v.acc += dt;
+        if (v.acc > 0.5) v.acc = 0.5; // 页面挂起保护：最多补 10 tick
+        let stepped = 0;
+        while (v.acc >= TICK_SEC && stepped < 20) {
+          v.acc -= TICK_SEC;
+          this._simTick(v);
+          stepped++;
+        }
+        // 渲染时钟连续推进，但不得超前于 simTime-1（落后一拍吸收抖动）
+        v.renderClock = Math.min(v.renderClock + dt / TICK_SEC, Math.max(0, v.simTime - 1));
+        this._renderFromHist(v);
+      } else {
+        const k = 9;
+        const f = Math.min(1, dt * k);
+        v.x += (v.tx - v.x) * f;
+        v.y += (v.ty - v.y) * f;
+        v.z += (v.tz - v.z) * f;
+      }
     }
   }
   /** 直接把自身实体放到预测位置（零延迟渲染 + 回退） */

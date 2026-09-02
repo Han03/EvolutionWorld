@@ -21,6 +21,10 @@ struct LastEnt {
   int16_t ay = 0;
   int16_t avx = 0, avz = 0; // 绝对速度量化
   uint8_t state = 0;
+  // AI 移动意图（M_INTENT 去重）
+  uint8_t aiState = 0;
+  int16_t itx = 0, itz = 0; // 目标速度量化
+  uint8_t imult = 100;      // 速度倍率 0-100
   bool has = false;
 };
 struct PlayerView {

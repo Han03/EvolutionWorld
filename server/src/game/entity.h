@@ -102,9 +102,24 @@ struct Entity {
     double stateTime = 0;    // 当前状态持续时间（秒）
     double thinkCd = 0;      // 决策/行为冷却
     double stuckT = 0;       // 卡住计时（有移动意图但位移≈0，用于空洞/悬崖前解卡）
+    // --- 确定性巡逻（去随机化）：固定 waypoint 环（服务端权威，客户端按广播意图外推）---
+    int wpIdx = 0;           // 当前 waypoint 序号
+    int wpCount = 6;         // waypoint 数量
+    double wpPhase = 0;      // 环相位（出生点确定性哈希，同 seed 跨服一致）
+    double wpR = 8.0;        // 环半径（米）
+    bool wpInit = false;     // 是否已初始化 waypoint 环
     // --- 大规模 AI 调度（时间片轮转 + 距离分级）---
     uint32_t tickStride = 1; // 每 N tick 更新一次（AI LOD，由调度器维护）
   } ai;
+  // 当前移动速度倍率 0..1（多减速 Buff 取最大；100% = 无减速）。服务端/协议共用，
+  // 用于广播"速度倍率（含减速 buff）"与移动目标速度计算（与 slowedSpeed 一致）。
+  double moveScale() const {
+    double slow = 0;
+    for (const auto& b : buffs)
+      if (b.type == 3 && b.remainSec > 0) slow = std::max(slow, b.value); // BuffType::MOVE_SLOW
+    double s = 1.0 - slow;
+    return s < 0 ? 0.0 : s;
+  }
   // 输入状态（由网络层/防作弊写入，输入系统消费）
   struct {
     double moveX = 0, moveZ = 0;

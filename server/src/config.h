@@ -48,6 +48,7 @@ struct Config {
   float monsterAttackCdSec = 1.0f;   // 怪物攻击间隔（秒）
   float monsterPatrolRadius = 12.0f; // 巡逻半径（围绕出生点）
   float monsterPatrolPauseSec = 2.0f;// 巡逻转向间隔下限（秒）
+  float monsterPatrolArrive = 1.0f;  // 巡逻到达 waypoint 判定距离（米）
   float bossChaseSpeed = 3.0f;       // Boss 追击速度（m/s）
   // AI LOD 分级：距最近玩家 <aiLodNearM 每 tick、<aiLodMidM 每 2 tick、其余每 aiLodFarStride tick
   float aiLodNearM = 25.0f;

@@ -90,11 +90,22 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       if (!last.has || ax != last.ax || az != last.az || ay != last.ay) mask |= proto::M_POS;
       if (!last.has || avx != last.avx || avz != last.avz) mask |= proto::M_VEL;
       if (!last.has || st != last.state) mask |= proto::M_STATE;
+      // AI 移动意图（怪物/NPC/Boss）：客户端确定性外推的"移动意图"信号，变化才广播
+      if (e->kind == EntityKind::Monster || e->kind == EntityKind::Npc) {
+        const int16_t itx = proto::qVel(e->ai.targetVX);
+        const int16_t itz = proto::qVel(e->ai.targetVZ);
+        const uint8_t ist = e->ai.aiState;
+        const uint8_t imult = (uint8_t)std::lround(e->moveScale() * 100.0);
+        if (!last.has || ist != last.aiState || itx != last.itx || itz != last.itz || imult != last.imult) {
+          mask |= proto::M_INTENT;
+          last.aiState = ist; last.itx = itx; last.itz = itz; last.imult = imult;
+        }
+      }
       if (mask) {
         uWids.push_back(e->wid);
         uMasks.push_back(mask);
         uEnts.push_back(e);
-        last = {ax, az, ay, avx, avz, st, true};
+        last = {ax, az, ay, avx, avz, st, last.aiState, last.itx, last.itz, last.imult, true};
       }
     }
     if (!uWids.empty()) buf += proto::update(uWids, uMasks, uEnts, player->pos);

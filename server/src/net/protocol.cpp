@@ -133,6 +133,13 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
     w.str(e.username);
   } else {
     w.str(e.name.empty() ? (e.kind == EntityKind::Monster ? "Monster" : "NPC") : e.name);
+    // AI 意图块（怪物/NPC/Boss）：半径 + aiState + 目标速度 + 速度倍率
+    // 客户端据此做确定性外推（与服务端同款物理），位置/瞬时速度仍走上方字段
+    w.u16((uint16_t)std::lround(e.radius * 100.0)); // 0.01m
+    w.u8(e.ai.aiState);
+    w.i16(qVel(e.ai.targetVX));
+    w.i16(qVel(e.ai.targetVZ));
+    w.u8((uint8_t)std::lround(e.moveScale() * 100.0)); // 0-100%
   }
 }
 static std::string entityListToPayload(const std::vector<const Entity*>& ents, const Vec3& ref) {
@@ -190,6 +197,12 @@ std::string update(const std::vector<uint32_t>& wids,
       w.i16(qVel(e.vel.z));
     }
     if (masks[i] & M_STATE) w.u8(entityState(e));
+    if (masks[i] & M_INTENT) {
+      w.u8(e.ai.aiState);
+      w.i16(qVel(e.ai.targetVX));
+      w.i16(qVel(e.ai.targetVZ));
+      w.u8((uint8_t)std::lround(e.moveScale() * 100.0));
+    }
   }
   return frame(S2C_UPDATE, w.data());
 }

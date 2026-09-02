@@ -92,6 +92,7 @@ constexpr uint8_t ST_GROUNDED = 0x02;
 constexpr uint8_t M_POS   = 0x01; // 位置变化
 constexpr uint8_t M_VEL   = 0x02; // 速度变化
 constexpr uint8_t M_STATE = 0x04; // 状态（moving/grounded）变化
+constexpr uint8_t M_INTENT = 0x08; // AI 移动意图变化（aiState + 目标速度 + 速度倍率）
 
 // ---------- 量化常量 ----------
 constexpr int kPosScale = 100;   // 位置 0.01m
