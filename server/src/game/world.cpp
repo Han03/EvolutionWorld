@@ -24,6 +24,7 @@ static void castSystem(World& w, double dt);
 static void buffSystem(World& w, double dt);
 static void bossSystem(World& w, double dt);
 static void respawnSystem(World& w, double dt);
+static void playerRespawnSystem(World& w, double dt);
 static void dropSystem(World& w, double dt);
 World::World(const Config& cfg)
     : cfg_(cfg), physics_(cfg), chunks_(*this, cfg),
@@ -35,6 +36,7 @@ World::World(const Config& cfg)
   addSystem(35, "buff", buffSystem);
   addSystem(40, "boss", bossSystem);
   addSystem(50, "respawn", respawnSystem);
+  addSystem(55, "player_respawn", playerRespawnSystem);
   addSystem(60, "drop", dropSystem);
   // 配置系统：内置默认数据 + 可选 JSON 覆盖（data/items.json / monsters.json / shop.json）
   data_.loadDefaults();
@@ -112,7 +114,7 @@ void World::spawnBoss(int idx, double hx, double hz) {
     for (int k = 0; k < 24; k++) {
       double a = (double)k / 24.0 * 6.28318;
       double px = hx + std::cos(a) * r, pz = hz + std::sin(a) * r;
-      if (terrainHeight(px, pz) > kWaterLevel + 1.0) { bx = px; bz = pz; found = true; break; }
+      if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { bx = px; bz = pz; found = true; break; }
     }
   }
   b.pos = {bx, terrainHeight(bx, bz) + b.radius + 0.3, bz};
@@ -169,7 +171,7 @@ Entity* World::findPlayerByUsername(const std::string& username) {
 bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_t slot) {
   (void)slot;
   Entity* p = findEntity(playerId);
-  if (!p || p->kind != EntityKind::Player) return false;
+  if (!p || p->kind != EntityKind::Player || p->dead) return false;  // 死亡不可攻击
   Entity* t = findByWid(targetWid);
   if (!t || !t->active) return false;
   if (t->kind != EntityKind::Monster) return false;  // 只可攻击世界怪物/Boss
@@ -232,7 +234,7 @@ bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
 //                  由 castSystem 到期后 resolveCast；移动/受击打断（cancelCast）
 bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t targetWid, double tx, double tz) {
   Entity* p = findEntity(playerId);
-  if (!p || p->kind != EntityKind::Player) return false;
+  if (!p || p->kind != EntityKind::Player || p->dead) return false;  // 死亡不可施放
   const SkillDef* sd = data_.skill(skillId);
   if (!sd) return false;
   if (!p->learnedSkills.count(skillId)) return false;  // 未学习
@@ -407,6 +409,26 @@ void World::removeBuffType(Entity& e, uint8_t type) {
     markStatsDirty(e.id);
   }
 }
+// 玩家死亡统一处理（服务端权威）：hp=0 + 死亡标记 + 复活计时 + EVT_DEATH 广播。
+// 复活由 playerRespawnSystem 处理。普攻/技能/Boss AOE/荆棘反伤共用。
+void World::killPlayer(Entity& p, Entity* killer) {
+  if (p.kind != EntityKind::Player || p.dead) return;
+  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  p.hp = 0;
+  p.dead = true;
+  p.respawnAtMs = nowMs + (uint64_t)(cfg_.playerRespawnSec * 1000.0);
+  // 停止施放与移动意图
+  cancelCast(p, 3);
+  p.input.targetVX = p.input.targetVZ = 0;
+  p.input.moveX = p.input.moveZ = 0;
+  // 清仇恨：所有怪物不再锁定死亡玩家
+  for (auto& [id, e] : entities_) {
+    (void)id;
+    e.aggro.erase(p.wid);
+  }
+  pushEvent(proto::EVT_DEATH, p.wid, killer ? killer->wid : 0, 0, 0);
+  markStatsDirty(p.id);
+}
 // 荆棘反伤：victim 有 THORNS 时按比例反弹给 attacker
 double World::thornsReflect(Entity& victim, Entity& attacker, double dmg) {
   for (const auto& b : victim.buffs) {
@@ -417,7 +439,9 @@ double World::thornsReflect(Entity& victim, Entity& attacker, double dmg) {
         if (attacker.kind == EntityKind::Player) markStatsDirty(attacker.id);
         pushEvent(proto::EVT_DAMAGE, attacker.wid, (uint32_t)reflect, 0, 0);
         cancelCastOnHit(attacker);  // 反伤视为受击：打断施法者前摇
-        if (attacker.hp <= 0) attacker.hp = 1;  // 演示保护：玩家不死亡
+        if (attacker.hp <= 0 && attacker.kind == EntityKind::Player) {
+          killPlayer(attacker, &victim);
+        }
       }
       return reflect;
     }
@@ -463,7 +487,7 @@ Entity* World::spawnMonster(const std::string& type, double x, double z) {
     for (int k = 0; k < 16; k++) {
       double a = (double)k / 16.0 * 6.28318;
       double px = x + std::cos(a) * r, pz = z + std::sin(a) * r;
-      if (terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
+      if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
     }
   }
   Entity m = makeMonster(nextEntityId("m"), type);
@@ -564,7 +588,7 @@ void World::spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold) {
     for (int k = 0; k < 16; k++) {
       double a = (double)k / 16.0 * 6.28318;
       double px = x + std::cos(a) * r, pz = z + std::sin(a) * r;
-      if (terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
+      if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
     }
   }
   spawnDrop(sx, sz, itemId, gold);
@@ -846,6 +870,12 @@ static void inputSystem(World& w, double dt) {
   for (const auto& pid : w.players()) {
     Entity* p = w.findEntity(pid);
     if (!p) continue;
+    // 死亡：不移动/不跳跃/不脱战回血（等待复活系统处理）
+    if (p->dead) {
+      p->input.targetVX = p->input.targetVZ = 0;
+      p->input.moveX = p->input.moveZ = 0;
+      continue;
+    }
     // 眩晕：无法移动/跳跃（控制状态；霸体可免疫 STUN 挂载）
     const bool stunned = p->hasBuff((uint8_t)BuffType::STUN);
     // 加速 Buff：比例加成（SPEED>0），与减速叠加
@@ -887,18 +917,59 @@ static void inputSystem(World& w, double dt) {
     if (statsChanged) w.markStatsDirty(p->id);
   }
 }
+// 2.5D 移动：物理积分（含重力/地表高度碰撞）→ 静态地形碰撞（沿轴滑动）→ 贴地重算
+// 客户端预测（predict.js）复刻同一套地形碰撞，保证预测与服务端一致
+static void moveEntityCollide(World& w, Entity& e, double tx, double tz, double dt) {
+  const double ox = e.pos.x, oz = e.pos.z;
+  w.physics().setHorizontalVelocity(e, tx, tz, dt);
+  w.physics().step(e, dt);
+  // 静态地形碰撞：目标位圆盘与不可通行（湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
+  if (w.collision().circleBlocked(e.pos.x, e.pos.z, e.radius)) {
+    w.collision().slideMove(e, ox, oz, e.pos.x, e.pos.z);
+  }
+  // 贴地重算（滑动后地表可能变化）
+  double gy = terrainHeight(e.pos.x, e.pos.z);
+  double foot = gy + e.radius;
+  if (e.pos.y < foot) {
+    e.pos.y = foot;
+    e.vel.y = 0;
+    e.grounded = true;
+  }
+}
 static void moveSystem(World& w, double dt) {
   for (const auto& pid : w.players()) {
     Entity* p = w.findEntity(pid);
-    if (!p) continue;
-    w.physics().setHorizontalVelocity(*p, p->input.targetVX, p->input.targetVZ, dt);
-    w.physics().step(*p, dt);
+    if (!p || p->dead) continue;  // 死亡玩家静止（等待复活）
+    moveEntityCollide(w, *p, p->input.targetVX, p->input.targetVZ, dt);
   }
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (e.kind == EntityKind::Player || !e.active) continue;
-    w.physics().setHorizontalVelocity(e, e.ai.targetVX, e.ai.targetVZ, dt);
-    w.physics().step(e, dt);
+    moveEntityCollide(w, e, e.ai.targetVX, e.ai.targetVZ, dt);
+  }
+  // 实体-实体碰撞（2.5D 圆形分离）：动态实体（玩家/怪物/Boss/NPC）不可互相穿透，
+  // 重叠时沿连线各推开一半；推开后若落入障碍则回退（避免把实体挤进水里/悬崖）。
+  std::vector<std::string> dyn;
+  for (auto& [id, e] : w.entitiesMut()) {
+    (void)id;
+    if (e.kind == EntityKind::Item || !e.active || e.dead) continue;
+    dyn.push_back(id);
+  }
+  for (const auto& id : dyn) {
+    Entity* a = w.findEntity(id);
+    if (!a) continue;
+    auto near = w.aoi().inRange(a->pos.x, a->pos.z, 4.0);
+    for (uint32_t wid : near) {
+      if (wid == a->wid) continue;
+      Entity* b = w.findByWid(wid);
+      if (!b || b->kind == EntityKind::Item || !b->active || b->dead) continue;
+      if (b->wid < a->wid) continue;  // 每对只处理一次
+      const double ax = a->pos.x, az = a->pos.z, bx = b->pos.x, bz = b->pos.z;
+      if (Collision::separate(*a, *b)) {
+        if (w.collision().circleBlocked(a->pos.x, a->pos.z, a->radius)) { a->pos.x = ax; a->pos.z = az; }
+        if (w.collision().circleBlocked(b->pos.x, b->pos.z, b->radius)) { b->pos.x = bx; b->pos.z = bz; }
+      }
+    }
   }
 }
 // 施放系统：推进前摇。前摇到期 → 结算；前摇期间移动意图 → 打断（大型网游标配）
@@ -1015,6 +1086,49 @@ static void respawnSystem(World& w, double) {
       e.aggro.clear();
       w.pushEvent(proto::EVT_RESPAWN, e.wid, 0, 0, 0);
     }
+  }
+}
+// 玩家复活系统：死亡计时到期 → 回安全出生点满状态复活 + EVT_RESPAWN 广播。
+// 复活位置走服务器权威（World 记录待校正玩家，由网络层补发 correction+强制快照）。
+static void playerRespawnSystem(World& w, double) {
+  const auto& cfg = w.config();
+  uint64_t nowMs = w.tickCount() * (uint64_t)cfg.tickMs;
+  for (const auto& pid : w.players()) {
+    Entity* p = w.findEntity(pid);
+    if (!p || !p->dead || p->respawnAtMs == 0) continue;
+    if (nowMs < p->respawnAtMs) continue;
+    // 复活：满血满蓝
+    p->dead = false;
+    p->respawnAtMs = 0;
+    p->hp = p->maxHp;
+    p->mp = p->maxMp;
+    // 找安全复活点：世界中心向外扩散（避开湖泊/河流/悬崖）
+    double sx = 0, sz = 0;
+    bool found = false;
+    Mulberry32 rng((uint32_t)(p->wid * 2654435761u) ^ (uint32_t)cfg.worldSeed);
+    for (double r = 0; r <= 50 && !found; r += 2) {
+      for (int k = 0; k < 16 && !found; k++) {
+        double a = rng.next() * 6.28318;
+        double px = std::cos(a) * r, pz = std::sin(a) * r;
+        if (w.collision().canStand(px, pz, p->radius)) { sx = px; sz = pz; found = true; }
+      }
+    }
+    if (!found) { sx = 0; sz = 0; }
+    p->pos.x = sx;
+    p->pos.z = sz;
+    p->pos.y = terrainHeight(sx, sz) + p->radius + 0.3;
+    p->vel = {0, 0, 0};
+    p->grounded = true;
+    p->input.targetVX = p->input.targetVZ = 0;
+    p->input.moveX = p->input.moveZ = 0;
+    // 清仇恨：其他怪物不再锁定复活后的玩家旧位置
+    for (auto& [id, e] : w.entitiesMut()) {
+      (void)id;
+      e.aggro.erase(p->wid);
+    }
+    w.pushEvent(proto::EVT_RESPAWN, p->wid, 0, 0, 0);
+    w.markStatsDirty(p->id);
+    w.pushRespawnedPlayer(p->id);  // 网络层补发校正+强制快照（防作弊重置）
   }
 }
 // ---------------- tick ----------------

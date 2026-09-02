@@ -52,6 +52,10 @@ let toastTimer = null;
 let learnedSkills = [];   // [{id, cdMs}] 已学技能 + 剩余冷却（ms）
 let myBuffs = [];         // [{skillId, type, value, remainSec}]
 let skillCastFeedback = null; // 最近一次技能施放反馈（用于日志/提示）
+// 玩家死亡/复活状态（服务端权威，EVT_DEATH/EVT_RESPAWN 驱动）
+let selfDead = false;
+let deathAtMs = 0;
+const PLAYER_RESPAWN_SEC = 8; // 与服务端 config.h playerRespawnSec 一致
 // 技能栏展示映射：slot(1-8) -> skillId（按技能 ID 升序填槽）
 let skillBar = [];        // skillId 数组（与技能栏 UI 顺序一致）
 // 技能槽位 → 热键标签（与 input.js 的 16 槽映射一致）
@@ -191,9 +195,30 @@ async function enterWorld(token, username, worldMeta) {
   };
   // 世界共享事件（S2C_EVENT）：伤害/死亡/复活/技能
   net.onEvent = (ev) => {
-    if (ev.evtType === 2 && ev.wid === net.selfWid) {
-      $('hud-conn').textContent = '你被击倒了（已回血保护）';
-      $('hud-conn').className = 'hud-chip warn';
+    // 死亡：自身 → 死亡遮罩 + 输入门控；其他实体 → 死亡动画（淡出+下沉）
+    if (ev.evtType === EVT.DEATH) {
+      if (ev.wid === net.selfWid) {
+        selfDead = true;
+        deathAtMs = performance.now();
+        const de = $('death-overlay');
+        if (de) de.classList.remove('hidden');
+        $('hud-conn').textContent = '你被击倒了';
+        $('hud-conn').className = 'hud-chip warn';
+      } else if (entities) {
+        entities.applyDeath(ev.wid);
+      }
+    } else if (ev.evtType === EVT.RESPAWN) {
+      if (ev.wid === net.selfWid) {
+        selfDead = false;
+        deathAtMs = 0;
+        const de = $('death-overlay');
+        if (de) de.classList.add('hidden');
+        $('hud-conn').textContent = '已连接';
+        $('hud-conn').className = 'hud-chip on';
+        toast('你已复活', 'ok');
+      } else if (entities) {
+        entities.applyRespawn(ev.wid);
+      }
     }
     // 技能简易效果（前摇圈 / AOE 范围圈 / 打断闪红）
     if (ev.evtType === EVT.SKILL_CASTING) {
@@ -599,23 +624,35 @@ function loop(now) {
   const dt = Math.min(0.1, rawDt);            // 插值/HUD 用 dt（防止爆炸）
   lastT = now;
 
-  // 1) 读取输入 → 本地预测即时生效
+  // 1) 读取输入 → 本地预测即时生效（死亡时门控：不移动/不发送/不施放）
   const mv = input.moveVector();
   inputAcc += dt;
   // 与服务端同频（20Hz）发送并推进预测
   if (inputAcc >= 0.05) {
     inputAcc -= 0.05;
     const jump = input.takeJump();
-    predictor.applyInput(mv.x, mv.z, jump);
-    const pred = predictor.predicted();
-    net.sendInput(mv.x, mv.z, jump, pred);
+    if (selfDead) {
+      // 死亡：丢弃待处理输入（避免复活后残留触发）
+      input.takeAttack(); input.takeSkillSlot();
+      input.takeInvToggle(); input.takeShop(); input.takePickup();
+    } else {
+      predictor.applyInput(mv.x, mv.z, jump);
+      const pred = predictor.predicted();
+      net.sendInput(mv.x, mv.z, jump, pred);
+    }
   }
 
   // 2) 推进预测（内部按 50ms 步进；用真实 dt 保持与服务端实时同步），插值位置驱动自身渲染
   const selfPos = predictor.step(rawDt);
   net.setRef(selfPos.x, selfPos.y, selfPos.z); // 二进制相对坐标解码基准
   entities.setSelf(selfPos.x, selfPos.y, selfPos.z);
-
+  // 死亡遮罩倒计时（与服务端复活计时对齐）
+  if (selfDead) {
+    const remain = Math.max(0, PLAYER_RESPAWN_SEC - (performance.now() - deathAtMs) / 1000);
+    const de = $('death-count');
+    if (de) de.textContent = remain.toFixed(1) + 's';
+  }
+  if (!selfDead) {
   // 攻击：J 键 → 攻击范围内最近的世界怪物/Boss（服务端权威校验）
   if (input.takeAttack()) {
     const target = findNearestAttackable(selfPos.x, selfPos.z);
@@ -648,12 +685,13 @@ function loop(now) {
   if (input.takePickup()) pickupNearbyDrops(selfPos.x, selfPos.z, 2.2);
   // 自动拾取：走到掉落物上自动捡起（服务端校验距离）
   autoPickup(selfPos.x, selfPos.z, 1.9);
+  }
 
   // 3) 其他实体插值
   entities.update(dt);
   // 地形流式加载（俯视 MMO：仅加载玩家可见范围内区块，超出卸载）+ 绘制
   renderer.updateTerrain(selfPos.x, selfPos.z);
-  renderer.setSelf(selfPos.x, selfPos.y, selfPos.z, net.selfName);
+  renderer.setSelf(selfPos.x, selfPos.y, selfPos.z, net.selfName, selfDead);
   renderer.setEntities(entities.forRender());
   renderer.draw();
 

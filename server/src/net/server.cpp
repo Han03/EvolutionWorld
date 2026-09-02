@@ -134,6 +134,23 @@ void GameServer::run() {
         }
       }
       world_.tick();
+      // 玩家复活：网络层补发 SELF 校正 + 强制校准快照（防作弊重置，避免复活瞬移被误判）
+      for (const std::string& rid : world_.takeRespawnedPlayers()) {
+        Entity* p = world_.findEntity(rid);
+        if (!p) continue;
+        ac_.reset(*p);
+        p->violations = 0;
+        p->acceptedInputs = 0;
+        p->rateDrops = 0;
+        int wfd = fdOfPlayer(p->id);
+        if (wfd >= 0) {
+          auto it = conns_.find(wfd);
+          if (it != conns_.end() && it->second.phase == Conn::Ws) {
+            sendTo(it->second, netcode_.correctionFrame(*p, "player_respawn", (uint32_t)world_.tickCount()));
+            netcode_.requestResync(p->id);
+          }
+        }
+      }
       broadcastTick();
       // 周期落玩家存档（每 100 tick ≈ 5s 一次；写失败由 Store 降级，不影响功能）
       if ((world_.tickCount() % 100) == 0) periodicSavePlayers();

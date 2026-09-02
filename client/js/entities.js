@@ -8,9 +8,10 @@
 import { KIND } from './protocol.js';
 const KIND_NAME = { [KIND.PLAYER]: 'player', [KIND.MONSTER]: 'monster', [KIND.NPC]: 'npc', [KIND.ITEM]: 'item' };
 export class EntityViewManager {
-  constructor(selfWid) {
+  // 死亡动画时长（ms）：淡出 + 下沉
+  DEATH_ANIM_MS = 1100;  constructor(selfWid) {
     this.selfWid = selfWid;
-    this.views = new Map(); // wid -> {wid,kind,name,x,y,z,tx,ty,tz,state}
+    this.views = new Map(); // wid -> {wid,kind,name,x,y,z,tx,ty,tz,state,dying,dyingAt}
   }
   _kindName(kind) { return KIND_NAME[kind] || 'monster'; }
   /** ENTER：实体进入视野 */
@@ -24,9 +25,33 @@ export class EntityViewManager {
       }
     }
   }
-  /** LEAVE：实体离开视野 */
+  /** LEAVE：实体离开视野（死亡动画中的实体延迟到动画播完再移除） */
   applyLeave(wids) {
-    for (const wid of wids) this.views.delete(wid);
+    const now = performance.now();
+    for (const wid of wids) {
+      const v = this.views.get(wid);
+      if (v && v.dying && now - v.dyingAt < this.DEATH_ANIM_MS) {
+        v.leavePending = true; // 动画播完后移除
+        continue;
+      }
+      this.views.delete(wid);
+    }
+  }
+  /** 死亡：进入死亡动画状态（渲染层播放淡出+下沉） */
+  applyDeath(wid) {
+    const v = this.views.get(wid);
+    if (!v) return;
+    v.dying = true;
+    v.dyingAt = performance.now();
+    v.dieY = v.y; // 记录死亡时高度，用于下沉动画
+  }
+  /** 复活：清除死亡动画状态（恢复可见；Boss/其他玩家复活时服务端广播） */
+  applyRespawn(wid) {
+    const v = this.views.get(wid);
+    if (!v) return;
+    v.dying = false;
+    v.dyingAt = 0;
+    v.leavePending = false;
   }
   /** UPDATE：增量更新（相对坐标已在协议层解码为绝对） */
   applyUpdate(updates) {
@@ -70,11 +95,17 @@ export class EntityViewManager {
       state: e.state,
     });
   }
-  /** 每帧插值（简单 lerp，朝向目标平滑） */
+  /** 每帧插值（简单 lerp，朝向目标平滑）；死亡动画播完且收到过 LEAVE 才移除
+   *  （仍在世界的实体（死亡 Boss/其他玩家）保持隐形视图，EVT_RESPAWN 时恢复可见） */
   update(dt) {
     const k = 9;
     const f = Math.min(1, dt * k);
-    for (const v of this.views.values()) {
+    const now = performance.now();
+    for (const [wid, v] of this.views) {
+      if (v.dying && v.leavePending && now - v.dyingAt >= this.DEATH_ANIM_MS) {
+        this.views.delete(wid);
+        continue;
+      }
       v.x += (v.tx - v.x) * f;
       v.y += (v.ty - v.y) * f;
       v.z += (v.tz - v.z) * f;
@@ -93,9 +124,14 @@ export class EntityViewManager {
   /** 供渲染器每帧读取（返回普通对象数组） */
   forRender() {
     const out = [];
+    const now = performance.now();
     for (const v of this.views.values()) {
       if (v.wid === this.selfWid) continue;
-      out.push({ wid: v.wid, kind: v.kind, name: v.name, x: v.x, y: v.y, z: v.z, state: v.state });
+      out.push({
+        wid: v.wid, kind: v.kind, name: v.name,
+        x: v.x, y: v.y, z: v.z, state: v.state,
+        dying: v.dying || false, dyingAt: v.dyingAt || 0, dieY: v.dieY || v.y,
+      });
     }
     return out;
   }

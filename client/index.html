@@ -87,6 +87,12 @@
   </div>
   <!-- 提示浮层 -->
   <div id="toast" class="toast"></div>
+  <!-- 死亡遮罩：玩家被击杀后显示复活倒计时（EVT_DEATH/EVT_RESPAWN 驱动） -->
+  <div id="death-overlay" class="death-overlay hidden">
+    <div class="death-title">你已阵亡</div>
+    <div class="death-sub">正在等待复活…</div>
+    <div id="death-count" class="death-count">8.0s</div>
+  </div>
   <!-- 协议透传转换监控：二进制帧 → 可读对象 实时解码展示 -->
   <div id="proto-panel">
     <div class="proto-head">协议透传 <span id="proto-bps">-</span></div>

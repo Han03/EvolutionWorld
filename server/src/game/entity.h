@@ -30,6 +30,7 @@ struct Entity {
   double radius = 0.5;
   bool grounded = false;
   bool active = true;
+  bool dead = false;   // 死亡状态（玩家死亡后复活等待；怪物用 active=false 表达死亡）
   // 玩家扩展字段
   std::string username;
   // 显示名（世界实体：怪物/Boss/NPC 用）

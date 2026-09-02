@@ -10,7 +10,7 @@
  *  - 收到服务端 correction 时把预测状态硬回退（rollback）到权威位置。
  *  - 渲染层在两帧预测状态之间线性插值，保证 60fps 视觉平滑。
  */
-import { terrainHeight } from './terrain.js';
+import { terrainHeight, terrainBlocked } from './terrain.js';
 
 const CFG = {
   GRAVITY: -9.81,
@@ -21,6 +21,35 @@ const CFG = {
   RADIUS: 0.55,
   TICK_MS: 50, // 与服务端 tick 对齐
 };
+// 2.5D 静态地形碰撞（与服务端 collision.cpp 逐位一致）：
+// 圆盘（半径 r）是否与不可通行（湖泊/河流/悬崖/陡坡）重叠：中心 + 圆周 8 点采样
+function circleBlocked(x, z, r) {
+  if (terrainBlocked(x, z)) return true;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    if (terrainBlocked(x + r * Math.cos(a), z + r * Math.sin(a))) return true;
+  }
+  return false;
+}
+// 沿轴滑动回退（与服务端 Collision::slideMove 一致）：实体已从 (ox,oz) 移到 (nx,nz)，
+// 与障碍重叠时逐轴尝试，模拟沿墙滑动
+function slideMove(e, ox, oz, nx, nz, r) {
+  if (!circleBlocked(nx, nz, r)) { e.x = nx; e.z = nz; return false; }
+  const okX = !circleBlocked(nx, oz, r);
+  const okZ = !circleBlocked(ox, nz, r);
+  if (okX && okZ) {
+    if (Math.abs(nx - ox) >= Math.abs(nz - oz)) e.x = nx;
+    else e.z = nz;
+  } else if (okX) {
+    e.x = nx;
+  } else if (okZ) {
+    e.z = nz;
+  } else {
+    e.x = ox;
+    e.z = oz;
+  }
+  return true;
+}
 
 export class Predictor {
   constructor() {
@@ -144,7 +173,16 @@ export class Predictor {
     p.y += v.y * dt;
     p.z += v.z * dt;
 
-    // 7) 地表碰撞（同一张 SDF 地形）
+    // 7) 2.5D 静态地形碰撞：圆盘与不可通行（湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
+    //    （与服务端 moveEntityCollide 逐位一致，保证预测不被服务端回退）
+    {
+      const ox = p.x, oz = p.z;
+      if (circleBlocked(p.x, p.z, CFG.RADIUS)) {
+        slideMove(p, ox, oz, p.x, p.z, CFG.RADIUS);
+      }
+    }
+
+    // 8) 地表碰撞（滑动后重新贴地，与服务端一致）
     const gy = terrainHeight(p.x, p.z);
     const foot = gy + CFG.RADIUS;
     if (p.y <= foot) {

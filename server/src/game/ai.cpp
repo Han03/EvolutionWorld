@@ -112,7 +112,7 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         w.markStatsDirty(target->id);
         w.thornsReflect(*target, e, dmg); // 荆棘反伤（玩家有 THORNS Buff 时反弹给怪物）
         w.cancelCastOnHit(*target);        // 受击打断玩家前摇
-        if (target->hp <= 0) target->hp = 1; // 玩家不死亡（演示保护）
+        if (target->hp <= 0 && target->kind == EntityKind::Player) w.killPlayer(*target, &e); // 玩家死亡→复活
       }
     } else {
       // 追击
@@ -256,7 +256,7 @@ void tickBossAi(World& w, Entity& e, double dt) {
       w.markStatsDirty(target->id);
       w.thornsReflect(*target, e, dmg); // 荆棘反伤
       w.cancelCastOnHit(*target);        // 受击打断玩家前摇
-      if (target->hp <= 0) target->hp = 1;
+      if (target->hp <= 0 && target->kind == EntityKind::Player) w.killPlayer(*target, &e); // 玩家死亡→复活
       // 范围技能（周期性 AOE，全区广播）
       e.bossSkillCd -= dt;
       if (e.bossSkillCd <= 0) {
@@ -273,7 +273,7 @@ void tickBossAi(World& w, Entity& e, double dt) {
             w.markStatsDirty(pl->id);
             w.thornsReflect(*pl, e, sdmg); // 荆棘反伤
             w.cancelCastOnHit(*pl);      // 受击打断玩家前摇
-            if (pl->hp <= 0) pl->hp = 1;
+            if (pl->hp <= 0) w.killPlayer(*pl, &e); // 玩家死亡→复活
           }
         }
       }

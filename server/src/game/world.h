@@ -7,6 +7,7 @@
 #include "entity.h"
 #include "chunk.h"
 #include "physics.h"
+#include "collision.h"
 #include "aoi.h"
 #include "items.h"
 #include "util/random.h"
@@ -56,6 +57,7 @@ public:
   void addSystem(int priority, const std::string& name, SystemFn fn);
   const Config& config() const { return cfg_; }
   Physics& physics() { return physics_; }
+  Collision& collision() { return collision_; }
   ChunkManager& chunks() { return chunks_; }
   uint64_t tickCount() const { return tick_; }
   // ---- 物品/属性/商店/掉落（大型网游规模） ----
@@ -135,6 +137,13 @@ public:
   Json entitiesStatus(double px, double pz, double range, int limit) const;
   // 取走本 tick 产生的共享事件（netcode 全区广播用，调用后清空）
   std::vector<SharedEvent> takeSharedEvents();
+  // 本 tick 刚复活的玩家（网络层补发校正+强制快照，防作弊重置），调用后清空
+  void pushRespawnedPlayer(const std::string& pid) { respawnedThisTick_.push_back(pid); }
+  std::vector<std::string> takeRespawnedPlayers() {
+    auto out = std::move(respawnedThisTick_);
+    respawnedThisTick_.clear();
+    return out;
+  }
   // 构建世界 Boss 全局共享状态帧（force=true 强制；false 且无变化则返回空）
   std::string bossFrame(bool force);
   // 存活 Boss 数量
@@ -145,6 +154,8 @@ public:
   void pushEvent(uint8_t type, uint32_t wid, uint32_t b, int32_t x, int32_t z);
   void markBossDirty() { bossDirty_ = true; }
   void addAliveBoss(int d) { aliveBoss_ = (uint32_t)((int)aliveBoss_ + d); }
+  // 玩家死亡统一处理（hp=0+死亡标记+复活计时+EVT_DEATH 广播），供普攻/技能/Boss/反伤复用
+  void killPlayer(Entity& p, Entity* killer);
 private:
   void addEntity(Entity&& e);
   // 怪物死亡掉落：金币 + 按概率表掉物品（生成地面掉落物实体）
@@ -164,6 +175,7 @@ private:
   const Config& cfg_;
   GameData data_;
   Physics physics_;
+  Collision collision_;
   ChunkManager chunks_;
   AoiGrid aoi_;
   std::unordered_map<std::string, Entity> entities_;
@@ -172,6 +184,8 @@ private:
   std::vector<std::pair<int, std::pair<std::string, SystemFn>>> systems_;
   // 世界共享状态（Boss 全局广播 + 战斗事件队列）
   std::vector<SharedEvent> sharedEvents_;
+  // 本 tick 刚复活的玩家（需补发校正）
+  std::vector<std::string> respawnedThisTick_;
   // 需要补发 S2C_STATS 的玩家（属性/血量/蓝量变化）
   std::unordered_set<std::string> statsDirty_;
   // 需要补发 S2C_INVENTORY 的玩家（背包/金币变化）
