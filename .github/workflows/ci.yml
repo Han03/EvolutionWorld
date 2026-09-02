@@ -60,10 +60,14 @@ jobs:
 
       - name: Health check
         run: |
+          # Get WSL2 instance IP (localhost may be shadowed by wslrelay or other processes on Windows)
+          $wslIp = (wsl -d Ubuntu -- bash -c "hostname -I | cut -d' ' -f1").Trim()
+          if (-not $wslIp) { throw "Failed to get WSL2 IP" }
+          Write-Output "Using WSL2 IP for health check: $wslIp"
           $ok = $false
           for ($i = 0; $i -lt 20; $i++) {
             try {
-              $r = Invoke-RestMethod -Uri "http://localhost:3000/api/health" -TimeoutSec 3
+              $r = Invoke-RestMethod -Uri "http://${wslIp}:3000/api/health" -TimeoutSec 3
               if ($r.ok) { Write-Output "HEALTH OK: $($r | ConvertTo-Json -Compress)"; $ok = $true; break }
             } catch {}
             Start-Sleep -Seconds 3
