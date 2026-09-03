@@ -86,81 +86,35 @@ double riverBand(double x, double z) {
   double b2 = 1.0 - std::abs(x - xc) / kRiverHalfWidth;
   return std::max(0.0, std::max(b1, b2));
 }
-// ==================== 路径地图空洞 mask（确定性，与 JS terrainVoid 逐位一致） ====================
-// 可到达区域 = 主城圆盘 + 6 条主干道走廊（带分支）+ 随机空地；其余格为空洞。
-static const int kMaskN = 256;          // 覆盖世界 [-128,128)
-static const int kMaskOff = 128;
-static std::vector<uint8_t> g_walk;     // 1=可通行（懒生成缓存）
-static bool g_walkInit = false;
-static void ensureMask() {
-  if (g_walkInit) return;
-  g_walkInit = true;
-  g_walk.assign((size_t)kMaskN * kMaskN, 0);
-  auto markCircle = [&](double cx, double cz, double r) {
-    int x0 = std::max(0, (int)std::floor(cx - r) + kMaskOff);
-    int x1 = std::min(kMaskN - 1, (int)std::floor(cx + r) + kMaskOff);
-    int z0 = std::max(0, (int)std::floor(cz - r) + kMaskOff);
-    int z1 = std::min(kMaskN - 1, (int)std::floor(cz + r) + kMaskOff);
-    double r2 = r * r;
-    for (int gz = z0; gz <= z1; gz++) {
-      for (int gx = x0; gx <= x1; gx++) {
-        double dx = (double)(gx - kMaskOff) + 0.5 - cx;
-        double dz = (double)(gz - kMaskOff) + 0.5 - cz;
-        if (dx * dx + dz * dz <= r2) g_walk[(size_t)gz * kMaskN + (size_t)gx] = 1;
-      }
-    }
-  };
-  const double TWO_PI = 6.283185307179586;
-  // 主城（出生地 / 商店 / 城镇）：中心圆盘
-  markCircle(0.0, 0.0, 9.0);
-  // 主干道：6 条，从中心向外随机游走（确定性）
-  const int ROADS = 6;
-  for (int i = 0; i < ROADS; i++) {
-    double baseAng = i * (TWO_PI / ROADS) + (hash2i(i * 7 + 1, 13) - 0.5) * 0.5;
-    double px = 0.0, pz = 0.0;
-    double dir = baseAng;
-    int steps = 30 + (int)std::floor(hash2i(i * 3 + 5, 29) * 8.0); // 30..37
-    const double stepLen = 2.0;
-    for (int s = 0; s < steps; s++) {
-      // 方向扰动（确定性）
-      double wob = (hash2i(i * 101 + s * 13 + 3, s * 7 + 11) - 0.5) * 0.9;
-      dir += wob;
-      // 轻微拉回主方向，防止漂移过远
-      double da = baseAng - dir;
-      while (da > M_PI) da -= TWO_PI;
-      while (da < -M_PI) da += TWO_PI;
-      dir += da * 0.10;
-      px += std::cos(dir) * stepLen;
-      pz += std::sin(dir) * stepLen;
-      markCircle(px, pz, 3.6);
-      // 分支：每 7 步分叉一条短支路
-      if (s % 7 == 4) {
-        double bdir = dir + (hash2i(i * 17 + s, s * 3 + 2) - 0.5) * 2.2;
-        double bx = px, bz = pz;
-        for (int bs = 0; bs < 12; bs++) {
-          bdir += (hash2i(i * 31 + bs, s + bs * 5) - 0.5) * 0.7;
-          bx += std::cos(bdir) * 1.8;
-          bz += std::sin(bdir) * 1.8;
-          markCircle(bx, bz, 2.8);
-        }
-      }
-    }
-  }
-  // 随机空地（偶尔保留的开阔区）
-  const int G = 16;
-  for (int i = 0; i < G; i++) {
-    double ax = (hash2i(i * 131 + 7, 71) - 0.5) * 220.0;
-    double az = (hash2i(i * 211 + 3, 97) - 0.5) * 220.0;
-    double r = 5.5 + hash2i(i * 37, i * 19 + 5) * 6.5; // 5.5..12
-    markCircle(ax, az, r);
-  }
+// ==================== 可通行 mask（数据驱动：世界初始化执行器生成 / 数据库加载） ====================
+// 可到达区域 = 主城 + 主干道路网（BFS 裁剪保证全图连通），每格 1=可通行 / 0=空洞。
+// 代码不再程序化生成布局：mask 由 WorldInitializer 生成后 terrainSetWalkMask 安装，或从数据库加载。
+static std::vector<uint8_t> g_walk;   // 1=可通行（数据驱动）
+static int g_walkN = 0;               // mask 边长（格）
+static int g_walkOff = 0;             // mask 原点偏移（世界坐标 -off 起）
+static bool g_walkReady = false;      // mask 是否已安装且尺寸自洽
+void terrainSetWalkMask(std::vector<uint8_t> mask, int n, int off) {
+  g_walkReady = (n > 0 && mask.size() == (size_t)n * (size_t)n);
+  g_walkN = n;
+  g_walkOff = off;
+  g_walk = std::move(mask);
+}
+bool terrainWalkMaskReady() { return g_walkReady; }
+int  terrainWalkMaskN() { return g_walkN; }
+int  terrainWalkMaskOff() { return g_walkOff; }
+const std::vector<uint8_t>& terrainWalkMask() { return g_walk; }
+// 自然地形阻挡：仅深水 / 悬崖（不含空洞 mask）。世界初始化生长可通行区域时判定“天然干地”。
+bool terrainNaturalBlocked(double x, double z) {
+  if (terrainHeight(x, z) < kWaterLevel) return true;   // 深水（湖泊/河流床）
+  if (terrainSlope(x, z) > kCliffSlope) return true;     // 悬崖/陡坡
+  return false;
 }
 bool terrainVoid(double x, double z) {
-  ensureMask();
-  int gx = (int)std::floor(x) + kMaskOff;
-  int gz = (int)std::floor(z) + kMaskOff;
-  if (gx < 0 || gx >= kMaskN || gz < 0 || gz >= kMaskN) return true; // 超出 mask 范围视为空洞
-  return g_walk[(size_t)gz * kMaskN + (size_t)gx] == 0;
+  if (!g_walkReady) return true;  // mask 未就绪：一律视为空洞（阻挡），等待世界初始化/加载
+  int gx = (int)std::floor(x) + g_walkOff;
+  int gz = (int)std::floor(z) + g_walkOff;
+  if (gx < 0 || gx >= g_walkN || gz < 0 || gz >= g_walkN) return true; // 超出 mask 范围视为空洞
+  return g_walk[(size_t)gz * g_walkN + (size_t)gx] == 0;
 }
 
 // ==================== 地形编辑器编辑层（稀疏格子覆盖） ====================

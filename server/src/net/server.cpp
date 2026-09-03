@@ -5,6 +5,7 @@
 #include "net/protocol.h"
 #include "game/console.h"
 #include "game/terrain.h"
+#include "util/base64.h"
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
@@ -322,6 +323,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         if (hasSave) {
           player->hp = ps.hp > 0 && ps.hp <= player->maxHp ? ps.hp : player->maxHp;
           player->level = ps.level;
+          player->pl.exp = ps.exp;
           player->pl.gold = ps.gold;
           applySaveItems(world_, *player, ps); // 恢复背包/装备（JSON）
           world_.recomputeStats(*player);
@@ -406,6 +408,19 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     } catch (...) {}
     Json r = Json::object(); r["ok"] = true;
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // GET /api/me?token=xxx -> {ok, username} 或 401 {ok:false, error:"auth"}
+  // 只读校验令牌（无任何副作用）：供客户端刷新页面时判断已保存的会话是否仍有效，
+  // 避免编辑器/游戏拿着失效令牌进入界面后才在写请求上失败。
+  if (path == "/api/me" && req.method == "GET") {
+    Json r = Json::object();
+    int code = 401;
+    std::string username = auth_.verifyToken(urlDecode(queryParam(req.query, "token")));
+    if (username.empty()) { r["ok"] = false; r["error"] = "auth"; }
+    else { r["ok"] = true; r["username"] = username; code = 200; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Unauthorized", "application/json", r.dump()));
     c.closeAfterFlush = true;
     return;
   }
@@ -578,6 +593,50 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     c.closeAfterFlush = true;
     return;
   }
+  // ---- 可通行 mask 下发（数据驱动：客户端不再程序化生成，与服务端同源）----
+  // GET /api/terrain/mask -> {ok,n,off,b64}；b64 为 n*n 字节 mask（1=可通行）的 base64
+  if (path == "/api/terrain/mask" && req.method == "GET") {
+    Json r = Json::object();
+    if (terrainWalkMaskReady()) {
+      const std::vector<uint8_t>& m = terrainWalkMask();
+      r["ok"] = true;
+      r["n"] = (int64_t)terrainWalkMaskN();
+      r["off"] = (int64_t)terrainWalkMaskOff();
+      r["b64"] = base64Encode(m.data(), m.size());
+    } else {
+      r["ok"] = false;
+    }
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // ---- 重新执行世界初始化（世界编辑器）----
+  // POST /api/world/reinit {token} -> 重新生成连通地形+主城+分组生物投放；
+  //   数据库模式同步落库；热重载世界生物；返回新 mask + 出生点供编辑器刷新。
+  if (path == "/api/world/reinit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (world_.runWorldInit()) {
+        if (store_.worldDataPersistent()) world_.saveWorldToStore(store_);
+        world_.reseedCreatures();   // 清空旧生物并按新出生点重建
+        const std::vector<uint8_t>& m = terrainWalkMask();
+        r["ok"] = true;
+        r["n"] = (int64_t)terrainWalkMaskN();
+        r["off"] = (int64_t)terrainWalkMaskOff();
+        r["b64"] = base64Encode(m.data(), m.size());
+        r["count"] = (int64_t)world_.spawns().size();
+        r["spawns"] = Json::parse(world_.spawns().toJson())["spawns"];
+        code = 200;
+      } else { r["error"] = "worldinit failed"; }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
   if (path == "/api/terrain/edit" && req.method == "GET") {
     Json r = Json::object();
     r["ok"] = true;
@@ -617,6 +676,67 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
           r["count"] = (int64_t)terrainEditSize();
           code = 200;
         } else { r["error"] = "bad edit"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+
+  // ---- 游戏数据接口（物品/生物配置：客户端动态加载 + 编辑器读写） ----
+  // GET: 返回完整物品表与生物表（公开只读，游戏客户端启动时拉取，替换静态镜像）
+  if (path == "/api/gamedata" && req.method == "GET") {
+    Json r = Json::object();
+    r["ok"] = true;
+    try {
+      r["items"] = Json::parse(world_.data().itemsToJson());
+      r["monsters"] = Json::parse(world_.data().monstersToJson());
+    } catch (...) {
+      r["items"] = Json::array();
+      r["monsters"] = Json::object();
+    }
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存物品配置 {token, items:[...]} -> 热替换内存 + 持久化 data/items.json
+  if (path == "/api/items/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("items") || in.at("items").type() != Json::Type::Array) {
+        r["error"] = "items array required";
+      } else {
+        if (world_.applyItems(in.at("items").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.data().items().size();
+          code = 200;
+        } else { r["error"] = "bad items"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存生物配置 {token, monsters:{...}} -> 热替换内存 + 持久化 data/monsters.json + 热重载世界生物
+  if (path == "/api/monsters/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("monsters") || in.at("monsters").type() != Json::Type::Object) {
+        r["error"] = "monsters object required";
+      } else {
+        if (world_.applyMonsters(in.at("monsters").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.data().monsters().size();
+          code = 200;
+        } else { r["error"] = "bad monsters"; }
       }
     } catch (...) { r["error"] = "bad request"; }
     enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
@@ -1127,6 +1247,7 @@ void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
   j["px"] = in.px;
   j["py"] = in.py;
   j["pz"] = in.pz;
+  ac_.setBypass(world_.testFlags().antiCheatBypass);  // 测试模式：控制台可全局关闭防作弊校验
   AntiCheatResult res = ac_.process(*p, j, steadyMs());
   if (res.kick) {
     sendTo(c, proto::kick(res.reason));
@@ -1245,6 +1366,7 @@ void GameServer::savePlayerToStore(const Entity& e) {
   ps.x = (float)e.pos.x; ps.y = (float)e.pos.y; ps.z = (float)e.pos.z;
   ps.hp = (float)e.hp;
   ps.level = e.level;
+  ps.exp = e.pl.exp;
   ps.gold = e.pl.gold;
   ps.equipJson = serializeEquip(e.pl.equip);
   ps.inventoryJson = serializeInventory(e.pl.inventory);

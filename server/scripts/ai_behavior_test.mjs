@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
- * ai_behavior_test.mjs - 验证新 AI 框架（怪物仇恨追击 + 攻击 + Boss 追击）
+ * ai_behavior_test.mjs - 验证 AI 框架（怪物仇恨追击 + 攻击）——确定性测试
  * 1) 登录玩家，连接二进制 WS
- * 2) 解析 HELLO/SNAPSHOT/ENTER/UPDATE/SELF 帧，跟踪最近怪物与自身权威位置
- * 3) 走向怪物 → 观察其进入仇恨后追击（向玩家移动）并攻击（S2C_EVENT DAMAGE 命中自己）
- * 判定：能观察到 追击 或 攻击 任一行为即 PASS
+ * 2) 解析 HELLO/SNAPSHOT/ENTER/UPDATE/SELF/EVENT 帧，跟踪目标怪物与自身权威位置
+ * 3) anticheat off + monsterpause off（确保怪物活跃、传送不被轨迹校验误判）
+ * 4) 传送贴到最近怪物 ~3m（进入仇恨范围 10m）；视野内无怪物则在身边 spawn 一只（确定性兜底）
+ *    → 怪物必然仇恨 → 追击(向玩家靠近) + 攻击(EVT_DAMAGE 命中自己)
+ * 判定：观察到 追击 或 攻击 任一行为即 PASS（退出码 0），否则 FAIL（退出码 1）
+ *
+ * 说明：用「传送贴怪 / 生成怪物」替代原「缓慢走向怪物 + 依赖怪物随机游走进入仇恨」的
+ *       不可预测流程——怪物一旦处于仇恨范围内必然追击并攻击，秒级确定性触发。
  */
-import { encodeInput, parseS2C, MSG, EVT, Reader } from '../../client/js/protocol.js';
+import { encodeInput, parseS2C, MSG, EVT, KIND, Reader } from '../../client/js/protocol.js';
 const BASE = 'http://localhost:3000';
 const WS = 'ws://localhost:3000/ws';
 const UN = 'aibeh' + Math.floor(Math.random() * 100000);
@@ -42,27 +47,39 @@ const known = new Map();
 async function main() {
   await post('/api/register', { username: UN, password: 'pass1234' }).catch(() => {});
   const j = await post('/api/login', { username: UN, password: 'pass1234' });
-  const ws = new WebSocket(WS + '?token=' + j.token);
+  const token = j.token;
+  const consoleCmd = async (command) => {
+    const r = await fetch(BASE + '/api/console', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, command }),
+    });
+    return r.json().catch(() => ({ ok: false }));
+  };
+  const tp = async (x, z) => {
+    const r = await post('/api/debug/teleport', { token, x, z });
+    myRef = { x: r.x, y: r.y, z: r.z };
+    return r;
+  };
+  const ws = new WebSocket(WS + '?token=' + token);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
   ws.binaryType = 'arraybuffer';
-  let ticks = 0;
-  let started = false;
+
+  let gotHello = false;
   let monsterChase = false;
   let observedAttack = false;
-  let moveTo = { mx: 0, mz: 0 };
-  let lastPrint = 0;
   ws.onmessage = (ev) => {
     for (const f of decodeFrames(new Uint8Array(ev.data))) {
       if (f.type === MSG.S2C_HELLO) {
         const h = parseS2C(f.type, f.payload, 0, 0, 0);
         myWid = h.self.wid;
         myRef = { x: h.self.x, y: h.self.y, z: h.self.z };
+        gotHello = true;
       } else if (f.type === MSG.S2C_SELF) {
         const s = parseS2C(f.type, f.payload, 0, 0, 0);
         myRef = { x: s.x, y: s.y, z: s.z };
       } else if (f.type === MSG.S2C_SNAPSHOT || f.type === MSG.S2C_ENTER) {
         const s = parseS2C(f.type, f.payload, myRef.x, myRef.y, myRef.z);
-        for (const e of s.entities) known.set(e.wid, { kind: e.kind, x: e.x, y: e.y, z: e.z, state: e.state });
+        for (const e of s.entities) known.set(e.wid, { wid: e.wid, kind: e.kind, x: e.x, y: e.y, z: e.z, state: e.state });
       } else if (f.type === MSG.S2C_UPDATE) {
         const s = parseS2C(f.type, f.payload, myRef.x, myRef.y, myRef.z);
         for (const u of s.updates) {
@@ -79,45 +96,69 @@ async function main() {
       }
     }
   };
-  const step = setInterval(() => {
-    ws.send(encodeInput(ticks, moveTo.mx, moveTo.mz, false, myRef.x, myRef.y, myRef.z));
-    ticks++;
-  }, 50);
-  for (let sec = 0; sec < 16; sec++) {
-    await sleep(400);
-    let nearest = null, nd = 1e9;
-    for (const [wid, e] of known) {
-      if (e.kind !== 2) continue;
-      const d = Math.hypot(e.x - myRef.x, e.z - myRef.z);
-      if (d < nd) { nd = d; nearest = { wid, ...e }; }
-    }
-    if (nearest) {
-      const dNow = Math.hypot(nearest.x - myRef.x, nearest.z - myRef.z);
-      if (!started) {
-        started = true;
-        const dx = nearest.x - myRef.x, dz = nearest.z - myRef.z;
-        const dd = Math.hypot(dx, dz);
-        if (dd > 1e-3) moveTo = { mx: dx / dd, mz: dz / dd };
-        console.log(`[ai] 目标怪物 wid=${nearest.wid} 距离=${nd.toFixed(1)}m，开始靠近`);
+  const wait = (condFn, ms) => new Promise(async (res) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { if (condFn()) return res(true); await sleep(50); }
+    res(condFn());
+  });
+  // 静止输入保活（玩家站桩，怪物主动扑上来）；anticheat off 后位置声明不被校验
+  let ticks = 0;
+  const step = setInterval(() => { ws.send(encodeInput(ticks, 0, 0, false, myRef.x, myRef.y, myRef.z)); ticks++; }, 50);
+
+  // 健壮退出：先停输入循环 + 复位防作弊，等 WS 真正 onclose（带超时兜底）再退出，
+  // 避免仍在高频收帧时 process.exit() 触发 libuv UV_HANDLE_CLOSING 断言崩溃。
+  const shutdown = async (code) => {
+    clearInterval(step);
+    await consoleCmd('anticheat on');
+    await new Promise((r) => { ws.onclose = r; try { ws.close(); } catch (_) {} setTimeout(r, 400); });
+    process.exit(code);
+  };
+
+  const nearestMonster = () => [...known.values()]
+    .filter((e) => e.kind === KIND.MONSTER)
+    .sort((a, b) => Math.hypot(a.x - myRef.x, a.z - myRef.z) - Math.hypot(b.x - myRef.x, b.z - myRef.z))[0];
+
+  // ---- 测试环境准备：怪物必须活跃（防御上次遗留），传送不被防作弊误判 ----
+  await consoleCmd('monsterpause off');
+  await consoleCmd('anticheat off');
+  await wait(() => gotHello, 3000);
+
+  // ---- 构造确定性仇恨场景：传送贴怪 / 生成怪物 ----
+  let mm = null;
+  await wait(() => { mm = nearestMonster(); return !!mm; }, 2500);
+  if (mm) {
+    const ang = Math.atan2(mm.z - myRef.z, mm.x - myRef.x);
+    await tp(mm.x - Math.cos(ang) * 3.0, mm.z - Math.sin(ang) * 3.0);
+    console.log(`[ai] 传送到自然怪物 wid=${mm.wid} 身旁 ~3m（仇恨范围 10m 内）`);
+  } else {
+    await consoleCmd('spawn wolf');   // 视野内无怪物：在身边生成一只（确定性目标）
+    await wait(() => { mm = nearestMonster(); return !!mm; }, 2000);
+    console.log(`[ai] 视野内无自然怪物，已在身边生成狼 wid=${mm ? mm.wid : '?'}`);
+  }
+  const targetWid = mm ? mm.wid : 0;
+  if (!targetWid) {
+    console.log('[ai] FAIL 无可用怪物目标');
+    await shutdown(1);
+    return;
+  }
+
+  // ---- 观察：怪物追击(向玩家靠近) 或 攻击(DAMAGE 命中自己) 任一即 PASS，最多 ~8s，命中即提前结束 ----
+  let prev = null;
+  for (let i = 0; i < 40 && !(monsterChase || observedAttack); i++) {
+    await sleep(200);
+    const cur = known.get(targetWid);
+    if (cur && Number.isFinite(cur.x) && Number.isFinite(cur.z) && Number.isFinite(myRef.x)) {
+      const dNow = Math.hypot(cur.x - myRef.x, cur.z - myRef.z);
+      if (prev) {
+        const moved = Math.hypot(cur.x - prev.x, cur.z - prev.z);
+        if (moved > 0.15 && dNow < 12) monsterChase = true;
       }
-      if (nearest.dist !== undefined) {
-        const moved = Math.hypot(nearest.x - nearest.dist.x, nearest.z - nearest.dist.z);
-        if (moved > 0.2 && dNow < 12) monsterChase = true;
-      }
-      nearest.dist = { x: nearest.x, z: nearest.z };
-      if (sec - lastPrint >= 2 || sec === 0) {
-        console.log(`[ai] t=${sec}s 玩家(${myRef.x.toFixed(1)},${myRef.z.toFixed(1)}) 怪物(${nearest.x.toFixed(1)},${nearest.z.toFixed(1)}) 距=${dNow.toFixed(1)}m`);
-        lastPrint = sec;
-      }
-    } else {
-      moveTo = { mx: 0, mz: 0 };
-      if (sec % 4 === 0) console.log(`[ai] t=${sec}s 视野内无怪物（known=${known.size}）`);
+      prev = { x: cur.x, z: cur.z };
+      if (i % 5 === 0) console.log(`[ai] t=${(i * 0.2).toFixed(1)}s 距=${dNow.toFixed(1)}m 追击=${monsterChase} 攻击=${observedAttack}`);
     }
   }
-  clearInterval(step);
   const verdict = (monsterChase || observedAttack) ? 'PASS' : 'FAIL';
   console.log(`[ai] 追击=${monsterChase} 攻击=${observedAttack} => ${verdict}`);
-  ws.close();
-  process.exit(0);
+  await shutdown(verdict === 'PASS' ? 0 : 1);
 }
 main().catch((e) => { console.error('[ai] ERROR', e.message); process.exit(1); });

@@ -116,6 +116,9 @@ async function main() {
     .filter((e) => e.kind === KIND.MONSTER && (e.hp === undefined || e.hp > 0))
     .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
 
+  // ---- 测试环境准备：关闭防作弊（传送不被轨迹校验误判）；怪物冻结在各步骤按需开关 ----
+  await postApiConsole(token, 'anticheat off');
+
   // 1) 登录后 S2C_SKILLS：4 个起始技能
   await wait(() => gotHello && skills, 3000);
   check('登录后收到 S2C_SKILLS', !!skills);
@@ -156,36 +159,32 @@ async function main() {
     consoleOut ? consoleOut.text.replace(/\n/g, ' ') : '');
 
   // 5) 技能施放：AOE 烈焰冲击(1002) + 前摇完整结算 + AOE 命中
-  // 前摇 600ms 会被受击打断。若传送点附近恰好有其他遗留仇恨怪物在 600ms 内命中玩家，
-  // 施放会被打断 → 自动换位重试（最多 4 次）。站位：怪物 6.5m 外（1002 射程 8m 有余量；
-  // 怪物攻击距离 1.6m，追击 ~3.6m/s 需 1.3s 才能近身），落点=施放前重读的怪物位置。
+  // monsterpause on 冻结全部怪物（不移动/不攻击）→ 前摇 600ms 必不被受击打断 → 单次确定性施放，
+  // 去掉原「换位重试最多 4 次」的不可预测循环。站位：怪物 6.5m 外（1002 射程 8m 有余量）。
   await wait(() => known.size > 0, 2000);
   check('视野内存在怪物', !!nearestMonster());
-  let aoeResolved = null;
-  for (let att = 0; att < 4 && !aoeResolved; att++) {
+  await postApiConsole(token, 'monsterpause on');
+  {
     const mm = nearestMonster();
-    if (!mm) break;
-    const ang = Math.atan2(mm.z - ref.z, mm.x - ref.x);
-    const sx = mm.x - Math.cos(ang) * 6.5, sz = mm.z - Math.sin(ang) * 6.5;
-    const tpR = await tp(sx, sz);
-    ref = { x: tpR.x, y: tpR.y, z: tpR.z };
-    await sleep(300);
-    const mmb = nearestMonster();
-    const aim = { x: mmb ? mmb.x : mm.x, z: mmb ? mmb.z : mm.z }; // 落点=怪物当前位置
-    castFb = null; evtSkill = null; monDamaged = 0;
-    send(encodeCastSkill(1002, 0, aim.x, aim.z));
-    await wait(() => castFb, 2500);
-    if (!castFb || castFb.ok !== 1) { await sleep(300); continue; } // 射程/其他原因 → 重试
-    // 前摇 600ms：EVT_SKILL 在结算时（约 0.6s 后）才广播
-    const resolved = await wait(() => evtSkill, 2500);
-    if (resolved) { aoeResolved = att; break; }
-    await sleep(300); // 被打断（受击等）→ 换位重试
+    if (mm) {
+      const ang = Math.atan2(mm.z - ref.z, mm.x - ref.x);
+      const sx = mm.x - Math.cos(ang) * 6.5, sz = mm.z - Math.sin(ang) * 6.5;
+      const tpR = await tp(sx, sz);
+      ref = { x: tpR.x, y: tpR.y, z: tpR.z };
+      await sleep(300);
+      const mmb = nearestMonster();
+      const aim = { x: mmb ? mmb.x : mm.x, z: mmb ? mmb.z : mm.z }; // 落点=怪物（已冻结，位置稳定）
+      castFb = null; evtSkill = null; monDamaged = 0;
+      send(encodeCastSkill(1002, 0, aim.x, aim.z));
+      await wait(() => castFb, 2500);
+      await wait(() => evtSkill, 2500); // 前摇 600ms：结算时广播 EVT_SKILL（怪物冻结，不会被打断）
+    }
   }
   check('AOE 技能施放反馈 ok', castFb && castFb.ok === 1, castFb ? `skillId=${castFb.skillId}` : '');
   check('EVT_SKILL 广播(前摇结算后)', !!evtSkill, evtSkill ? `caster=${evtSkill.wid} skill=${evtSkill.b}` : '');
   // AOE 落点怪物应掉血
   await wait(() => monDamaged > 0, 2000);
-  check('AOE 对怪物造成伤害', monDamaged > 0, `dmgEvt=${monDamaged} retry=${aoeResolved ?? '-'}`);
+  check('AOE 对怪物造成伤害', monDamaged > 0, `dmgEvt=${monDamaged}`);
 
   // 6) 冷却校验：连续施放 1002（6s 冷却）第二次应被拒（服务端权威）
   {
@@ -194,6 +193,9 @@ async function main() {
     await wait(() => castFb, 2000);
     check('冷却中施放被拒绝(ok=0)', castFb && castFb.ok === 0, castFb ? `ok=${castFb.ok}` : '');
   }
+
+  // 恢复怪物活动（步骤 7/8 需要活跃怪物：8 要怪物攻击玩家触发荆棘反伤）
+  await postApiConsole(token, 'monsterpause off');
 
   // 7) 单目标技能 1001：对最近怪物施放（1001 射程 3.5m，先传送到怪物身边；瞬发无受击打断风险）
   {
@@ -233,6 +235,10 @@ async function main() {
   check('控制台 buff thorns', rBuff.ok);
   console.log(`  [info] 荆棘反伤自伤事件数: ${evtDamage}`);
   check('荆棘反伤触发(玩家受自身反弹伤害)', gotThornsHit);
+
+  // ---- 复位测试标志（良好公民：把服务端恢复为正常玩法）----
+  await postApiConsole(token, 'monsterpause off');
+  await postApiConsole(token, 'anticheat on');
 
   ws.close();
   console.log(`\n结果: PASS=${pass} FAIL=${fail}`);

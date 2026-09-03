@@ -31,6 +31,7 @@ struct PlayerSave {
   float x = 0, y = 0, z = 0;
   float hp = 100;
   int level = 1;
+  uint64_t exp = 0;         // 当前等级已累计经验（升级系统）
   uint64_t updatedAtMs = 0; // 服务端单调时钟（写回时间戳）
   // 物品系统扩展：金币 + 装备(槽位->itemId 的 JSON) + 背包(itemId->数量 的 JSON)
   uint32_t gold = 0;
@@ -101,6 +102,10 @@ public:
   // ---- 任务系统：玩家任务数据 ----
   virtual bool saveQuests(const std::string& username, const std::string& questsJson) { (void)username; (void)questsJson; return true; }
   virtual std::string loadQuests(const std::string& username) { (void)username; return ""; }
+
+  // ---- 世界数据（地形 mask + 出生点，数据库模式持久化）----
+  virtual bool saveWorldData(const std::string& key, const std::string& val) { (void)key; (void)val; return true; }
+  virtual bool loadWorldData(const std::string& key, std::string& out) { (void)key; (void)out; return false; }
 };
 
 // 存储配置（环境变量驱动，见 store.cpp 解析）
@@ -171,6 +176,14 @@ public:
   // ---- 任务系统：玩家任务数据（内存必写 + MySQL 尽力）----
   void saveQuests(const std::string& username, const std::string& questsJson);
   std::string loadQuests(const std::string& username);
+
+  // ---- 世界数据（地形 mask + 出生点）----
+  // 内存必写 + MySQL 尽力；读 MySQL 优先回退内存。
+  bool saveWorldData(const std::string& key, const std::string& val);
+  bool loadWorldData(const std::string& key, std::string& out);
+  // 世界数据是否持久：数据库模式(MySQL 可用)=true → 启动读库不重新初始化；
+  // 内存模式=false → 每次启动执行一次世界初始化。
+  bool worldDataPersistent() const { return mysqlActive(); }
 
 private:
   const Config& cfg_;

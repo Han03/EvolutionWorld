@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 /**
- * items_test.mjs - 物品系统端到端验证（服务端权威）
+ * items_test.mjs - 物品系统端到端验证（服务端权威，确定性测试）
  * 流程：
  *  1) 注册登录 → 校验初始 INVENTORY(gold=0/背包空) + STATS(攻12/防3)
- *  2) 打怪攒钱（击杀 → 掉落 → 拾取，验证掉落/拾取链路）
+ *  2) 打怪 → 掉落 → 拾取（验证击杀/掉落/拾取链路）
  *  3) teleport 到商店 NPC(6,6) → SHOP_OPEN → 校验 SHOP 帧商品
  *  4) SHOP_BUY 铁剑(1502,40金) → 校验金币扣减 + 背包增加
- *  5) EQUIP 武器槽(6) → 校验 STATS 攻击提升（12→17）
+ *  5) EQUIP 武器槽(6) → 校验 STATS 攻击提升（+5）
  *  6) 购买并使用小血瓶(2001) → 校验 HP 恢复
- * 需要服务端 EW_DEBUG=1 运行（依赖 /api/debug/teleport）
+ *
+ * 确定性保障（借助游戏内控制台测试命令，去除不可预测/耗时操作）：
+ *  - anticheat off  : 关闭防作弊，teleport 不被轨迹校验误判
+ *  - monsterpause on: 全局冻结怪物 AI/移动/攻击 → 目标稳定、玩家不受伤害、无需刷怪走位
+ *  - freecast on    : 普攻无冷却 → 快速击杀，无需等待攻击间隔
+ *  - gold <n>       : 直接发放金币（替代耗时且依赖 RNG 的刷怪攒钱循环）
+ *  - sethp <v>      : 确定性压低当前 HP（替代不可靠的流血压血）验证血瓶恢复
+ * 需要服务端 EW_DEBUG=1 运行（依赖 /api/debug/teleport 与 /api/console）
  */
 import { encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, parseS2C, MSG, KIND, EVT } from '../../client/js/protocol.js';
 const BASE = 'http://localhost:3000';
@@ -48,6 +55,14 @@ async function main() {
   await post('/api/register', { username: UN, password: 'pass1234' }).catch(() => {});
   const j = await post('/api/login', { username: UN, password: 'pass1234' });
   const token = j.token;
+  // 控制台命令（HTTP 通道）：测试控制/发放资源，返回 {ok, output}
+  const consoleCmd = async (command) => {
+    const r = await fetch(BASE + '/api/console', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, command }),
+    });
+    return r.json().catch(() => ({ ok: false }));
+  };
   const ws = new WebSocket(WS + '?token=' + token);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
   ws.binaryType = 'arraybuffer';
@@ -95,52 +110,39 @@ async function main() {
     ref = { x: r.x, y: r.y, z: r.z };
     return r;
   };
+  // 最近的存活怪物（hp<=0 视为死亡待复活，跳过，避免选到死怪）
   const nearestMonster = () => [...known.values()]
-    .filter((e) => e.kind === KIND.MONSTER)
+    .filter((e) => e.kind === KIND.MONSTER && (e.hp === undefined || e.hp > 0))
     .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
 
-  /** 打怪刷金币：逐只贴身击杀（以该怪物死亡产生的掉落为准）+ 拾取，直至金币 >= target。
-   *  注：出生点附近不刷怪（安全区），怪物在 20-110m 阶梯刷怪区，需主动接近并完整击杀。 */
-  async function farmGold(target) {
-    let guard = 0;
-    while ((inventory ? inventory.gold : 0) < target && guard < 120) {
-      const mm = nearestMonster();
-      if (!mm) { await sleep(300); guard++; continue; }
-      const tpR = await tp(mm.x, mm.z);
-      ref = { x: tpR.x, y: tpR.y, z: tpR.z };
-      await sleep(300);
-      let t = mm;
-      const dropsBefore = dropSeen;
-      for (let i = 0; i < 30; i++) {
-        // 每轮重新盯紧最近怪物（怪物会游走/被踢出视野）
-        const near = [...known.values()]
-          .filter((e) => e.kind === KIND.MONSTER && Math.hypot(e.x - ref.x, e.z - ref.z) < 8)
-          .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
-        if (near) t = near;
-        if (Math.hypot(t.x - ref.x, t.z - ref.z) > 4) {
-          // 怪物走远了：重新贴身
-          const tp2 = await tp(t.x, t.z);
-          ref = { x: tp2.x, y: tp2.y, z: tp2.z };
-          await sleep(250);
-        }
-        send(encodeAttack(t.wid));
-        await sleep(90);
-        if (dropSeen > dropsBefore) break; // 本只怪物死亡产生掉落
-      }
-      // 等待掉落广播并拾取
-      await wait(() => dropSeen > dropsBefore, 1500);
-      // 拾取视野内所有掉落物
-      for (const e of [...known.values()]) {
-        if (e.kind === KIND.ITEM) {
-          send(encodePickup(e.wid));
-          await sleep(40);
-        }
-      }
-      await sleep(150);
-      guard++;
+  /** 击杀最近怪物（确定性）：怪物已 monsterpause 冻结（不移动/不反击），freecast 无攻击冷却，
+   *  teleport 贴身连发普攻直到其死亡产生掉落 → 拾取。返回是否观察到掉落。 */
+  async function killNearestMonster() {
+    const mm = nearestMonster();
+    if (!mm) return false;
+    await tp(mm.x, mm.z);
+    await sleep(150);
+    const dropsBefore = dropSeen;
+    for (let i = 0; i < 50 && dropSeen <= dropsBefore; i++) {
+      send(encodeAttack(mm.wid));
+      await sleep(50);
     }
-    return inventory ? inventory.gold : 0;
+    if (!(await wait(() => dropSeen > dropsBefore, 1500))) return false;
+    // 等地面掉落物实体广播 → 贴到掉落物上（拾取范围 2m）→ 全部拾取
+    await wait(() => [...known.values()].some((e) => e.kind === KIND.ITEM), 1000);
+    const dropEnt = [...known.values()].find((e) => e.kind === KIND.ITEM);
+    if (dropEnt) { await tp(dropEnt.x, dropEnt.z); await sleep(120); }
+    for (const e of [...known.values()]) {
+      if (e.kind === KIND.ITEM) { send(encodePickup(e.wid)); await sleep(50); }
+    }
+    await wait(() => inventory && inventory.gold >= 1, 1500);
+    return true;
   }
+
+  // ---- 测试环境准备：开启确定性控制标志（各测试自身建立所需状态，不依赖上一次复位）----
+  await consoleCmd('anticheat off');
+  await consoleCmd('monsterpause on');
+  await consoleCmd('freecast on');
 
   // 1) 初始状态
   await wait(() => gotHello && inventory && stats, 3000);
@@ -150,12 +152,12 @@ async function main() {
   check('初始攻击=12', stats && stats.attack === 12, `atk=${stats && stats.attack}`);
   check('初始防御=3', stats && stats.defense === 3, `def=${stats && stats.defense}`);
 
-  // 2) 打怪 → 掉落 → 拾取（刷到至少 1 金币）
+  // 2) 打怪 → 掉落 → 拾取（怪物冻结，确定性击杀）
   await wait(() => known.size > 0, 2000);
   check('视野内存在怪物', !!nearestMonster());
-  const goldAfterFarm = await farmGold(1);
-  check('击杀怪物产生掉落', dropSeen > 0, `dropSeen=${dropSeen}`);
-  check('拾取获得金币(≥1)', goldAfterFarm >= 1, `gold=${goldAfterFarm}`);
+  const killed = await killNearestMonster();
+  check('击杀怪物产生掉落', killed && dropSeen > 0, `dropSeen=${dropSeen}`);
+  check('拾取获得金币(≥1)', inventory && inventory.gold >= 1, `gold=${inventory && inventory.gold}`);
 
   // 3) 商店：teleport 到商店 NPC (6,6)
   await tp(6, 6);
@@ -170,9 +172,10 @@ async function main() {
     check('商店含铁剑(1502)', shop && shop.entries.some((e) => e.itemId === 1502));
   }
 
-  // 4) 攒够 46 金（剑40+血瓶5） → 购买铁剑 1502
-  await farmGold(46);
-  check('攒够金币≥40', inventory && inventory.gold >= 40, `gold=${inventory && inventory.gold}`);
+  // 4) 购买铁剑 1502（控制台直接发金币，替代耗时且 RNG 的刷怪攒钱循环）
+  await consoleCmd('gold 200');
+  await wait(() => inventory && inventory.gold >= 40, 1500);
+  check('发放金币≥40', inventory && inventory.gold >= 40, `gold=${inventory && inventory.gold}`);
   if (inventory && inventory.gold >= 40) {
     const goldBefore = inventory.gold;
     send(encodeShopBuy(1502, 1));
@@ -183,7 +186,10 @@ async function main() {
     check('购买铁剑成功(金币扣减+背包)', false, '金币不足');
   }
 
-  // 5) 穿戴铁剑 → 攻击 +5（12 → 17）
+  // 5) 穿戴铁剑 → 攻击 +5
+  //    铁剑(1502) levelReq=3，初始 1 级不可装备；用 level 命令确定性提到 3 级（免刷怪升级）
+  await consoleCmd('level 3');
+  await wait(() => stats && stats.attack === 18, 2000); // baseAtk=12+(3-1)*3=18
   if (inventory && inventory.inventory[1502]) {
     const atkBefore = stats.attack;
     send(encodeEquip(6, 1502));
@@ -193,19 +199,26 @@ async function main() {
     console.log('  [skip] 无铁剑，跳过 EQUIP 校验');
   }
 
-  // 6) 购买并使用小血瓶 2001（价 5）→ HP 恢复
+  // 6) 购买并使用小血瓶 2001 → HP 恢复（sethp 确定性压低当前 HP；怪物冻结不干扰）
   if (inventory && inventory.gold >= 5) {
     send(encodeShopBuy(2001, 1));
     await wait(() => inventory && inventory.inventory[2001], 2000);
   }
   if (inventory && inventory.inventory[2001]) {
+    await consoleCmd('sethp 50');
+    await wait(() => stats && stats.hp <= 50, 1500);
     const hpBefore = stats.hp;
     send(encodeUseItem(2001, 1));
     await wait(() => stats && stats.hp > hpBefore, 2000);
     check('使用血瓶恢复HP', stats && stats.hp > hpBefore, `hp ${hpBefore} -> ${stats && stats.hp}`);
   } else {
-    console.log('  [skip] 金币不足无法买血瓶，跳过 USE 校验');
+    check('购买小血瓶(2001)', false, '金币不足或未上架');
   }
+
+  // ---- 复位测试标志（良好公民：把服务端恢复为正常玩法，避免污染在线世界）----
+  await consoleCmd('freecast off');
+  await consoleCmd('monsterpause off');
+  await consoleCmd('anticheat on');
 
   ws.close();
   console.log(`\n结果: PASS=${pass} FAIL=${fail}`);

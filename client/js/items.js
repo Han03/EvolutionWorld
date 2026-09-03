@@ -4,9 +4,31 @@
  */
 export const SLOT_KEY = { 1: 'helm', 2: 'chest', 3: 'pants', 4: 'gloves', 5: 'boots', 6: 'weapon' };
 export const SLOT_NAME = { 1: '头盔', 2: '上衣', 3: '裤子', 4: '手套', 5: '鞋子', 6: '武器' };
+// 槽位字符串 → 数字（服务端 items.json 用字符串键，客户端展示用数字槽位）
+export const SLOT_FROM_KEY = { helm: 1, chest: 2, pants: 3, gloves: 4, boots: 5, weapon: 6 };
+
+// 品质/稀有度（0普通 1优秀 2稀有 3史诗 4传说），与服务端 ItemDef.rarity 对齐
+export const RARITY_NAME = ['普通', '优秀', '稀有', '史诗', '传说'];
+export const RARITY_COLOR = ['#9e9e9e', '#4caf50', '#2196f3', '#a855f7', '#ff9800'];
+
+// 服务端 icon 字符串键 → emoji（客户端展示）；未命中的键若本身是 emoji 则原样使用
+export const ICON_MAP = {
+  helm1: '⛑', helm2: '🪖',
+  chest1: '👕', chest2: '🛡',
+  pants1: '👖', pants2: '👖',
+  gloves1: '🧤', gloves2: '🧤',
+  boots1: '🥾', boots2: '🥾',
+  weapon1: '⚔', weapon2: '🗡', weapon3: '🔥',
+  hp1: '🧪', hp2: '🧪', mp1: '🔵', mp2: '🔵',
+  fang: '🦷', badge: '🎖', bone: '🦴', core: '💎',
+};
+
+/** 运行时游戏数据（启动时从 /api/gamedata 拉取，覆盖静态镜像 ITEM_DEFS） */
+export let RUNTIME_ITEMS = {};    // id -> itemDef（已转换 slot/icon）
+export let RUNTIME_MONSTERS = {}; // type -> monsterDef
 
 /** itemId -> { name, type, slot, icon, price, hpBonus, mpBonus, attackBonus, defenseBonus, restoreHp, restoreMp } */
-export const ITEM_DEFS = {
+export let ITEM_DEFS = {
   1001: { name: '皮帽', type: 'equip', slot: 1, icon: '⛑', price: 8, defenseBonus: 1 },
   1002: { name: '铁盔', type: 'equip', slot: 1, icon: '⛑', price: 30, defenseBonus: 3, hpBonus: 10 },
   1101: { name: '布衣', type: 'equip', slot: 2, icon: '👕', price: 10, defenseBonus: 1 },
@@ -30,8 +52,14 @@ export const ITEM_DEFS = {
   3004: { name: '石像鬼之核', type: 'quest', icon: '💎', price: 25 },
 };
 
+/** icon 解析：字符串键 → emoji；未命中且本身非空则原样（兼容直接填 emoji） */
+export function resolveIcon(icon) {
+  if (!icon) return '❔';
+  return ICON_MAP[icon] || icon;
+}
+/** 物品定义：优先运行时表（/api/gamedata），回退静态镜像，再回退占位 */
 export function itemDef(id) {
-  return ITEM_DEFS[id] || { name: `物品#${id}`, type: 'unknown', icon: '❔', price: 0 };
+  return RUNTIME_ITEMS[id] || ITEM_DEFS[id] || { name: `物品#${id}`, type: 'unknown', icon: '❔', price: 0 };
 }
 export function itemName(id) {
   return itemDef(id).name;
@@ -41,6 +69,16 @@ export function itemIcon(id) {
 }
 export function typeName(t) {
   return { equip: '装备', consumable: '消耗品', quest: '任务道具' }[t] || t;
+}
+/** 品质（按物品 rarity）：名称/颜色 */
+export function itemRarity(id) {
+  return itemDef(id).rarity || 0;
+}
+export function rarityName(id) {
+  return RARITY_NAME[itemRarity(id)] || '普通';
+}
+export function rarityColor(id) {
+  return RARITY_COLOR[itemRarity(id)] || RARITY_COLOR[0];
 }
 /** 属性描述（装备/消耗品） */
 export function itemDesc(id) {
@@ -53,6 +91,53 @@ export function itemDesc(id) {
   if (d.restoreHp) parts.push(`恢复${d.restoreHp}生命`);
   if (d.restoreMp) parts.push(`恢复${d.restoreMp}法力`);
   return parts.length ? parts.join(' ') : '任务道具';
+}
+/** 生物定义（type 键，如 wolf/goblin；来自 /api/gamedata） */
+export function monsterDef(type) {
+  return RUNTIME_MONSTERS[type] || { name: type || '未知生物', type };
+}
+export function monsterName(type) {
+  return monsterDef(type).name;
+}
+/**
+ * 应用服务端游戏数据（启动时 fetch('/api/gamedata') 后调用）。
+ * data = { items: [...], monsters: {type: {...}} }
+ * 物品：slot 字符串→数字、icon 键→emoji；生物：原样保留 + 名称/描述/掉落。
+ */
+export function applyGameData(data) {
+  if (!data) return;
+  if (Array.isArray(data.items)) {
+    const next = {};
+    for (const it of data.items) {
+      const id = it.id | 0;
+      if (!id) continue;
+      next[id] = {
+        name: it.name || `物品#${id}`,
+        desc: it.desc || '',
+        type: it.type || 'equip',
+        slot: SLOT_FROM_KEY[it.slot] || 0,
+        icon: resolveIcon(it.icon),
+        price: it.price || 0,
+        hpBonus: it.hpBonus || 0,
+        mpBonus: it.mpBonus || 0,
+        attackBonus: it.attackBonus || 0,
+        defenseBonus: it.defenseBonus || 0,
+        restoreHp: it.restoreHp || 0,
+        restoreMp: it.restoreMp || 0,
+        stackMax: it.stackMax || 99,
+        rarity: it.rarity || 0,
+        levelReq: it.levelReq || 1,
+      };
+    }
+    RUNTIME_ITEMS = next;
+  }
+  if (data.monsters && typeof data.monsters === 'object') {
+    const nm = {};
+    for (const type of Object.keys(data.monsters)) {
+      nm[type] = Object.assign({ type }, data.monsters[type]);
+    }
+    RUNTIME_MONSTERS = nm;
+  }
 }
 /** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示） */
 export const SKILL_DEFS = {
@@ -77,10 +162,10 @@ export const SKILL_DEFS = {
   1016: { name: '猛击', icon: '🔨', color: '#ffca28', desc: '180% AOE + 击退6m', key: 'T', castMs: 500, radius: 3 },
   1017: { name: '生命涌动', icon: '💚', color: '#81c784', desc: '回血 25/s·8s', key: 'Y', castMs: 400, radius: 0 },
   // ---- 怪物专属技能 ----
-  2001: { name: '撕咬', icon: '🦷', color: '#f87171', desc: '100% + 流血', key: '', castMs: 0, radius: 0 },
-  2002: { name: '利爪挥击', icon: '🐾', color: '#f87171', desc: '100% + 减速', key: '', castMs: 0, radius: 0 },
-  2003: { name: '骨刺投掷', icon: '🦴', color: '#f87171', desc: '90% + 减防', key: '', castMs: 0, radius: 0 },
-  2004: { name: '石像冲击', icon: '🗿', color: '#f87171', desc: '120% + 击退', key: '', castMs: 0, radius: 0 },
+  2001: { name: '撕咬', icon: '🦷', color: '#f87171', desc: '100% + 流血', key: '', castMs: 400, radius: 3 },
+  2002: { name: '利爪挥击', icon: '🐾', color: '#f87171', desc: '100% + 减速', key: '', castMs: 500, radius: 3 },
+  2003: { name: '骨刺投掷', icon: '🦴', color: '#f87171', desc: '90% + 减防', key: '', castMs: 600, radius: 5 },
+  2004: { name: '石像冲击', icon: '🗿', color: '#f87171', desc: '120% + 击退', key: '', castMs: 700, radius: 3 },
   // ---- Boss 专属技能 ----
   2100: { name: '地裂冲击', icon: '💥', color: '#f87171', desc: '80% AOE + 击退3m', key: '', castMs: 1500, radius: 6 },
   2101: { name: '暗影波动', icon: '🌑', color: '#f87171', desc: '60% AOE + 减速35%', key: '', castMs: 2000, radius: 8 },

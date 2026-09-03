@@ -12,6 +12,15 @@ export const MSG = {
   // 任务系统 C2S
   C2S_QUEST_ACCEPT: 0x0C, C2S_QUEST_ABANDON: 0x0D, C2S_QUEST_TURNIN: 0x0E,
   C2S_QUEST_LIST: 0x0F, C2S_QUEST_TRACK: 0x17, C2S_TALK_NPC: 0x18,
+  // 社交系统 C2S
+  C2S_FRIEND_ADD: 0x10, C2S_FRIEND_ACCEPT: 0x11, C2S_FRIEND_REJECT: 0x12,
+  C2S_FRIEND_REMOVE: 0x13, C2S_FRIEND_BLOCK: 0x14, C2S_FRIEND_UNBLOCK: 0x15,
+  C2S_FRIEND_LIST: 0x16,
+  C2S_GUILD_CREATE: 0x20, C2S_GUILD_DISBAND: 0x21, C2S_GUILD_APPLY: 0x22,
+  C2S_GUILD_APPROVE: 0x23, C2S_GUILD_KICK: 0x24, C2S_GUILD_PROMOTE: 0x25,
+  C2S_GUILD_DEMOTE: 0x26, C2S_GUILD_LEAVE: 0x27, C2S_GUILD_TRANSFER: 0x28,
+  C2S_GUILD_NOTICE: 0x29, C2S_GUILD_INFO: 0x2A, C2S_GUILD_LIST: 0x2B,
+  C2S_CHAT_SEND: 0x30,
   // S2C
   S2C_HELLO: 0x81, S2C_SNAPSHOT: 0x82, S2C_ENTER: 0x83,
   S2C_LEAVE: 0x84, S2C_UPDATE: 0x85, S2C_SELF: 0x86,
@@ -22,6 +31,12 @@ export const MSG = {
   // 任务系统 S2C
   S2C_QUEST_LIST: 0xD0, S2C_QUEST_PROGRESS: 0xD1, S2C_QUEST_RESULT: 0xD2,
   S2C_QUEST_COMPLETE: 0xD3, S2C_QUEST_NOTIFY: 0xD4,
+  // 社交系统 S2C
+  S2C_FRIEND_REQUEST: 0xA0, S2C_FRIEND_LIST: 0xA1, S2C_FRIEND_STATUS: 0xA2,
+  S2C_FRIEND_RESULT: 0xA3,
+  S2C_GUILD_INFO: 0xB0, S2C_GUILD_RESULT: 0xB1, S2C_GUILD_NOTIFY: 0xB2,
+  S2C_GUILD_LIST: 0xB3, S2C_GUILD_APPLY_N: 0xB4,
+  S2C_CHAT_MSG: 0xC0, S2C_CHAT_HISTORY: 0xC1, S2C_CHAT_RESULT: 0xC2,
 };
 // 世界共享事件类型（S2C_EVENT 首字节）
 export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7 };
@@ -30,6 +45,34 @@ export const BOSS_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
 export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04, INTENT: 0x08 };
 export const KIND = { PLAYER: 1, MONSTER: 2, NPC: 3, ITEM: 4 };
 export const ST = { MOVING: 0x01, GROUNDED: 0x02 };
+// 聊天频道
+export const CHAT = { PRIVATE: 0, FRIEND: 1, GUILD: 2, WORLD: 3, TEAM: 4, SYSTEM: 5 };
+export const CHAT_NAMES = { 0: '私聊', 1: '好友', 2: '公会', 3: '世界', 4: '队伍', 5: '系统' };
+// 好友操作码
+export const FRIEND_OP = { ADD: 0, ACCEPT: 1, REJECT: 2, REMOVE: 3, BLOCK: 4, UNBLOCK: 5 };
+// 好友结果码
+export const FRIEND_RESULT = {
+  0: '成功', 1: '玩家不存在', 2: '不能加自己', 3: '已经是好友',
+  4: '好友列表已满', 5: '被对方拉黑', 6: '请求队列已满', 7: '没有找到请求', 8: '不能拉黑自己',
+};
+// 公会角色
+export const GUILD_ROLE = { 0: '会长', 1: '副会长', 2: '成员', 3: '新成员' };
+// 公会结果码
+export const GUILD_RESULT = {
+  0: '成功', 1: '公会不存在', 2: '已在公会中', 3: '不在公会中',
+  4: '无权限', 5: '名称已存在', 6: '公会已满', 7: '金币不足',
+  8: '没有申请', 9: '目标不在公会中', 10: '不能踢会长', 11: '目标等级更高',
+};
+// 公会事件通知
+export const GUILD_NOTIFY = {
+  0: '新成员加入', 1: '成员离开', 2: '被踢出', 3: '公告变更',
+  4: '晋升', 5: '降级', 6: '公会解散', 7: '会长转让',
+};
+// 聊天结果码
+export const CHAT_RESULT = {
+  0: '成功', 1: '目标离线（已存入信箱）', 2: '目标不存在', 3: '不能私聊自己',
+  4: '被对方拉黑', 5: '不在公会', 6: '发言频率限制', 7: '消息过长', 8: '消息为空', 9: '无效频道',
+};
 
 const SCALE = 100;    // 位置 0.01m
 const REL_CLAMP = 32760;
@@ -329,7 +372,10 @@ export function parseS2C(type, payload, refX, refY, refZ) {
       const defense = r.u32();
       const hp = r.u32();
       const mp = r.u32();
-      return { type, maxHp, maxMp, attack, defense, hp, mp };
+      const level = r.u32();
+      const exp = r.u32();
+      const expToNext = r.u32();
+      return { type, maxHp, maxMp, attack, defense, hp, mp, level, exp, expToNext };
     }
     case MSG.S2C_SKILLS: {
       const count = r.u16();
@@ -367,6 +413,100 @@ export function parseS2C(type, payload, refX, refY, refZ) {
     case MSG.S2C_QUEST_NOTIFY:
       // 任务消息由 quests.js 独立解码（需要 Reader 实例），此处返回 type 占位
       return { type };
+    // ---- 社交系统 S2C 解码 ----
+    case MSG.S2C_FRIEND_REQUEST: {
+      const from = r.str();
+      const message = r.str();
+      return { type, from, message };
+    }
+    case MSG.S2C_FRIEND_LIST: {
+      const count = r.u16();
+      const friends = [];
+      for (let i = 0; i < count; i++) {
+        friends.push({ name: r.str(), online: r.u8() !== 0, remark: r.str() });
+      }
+      return { type, friends };
+    }
+    case MSG.S2C_FRIEND_STATUS: {
+      const name = r.str();
+      const online = r.u8() !== 0;
+      return { type, name, online };
+    }
+    case MSG.S2C_FRIEND_RESULT: {
+      const opCode = r.u8();
+      const resultCode = r.u8();
+      return { type, opCode, resultCode };
+    }
+    case MSG.S2C_GUILD_INFO: {
+      const guildId = r.u32();
+      const name = r.str();
+      const notice = r.str();
+      const leaderUsername = r.str();
+      const memberCount = r.u32();
+      const maxMembers = r.u32();
+      const level = r.u32();
+      const exp = r.u32();
+      const logo = r.u32();
+      const createdMs = r.u32();
+      const mCount = r.u16();
+      const members = [];
+      for (let i = 0; i < mCount; i++) {
+        members.push({
+          username: r.str(), role: r.u8(), joinMs: r.u32(),
+          lastActiveMs: r.u32(), contributionPts: r.u32(),
+          title: r.str(), online: r.u8() !== 0,
+        });
+      }
+      return { type, guildId, name, notice, leaderUsername, memberCount, maxMembers, level, exp, logo, createdMs, members };
+    }
+    case MSG.S2C_GUILD_RESULT: {
+      const opCode = r.u8();
+      const code = r.u8();
+      const extra = r.str();
+      return { type, opCode, code, extra };
+    }
+    case MSG.S2C_GUILD_NOTIFY: {
+      const eventType = r.u8();
+      const data = r.str();
+      return { type, eventType, data };
+    }
+    case MSG.S2C_GUILD_LIST: {
+      const count = r.u16();
+      const guilds = [];
+      for (let i = 0; i < count; i++) {
+        guilds.push({ guildId: r.u32(), name: r.str(), memberCount: r.u32(), level: r.u32(), logo: r.u32() });
+      }
+      return { type, guilds };
+    }
+    case MSG.S2C_GUILD_APPLY_N: {
+      const applicant = r.str();
+      const guildId = r.u32();
+      return { type, applicant, guildId };
+    }
+    case MSG.S2C_CHAT_MSG: {
+      const channel = r.u8();
+      const sender = r.str();
+      const senderWid = r.u32();
+      const content = r.str();
+      const timestamp = r.u32();
+      return { type, channel, sender, senderWid, content, timestamp };
+    }
+    case MSG.S2C_CHAT_HISTORY: {
+      const count = r.u16();
+      const messages = [];
+      for (let i = 0; i < count; i++) {
+        messages.push({
+          channel: r.u8(), sender: r.str(), senderWid: r.u32(),
+          target: r.str(), content: r.str(), timestamp: r.u32(),
+        });
+      }
+      return { type, messages };
+    }
+    case MSG.S2C_CHAT_RESULT: {
+      const code = r.u8();
+      const errorMsg = r.str();
+      return { type, code, errorMsg };
+    }
     case MSG.S2C_EVENT: {
       const evtType = r.u8();
       const wid = r.u32();

@@ -30,6 +30,7 @@
       <div class="editor-title">EVOLUTIONWORLD · 世界编辑器</div>
       <div class="editor-user" id="editor-user-name">-</div>
       <a class="editor-link" href="./index.html" target="_blank">进入游戏 ↗</a>
+      <button type="button" class="editor-link" id="editor-logout">退出登录</button>
       <div class="editor-conn" id="editor-conn">未加载</div>
     </div>
     <div class="editor-body">
@@ -37,11 +38,20 @@
         <!-- 模式切换 -->
         <div class="tool-group">
           <div class="tool-label">编辑模式</div>
-          <div class="tool-row">
+          <div class="tool-row mode-row">
             <label><input type="radio" name="mode" value="terrain" checked /><span>🗺 地形</span></label>
-            <label><input type="radio" name="mode" value="spawn" /><span>👾 生物出生点</span></label>
+            <label><input type="radio" name="mode" value="spawn" /><span>👾 出生点</span></label>
+            <label><input type="radio" name="mode" value="item" /><span>🎒 物品</span></label>
+            <label><input type="radio" name="mode" value="creature" /><span>🐺 生物</span></label>
           </div>
           <div class="tool-row tool-tip" id="mode-tip">画刷编辑地形：浅灰=可通行 / 白=空洞</div>
+        </div>
+
+        <!-- 视图导航（常驻） -->
+        <div class="tool-group">
+          <div class="tool-label">视图导航</div>
+          <div class="tool-row"><span class="tool-name">平移速度</span><input type="range" id="pan-speed" min="1" max="15" step="0.5" value="5" /><b id="pan-speed-v">5</b></div>
+          <div class="tool-row tool-tip">WASD/方向键平移 · 滚轮缩放 · 右键拖动平移（速度随缩放自适应）</div>
         </div>
 
         <!-- 地形画刷面板 -->
@@ -99,15 +109,130 @@
           </div>
         </div>
 
+        <!-- 物品配置面板 -->
+        <div id="panel-item" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">物品列表 (<span id="item-count-label">0</span>)</div>
+            <div id="item-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-item-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-item-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">物品属性</div>
+            <div id="item-form" class="cfg-form">
+              <div class="cfg-field"><label>ID</label><input type="number" id="it-id" min="1" step="1" /></div>
+              <div class="cfg-field"><label>名称</label><input type="text" id="it-name" /></div>
+              <div class="cfg-field"><label>描述</label><textarea id="it-desc"></textarea></div>
+              <div class="cfg-field"><label>图标键</label><input type="text" id="it-icon" placeholder="weapon1 或 ⚔" /></div>
+              <div class="icon-presets" id="it-icon-presets"></div>
+              <div class="cfg-field"><label>类型</label>
+                <select id="it-type">
+                  <option value="equip">装备</option>
+                  <option value="consumable">消耗品</option>
+                  <option value="quest">任务道具</option>
+                </select>
+              </div>
+              <div class="cfg-field" id="it-slot-row"><label>槽位</label>
+                <select id="it-slot">
+                  <option value="helm">头盔</option>
+                  <option value="chest">上衣</option>
+                  <option value="pants">裤子</option>
+                  <option value="gloves">手套</option>
+                  <option value="boots">鞋子</option>
+                  <option value="weapon">武器</option>
+                </select>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>品质</label>
+                  <select id="it-rarity">
+                    <option value="0">普通</option>
+                    <option value="1">优秀</option>
+                    <option value="2">稀有</option>
+                    <option value="3">史诗</option>
+                    <option value="4">传说</option>
+                  </select>
+                </div>
+                <div class="cfg-field"><label>需等级</label><input type="number" id="it-levelReq" min="1" step="1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>生命+</label><input type="number" id="it-hpBonus" step="1" /></div>
+                <div class="cfg-field"><label>法力+</label><input type="number" id="it-mpBonus" step="1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>攻击+</label><input type="number" id="it-attackBonus" step="1" /></div>
+                <div class="cfg-field"><label>防御+</label><input type="number" id="it-defenseBonus" step="1" /></div>
+              </div>
+              <div class="cfg-row2" id="it-restore-row">
+                <div class="cfg-field"><label>回血</label><input type="number" id="it-restoreHp" step="1" /></div>
+                <div class="cfg-field"><label>回蓝</label><input type="number" id="it-restoreMp" step="1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>价格</label><input type="number" id="it-price" min="0" step="1" /></div>
+                <div class="cfg-field"><label>堆叠</label><input type="number" id="it-stackMax" min="1" step="1" /></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 生物配置面板 -->
+        <div id="panel-creature" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">生物列表 (<span id="creature-count-label">0</span>)</div>
+            <div id="creature-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-creature-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-creature-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">生物属性</div>
+            <div id="creature-form" class="cfg-form">
+              <div class="cfg-field"><label>ID(type)</label><input type="text" id="cr-type" placeholder="wolf" /></div>
+              <div class="cfg-field"><label>名称</label><input type="text" id="cr-name" /></div>
+              <div class="cfg-field"><label>描述</label><textarea id="cr-desc"></textarea></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>等级</label><input type="number" id="cr-level" min="1" step="1" /></div>
+                <div class="cfg-field"><label>移速</label><input type="number" id="cr-moveSpeed" min="0" step="0.1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>生命</label><input type="number" id="cr-hp" min="1" step="1" /></div>
+                <div class="cfg-field"><label>法力</label><input type="number" id="cr-mp" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>攻击</label><input type="number" id="cr-attack" min="0" step="1" /></div>
+                <div class="cfg-field"><label>防御</label><input type="number" id="cr-defense" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-field"><label>经验奖励</label><input type="number" id="cr-expReward" min="0" step="1" /></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>金min</label><input type="number" id="cr-goldMin" min="0" step="1" /></div>
+                <div class="cfg-field"><label>金max</label><input type="number" id="cr-goldMax" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-field"><label>技能IDs</label><input type="text" id="cr-skillIds" placeholder="2001,2002（逗号分隔）" /></div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">掉落物 (<span id="drop-count-label">0</span>)</div>
+            <div id="drop-list" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-drop-add" class="btn btn-ghost">＋ 添加掉落</button>
+            </div>
+            <div class="tool-row tool-tip">爆率按每次击杀独立判定（0–100%）</div>
+          </div>
+        </div>
+
         <div class="tool-group tool-actions">
           <button id="btn-undo" class="btn btn-ghost">↶ 撤销</button>
           <button id="btn-redo" class="btn btn-ghost">↷ 重做</button>
           <button id="btn-reset" class="btn btn-ghost">重置(还原程序化)</button>
+          <button id="btn-worldinit" class="btn btn-ghost">🌍 重新初始化世界</button>
           <button id="btn-save" class="btn btn-primary">💾 保存到服务器</button>
         </div>
         <div class="tool-group tool-status" id="editor-status">就绪（WASD 平移 · 滚轮缩放 · 左键画刷/拖拽）</div>
         <div class="tool-group tool-info">
-          <div>世界中心为出生地/商店（城镇 + 6 条主干道）</div>
+          <div>世界地形与生物布局由服务端世界初始化执行器生成（主城 + 连通路网 + 分组投放）</div>
+          <div>“重新初始化世界”：重生成连通地形、主城与生物（怪物由主城向外逐渐增强、成群），全图可达</div>
           <div>保存后：游戏客户端下次进入自动加载；当前在线玩家亦实时生效（生物热重载）</div>
         </div>
       </div>

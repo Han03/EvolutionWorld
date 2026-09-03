@@ -1,10 +1,12 @@
 // terrain.h - 确定性噪声 + 高度场地形（大型网游世界地图数据源）
-// 算法必须与客户端 JS（client/js/terrain.js）及客户端预测（client/js/predict.js）**逐位一致**
+// 高度场算法必须与客户端 JS（client/js/terrain.js）及客户端预测（client/js/predict.js）**逐位一致**
 // 地形要素：丘陵高度场 + 河流下切（湖泊/河流）+ 山脊抬升（悬崖/不可通行）
-//           + 路径地图空洞（可到达区域收缩为走廊+空地）+ 地形编辑器编辑层（覆盖）
+//           + 可通行 mask（数据驱动：由世界初始化执行器生成 / 数据库加载，不再程序化硬编码）
+//           + 地形编辑器编辑层（覆盖）
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include "../util/random.h"
 namespace ew {
@@ -24,8 +26,17 @@ double noise2(double x, double z);
 double fbm2(double x, double z, int octaves = 5);
 // 河流通道值 [0,1]：>0 表示处于河床带内（两条蜿蜒主河：东西向 + 南北向）
 double riverBand(double x, double z);
-// 路径地图空洞：可到达区域收缩为「主干道走廊 + 分支 + 随机空地」，
-// 其余为空洞（渲染为白色空洞 / 不可通行）。确定性算法，与 JS terrainVoid 逐位一致。
+// 可通行 mask（数据驱动）：1=可通行 / 0=空洞。覆盖世界 [-off, n-off)，每格 1 米。
+// 由世界初始化执行器（WorldInitializer）生成、数据库模式从库加载，并通过 /api/terrain/mask
+// 下发客户端；代码中不再程序化生成布局。mask 未就绪时 terrainVoid 一律返回 true（阻挡）。
+void terrainSetWalkMask(std::vector<uint8_t> mask, int n, int off); // 安装可通行 mask
+bool terrainWalkMaskReady();                                        // mask 是否已就绪
+int  terrainWalkMaskN();                                            // mask 边长（格）
+int  terrainWalkMaskOff();                                          // mask 原点偏移（世界 -off 起）
+const std::vector<uint8_t>& terrainWalkMask();                      // mask 原始数据（1=可通行）
+// 自然地形阻挡：仅深水 / 悬崖（不含空洞 mask）。供世界初始化生长可通行区域时判定“天然干地”。
+bool terrainNaturalBlocked(double x, double z);
+// 可通行 mask 空洞：可到达区域外为空洞（渲染为白色空洞 / 不可通行）。数据驱动，与客户端一致。
 bool terrainVoid(double x, double z);
 // 地形高度：世界坐标 (x,z) -> 地表高度 y（含河床下切与山脊抬升），与 JS terrainHeight 一致
 double terrainHeight(double x, double z);

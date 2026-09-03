@@ -59,14 +59,22 @@ int main(int argc, char** argv) {
   store.init();
 
   World world(cfg);
-  world.setStore(&store); // 注入存储层（社交系统持久化用）
-  // 生物出生点：加载 data/spawns.json（有则覆盖默认确定性出生点，无则用内置默认）
+  world.setStore(&store); // 注入存储层（世界数据/社交系统持久化用）
+  // 世界初始化执行器（大型网游规模）：
+  //   数据库模式：优先从库读取地形 mask + 出生点，不执行初始化；库中无数据时回退到初始化并落库。
+  //   内存模式：每次服务端启动都执行一次世界初始化（生成连通地形 + 主城 + 分组生物投放）。
   {
-    std::string sp = cfg.dataDir + "/spawns.json";
-    if (world.spawnsMut().loadFile(sp)) {
-      fprintf(stderr, "[spawns] 加载出生点配置 %s（%zu 个出生点）\n", sp.c_str(), world.spawns().size());
+    bool dbMode = store.worldDataPersistent();
+    bool loaded = false;
+    if (dbMode) loaded = world.loadWorldFromStore(store);
+    if (loaded) {
+      fprintf(stderr, "[world] 数据库模式：已从数据库读取世界地形/出生点（跳过初始化，%zu 个出生点）\n",
+              world.spawns().size());
     } else {
-      fprintf(stderr, "[spawns] 无 %s，使用内置默认出生点（%zu 个）\n", sp.c_str(), world.spawns().size());
+      world.runWorldInit();
+      if (dbMode) world.saveWorldToStore(store);
+      fprintf(stderr, "[world] %s模式：执行世界初始化（连通可通行地形 + 主城 + 分组生物投放，%zu 个出生点）\n",
+              dbMode ? "数据库" : "内存", world.spawns().size());
     }
   }
   world.seedWorld();

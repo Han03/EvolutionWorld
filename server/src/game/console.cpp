@@ -44,7 +44,11 @@ std::string consoleHelpText() {
     "  drop <itemId> [count]        在自身位置生成地面掉落物（drop gold <n> 发金币）\n"
     "  heal                         恢复满血满蓝\n"
     "  level <n>                    设置等级（重算基础属性）\n"
-    "  stat <hp|mp|atk|def> <v>     设置基础属性\n"
+    "  stat <hp|mp|atk|def> <v>     设置基础属性（上限）\n"
+    "  sethp <v> / setmp <v>        设置当前 HP/MP（确定性压血/压蓝，测试用）\n"
+    "  monsterpause <on|off>        全局冻结怪物/Boss AI+移动+施放（站桩测试）\n"
+    "  freecast <on|off>            技能/普攻无蓝耗无冷却（重复测试同一技能）\n"
+    "  anticheat <on|off>           开关防作弊校验（off=输入直接接受，测位移/瞬移）\n"
     "  skill <skillId>              学习技能\n"
     "  skills                       查看已学技能与冷却\n"
     "  cast <skillId> [targetWid]   施放技能（无目标自动选最近怪物）\n"
@@ -228,6 +232,61 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     w.recomputeStats(*p);
     w.markStatsDirty(ctx.playerId);
     out("基础" + k + " 设为 " + std::to_string(v));
+    return true;
+  }
+  // 设置自身当前 HP/MP（确定性压血/压蓝，用于恢复类/耗蓝类测试）
+  // 注：区别于 stat（改基础值→上限），sethp/setmp 改的是当前值；sethp 最低 1（测死亡用 kill）
+  if (cmd == "sethp" || cmd == "setmp") {
+    Entity* p = w.findEntity(ctx.playerId);
+    if (!p) { out("未找到目标玩家"); return true; }
+    if (args.size() < 2) { out("用法: " + cmd + " <value>"); return true; }
+    double v = toNum(args[1], 0);
+    if (cmd == "sethp") {
+      double mx = p->maxHp;
+      if (v < 1.0) v = 1.0;
+      if (v > mx) v = mx;
+      p->hp = v;
+      out("当前 HP 设为 " + std::to_string((int)p->hp) + "/" + std::to_string((int)mx));
+    } else {
+      double mx = p->maxMp;
+      if (v < 0.0) v = 0.0;
+      if (v > mx) v = mx;
+      p->mp = v;
+      out("当前 MP 设为 " + std::to_string((int)p->mp) + "/" + std::to_string((int)mx));
+    }
+    w.markStatsDirty(ctx.playerId);
+    return true;
+  }
+
+  // ---- 测试控制：全局开关（大型网游常用测试命令；影响世界内所有玩家/怪物，默认关闭=正常玩法）----
+  // 典型技能伤害测试流程：anticheat off → monsterpause on → teleport 到位 → cast/attack → 检查；
+  //                        需重复施放时 freecast on（无蓝耗/无冷却）。测试结束请复位（xxx on/off）。
+  if (cmd == "monsterpause" || cmd == "freecast") {
+    bool& flag = (cmd == "monsterpause") ? w.testFlags().monstersPaused : w.testFlags().noSkillCost;
+    if (args.size() >= 2) {
+      const std::string& a = args[1];
+      if (a == "on" || a == "1" || a == "true") flag = true;
+      else if (a == "off" || a == "0" || a == "false") flag = false;
+      else { out("用法: " + cmd + " <on|off>"); return true; }
+    } else {
+      flag = !flag;
+    }
+    if (cmd == "monsterpause") out(std::string("怪物冻结(monsterpause)=") + (flag ? "on" : "off"));
+    else out(std::string("无消耗施放(freecast)=") + (flag ? "on" : "off"));
+    return true;
+  }
+  if (cmd == "anticheat") {
+    // anticheat on=开启防作弊(正常)；off=关闭校验(测试) → 映射到 antiCheatBypass(取反)
+    bool& bypass = w.testFlags().antiCheatBypass;
+    if (args.size() >= 2) {
+      const std::string& a = args[1];
+      if (a == "on" || a == "1" || a == "true") bypass = false;
+      else if (a == "off" || a == "0" || a == "false") bypass = true;
+      else { out("用法: anticheat <on|off>"); return true; }
+    } else {
+      bypass = !bypass;
+    }
+    out(std::string("防作弊(anticheat)=") + (bypass ? "off(已关闭校验)" : "on(正常)"));
     return true;
   }
 

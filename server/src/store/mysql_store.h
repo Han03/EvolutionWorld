@@ -30,6 +30,10 @@ public:
   bool savePlayer(const PlayerSave& s) override;
   bool loadPlayer(const std::string& username, PlayerSave& out) override;
 
+  // 世界数据（地形 mask + 出生点）持久化（world_data 表）
+  bool saveWorldData(const std::string& key, const std::string& val) override;
+  bool loadWorldData(const std::string& key, std::string& out) override;
+
   bool putSession(const std::string&, const std::string&, uint32_t) override { return false; } // 会话走 Redis
   std::string getSession(const std::string&) override { return ""; }
   bool delSession(const std::string&) override { return false; }

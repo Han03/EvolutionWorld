@@ -8,7 +8,7 @@
  * 需要服务端 EW_DEBUG=1 运行（依赖 /api/console 与 /api/debug/teleport）
  */
 import { encodeInput, encodeAttack, encodeConsole, parseS2C, MSG, KIND, EVT } from '../../client/js/protocol.js';
-import { terrainBlocked } from '../../client/js/terrain.js';
+import { terrainBlocked, loadWalkMask } from '../../client/js/terrain.js';
 const BASE = 'http://localhost:3000';
 const WS = 'ws://localhost:3000/ws';
 const UN = 'map' + Math.floor(Math.random() * 100000);
@@ -47,7 +47,21 @@ async function wait(cond, timeoutMs, step = 60) {
   }
   return cond();
 }
+// 数据驱动世界：找一个可通行且某正交相邻格被阻挡的落点，返回朝阻挡方向的单位向量
+function findBlockedEdge() {
+  for (let z = -40; z < 40; z++) for (let x = -40; x < 40; x++) {
+    const cx = x + 0.5, cz = z + 0.5;
+    if (terrainBlocked(cx, cz)) continue;
+    if (terrainBlocked(cx + 1, cz)) return { x: cx, z: cz, dx: 1, dz: 0 };
+    if (terrainBlocked(cx - 1, cz)) return { x: cx, z: cz, dx: -1, dz: 0 };
+    if (terrainBlocked(cx, cz + 1)) return { x: cx, z: cz, dx: 0, dz: 1 };
+    if (terrainBlocked(cx, cz - 1)) return { x: cx, z: cz, dx: 0, dz: -1 };
+  }
+  return null;
+}
 async function main() {
+  const mj = await (await fetch(BASE + '/api/terrain/mask')).json();
+  if (!loadWalkMask(mj)) { console.error('FATAL: 无法加载可通行 mask', JSON.stringify(mj)); process.exit(1); }
   await post('/api/register', { username: UN, password: 'pass1234' }).catch(() => {});
   const j = await post('/api/login', { username: UN, password: 'pass1234' });
   const token = j.token;
@@ -108,24 +122,25 @@ async function main() {
     }
     return null;
   }
-  // ============ 1) 静态地形碰撞：向河流移动被阻挡 ============
-  console.log('\n[1] 2.5D 静态地形碰撞（河流不可通行，服务端阻挡）');
-  // 河道边界在 x=0 时约为 z=-16.5（z=-16 干 / z=-18 水）。从干地 (0,-13) 向 -z（河流）移动。
-  const bankX = 0, bankZ = -13;
-  await debugTp(token, bankX, bankZ);
-  await sleep(250);
-  let sent = 0;
-  const t0 = Date.now();
-  while (Date.now() - t0 < 1800) {
-    send(encodeInput(++sent, 0, -1, 0, bankX, 0, bankZ)); // 向 -z 移动
-    await sleep(50);
-  }
-  const finalPos = await selfPosFromConsole();
-  const dry = finalPos && !terrainBlocked(finalPos.x, finalPos.z);
-  check('向河流移动被阻挡（未进入水域）', !!finalPos && dry,
-    finalPos ? `@(${finalPos.x.toFixed(2)},${finalPos.z.toFixed(2)}) blocked=${terrainBlocked(finalPos.x, finalPos.z)}` : '无位置');
-  if (finalPos) {
-    check('停在河岸（z 未越过边界 z≈-17.5）', finalPos.z >= -18.2, `z=${finalPos.z.toFixed(2)}`);
+  // ============ 1) 静态地形碰撞：向不可通行区移动被阻挡 ============
+  console.log('\n[1] 2.5D 静态地形碰撞（不可通行区，服务端阻挡）');
+  // 数据驱动世界：找一个可通行↔阻挡相邻边界，从可通行格朝阻挡方向推动，验证被阻挡。
+  const edge = findBlockedEdge();
+  check('找到可通行↔阻挡边界落点', !!edge,
+    edge ? `@(${edge.x.toFixed(1)},${edge.z.toFixed(1)}) 朝(${edge.dx},${edge.dz})` : '');
+  if (edge) {
+    await debugTp(token, edge.x, edge.z);
+    await sleep(250);
+    let sent = 0;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 1800) {
+      send(encodeInput(++sent, edge.dx, edge.dz, 0, edge.x, 0, edge.z)); // 朝阻挡方向移动
+      await sleep(50);
+    }
+    const finalPos = await selfPosFromConsole();
+    const dry = finalPos && !terrainBlocked(finalPos.x, finalPos.z);
+    check('向阻挡区移动被阻挡（仍停在可通行格）', !!finalPos && dry,
+      finalPos ? `@(${finalPos.x.toFixed(2)},${finalPos.z.toFixed(2)}) blocked=${terrainBlocked(finalPos.x, finalPos.z)}` : '无位置');
   }
   // ============ 2) 怪物死亡 → 定时刷新 ============
   console.log('\n[2] 怪物死亡后定时刷新');

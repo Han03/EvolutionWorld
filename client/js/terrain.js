@@ -75,72 +75,30 @@ export function riverBand(x, z) {
   const b2 = 1.0 - Math.abs(x - xc) / RIVER_HALF;
   return Math.max(0.0, Math.max(b1, b2));
 }
-// ==================== 路径地图空洞 mask（确定性，与服务端 terrainVoid 逐位一致） ====================
-const MASK_N = 256;
-const MASK_OFF = 128;
-let g_walk = null; // Uint8Array 1=可通行（懒生成缓存）
-function ensureMask() {
-  if (g_walk) return;
-  g_walk = new Uint8Array(MASK_N * MASK_N);
-  const markCircle = (cx, cz, r) => {
-    const x0 = Math.max(0, Math.floor(cx - r) + MASK_OFF);
-    const x1 = Math.min(MASK_N - 1, Math.floor(cx + r) + MASK_OFF);
-    const z0 = Math.max(0, Math.floor(cz - r) + MASK_OFF);
-    const z1 = Math.min(MASK_N - 1, Math.floor(cz + r) + MASK_OFF);
-    const r2 = r * r;
-    for (let gz = z0; gz <= z1; gz++) {
-      for (let gx = x0; gx <= x1; gx++) {
-        const dx = (gx - MASK_OFF) + 0.5 - cx;
-        const dz = (gz - MASK_OFF) + 0.5 - cz;
-        if (dx * dx + dz * dz <= r2) g_walk[gz * MASK_N + gx] = 1;
-      }
-    }
-  };
-  const TWO_PI = 6.283185307179586;
-  // 主城（出生地 / 商店 / 城镇）：中心圆盘
-  markCircle(0, 0, 9.0);
-  // 主干道：6 条，从中心向外随机游走（确定性）
-  const ROADS = 6;
-  for (let i = 0; i < ROADS; i++) {
-    const baseAng = i * (TWO_PI / ROADS) + (hash2i(i * 7 + 1, 13) - 0.5) * 0.5;
-    let px = 0, pz = 0;
-    let dir = baseAng;
-    const steps = 30 + Math.floor(hash2i(i * 3 + 5, 29) * 8); // 30..37
-    const stepLen = 2.0;
-    for (let s = 0; s < steps; s++) {
-      const wob = (hash2i(i * 101 + s * 13 + 3, s * 7 + 11) - 0.5) * 0.9;
-      dir += wob;
-      let da = baseAng - dir;
-      while (da > Math.PI) da -= TWO_PI;
-      while (da < -Math.PI) da += TWO_PI;
-      dir += da * 0.10;
-      px += Math.cos(dir) * stepLen;
-      pz += Math.sin(dir) * stepLen;
-      markCircle(px, pz, 3.6);
-      if (s % 7 === 4) {
-        let bdir = dir + (hash2i(i * 17 + s, s * 3 + 2) - 0.5) * 2.2;
-        let bx = px, bz = pz;
-        for (let bs = 0; bs < 12; bs++) {
-          bdir += (hash2i(i * 31 + bs, s + bs * 5) - 0.5) * 0.7;
-          bx += Math.cos(bdir) * 1.8;
-          bz += Math.sin(bdir) * 1.8;
-          markCircle(bx, bz, 2.8);
-        }
-      }
-    }
-  }
-  // 随机空地（偶尔保留的开阔区）
-  const G = 16;
-  for (let i = 0; i < G; i++) {
-    const ax = (hash2i(i * 131 + 7, 71) - 0.5) * 220.0;
-    const az = (hash2i(i * 211 + 3, 97) - 0.5) * 220.0;
-    const r = 5.5 + hash2i(i * 37, i * 19 + 5) * 6.5; // 5.5..12
-    markCircle(ax, az, r);
-  }
+// ==================== 可通行 mask（数据驱动：服务端下发，不再程序化生成） ====================
+// 服务端世界初始化执行器生成连通可通行 mask（1=可通行/0=空洞），通过 /api/terrain/mask 下发。
+// 客户端下载后安装，保证预测/碰撞/渲染与服务端同源一致；未加载时一律视为空洞（阻挡）。
+let MASK_N = 0;
+let MASK_OFF = 0;
+let g_walk = null; // Uint8Array 1=可通行
+/** 安装服务端下发的可通行 mask：{n, off, b64}（b64 为 n*n 字节 mask 的 base64） */
+export function loadWalkMask({ n, off, b64 } = {}) {
+  if (!b64 || !n) return false;
+  let bin;
+  try { bin = atob(b64); } catch (_) { return false; }
+  if (bin.length !== n * n) return false;
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  g_walk = arr;
+  MASK_N = n;
+  MASK_OFF = off | 0;
+  return true;
 }
-/** 该点是否路径地图空洞（可到达区域外；服务端/客户端逐位一致） */
+/** mask 是否已加载就绪 */
+export function walkMaskReady() { return !!g_walk; }
+/** 该点是否可通行 mask 空洞（服务端下发数据；未加载时一律视为空洞/阻挡） */
 export function terrainVoid(x, z) {
-  ensureMask();
+  if (!g_walk) return true;
   const gx = Math.floor(x) + MASK_OFF;
   const gz = Math.floor(z) + MASK_OFF;
   if (gx < 0 || gx >= MASK_N || gz < 0 || gz >= MASK_N) return true;

@@ -75,11 +75,12 @@
     <div class="hud-portrait">
       <div class="portrait-frame">
         <div class="portrait-icon">🛡</div>
-        <div class="portrait-level">Lv</div>
+        <div class="portrait-level">Lv <b id="hud-level">1</b></div>
       </div>
       <div class="portrait-bars">
         <div class="bar hp"><div id="hp-fill" class="fill"></div><span id="hp-text">100/100</span></div>
         <div class="bar mp"><div id="mp-fill" class="fill"></div><span id="mp-text">50/50</span></div>
+        <div class="bar exp"><div id="exp-fill" class="fill"></div><span id="exp-text">0/100</span></div>
         <div class="portrait-stats">
           <span class="stat-atk">⚔ <b id="stat-attack">12</b></span>
           <span class="stat-def">🛡 <b id="stat-defense">3</b></span>
@@ -103,6 +104,7 @@
       <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
       <div><kbd>Space</kbd> 跳跃 · <kbd>J</kbd> 攻击 · <kbd>B</kbd> 商店 · <kbd>E</kbd> 拾取</div>
       <div><kbd>I</kbd> 背包/装备 · <kbd>L</kbd> 任务日志 · <kbd>1-8</kbd> 技能</div>
+      <div><kbd>Enter</kbd> 聊天 · <kbd>F</kbd> 好友 · <kbd>G</kbd> 公会</div>
     </div>
 
     <!-- ── 右侧：任务追踪 HUD ── -->
@@ -111,12 +113,28 @@
       <div id="quest-tracker-list" class="quest-tracker-list"></div>
     </div>
 
-    <!-- ── 左下角：协议监控（替代聊天栏位置） ── -->
+    <!-- ── 左下角：协议监控 ── -->
     <div id="proto-panel">
       <div class="proto-head">
         <span class="proto-icon">📡</span> 协议监控 <span id="proto-bps">-</span>
       </div>
       <div id="proto-log"></div>
+    </div>
+
+    <!-- ── 左下角：聊天栏 ── -->
+    <div id="chat-bar" class="chat-bar">
+      <div class="chat-tabs">
+        <button class="chat-tab active" data-channel="3">世界</button>
+        <button class="chat-tab" data-channel="1">好友</button>
+        <button class="chat-tab" data-channel="2">公会</button>
+        <button class="chat-tab" data-channel="0">私聊</button>
+      </div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div class="chat-input-row">
+        <input id="chat-target" class="chat-target hidden" type="text" placeholder="目标玩家" />
+        <input id="chat-input" class="chat-input" type="text" placeholder="输入消息，Enter 发送…" maxlength="200" />
+        <button id="chat-send" class="chat-send">发送</button>
+      </div>
     </div>
   </div>
 
@@ -156,6 +174,40 @@
       <button class="quest-tab" data-tab="completed">已完成</button>
     </div>
     <div id="quest-content" class="quest-content"></div>
+  </div>
+
+  <!-- ═══════════ 好友面板 ═══════════ -->
+  <div id="friend-panel" class="panel social-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">👥</span>
+      <span>好友</span>
+      <button id="friend-close" class="panel-close">✕</button>
+    </div>
+    <div class="friend-tabs">
+      <button class="friend-tab active" data-tab="list">好友列表</button>
+      <button class="friend-tab" data-tab="requests">好友请求</button>
+      <button class="friend-tab" data-tab="block">黑名单</button>
+    </div>
+    <div class="friend-add-row">
+      <input id="friend-add-name" type="text" placeholder="输入玩家名" maxlength="16" />
+      <button id="friend-add-btn" class="social-btn">添加好友</button>
+    </div>
+    <div id="friend-content" class="social-content"></div>
+  </div>
+
+  <!-- ═══════════ 公会面板 ═══════════ -->
+  <div id="guild-panel" class="panel social-panel guild-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">🏰</span>
+      <span>公会</span>
+      <button id="guild-close" class="panel-close">✕</button>
+    </div>
+    <div class="guild-tabs">
+      <button class="guild-tab active" data-tab="my">我的公会</button>
+      <button class="guild-tab" data-tab="search">搜索公会</button>
+      <button class="guild-tab" data-tab="create">创建公会</button>
+    </div>
+    <div id="guild-content" class="social-content"></div>
   </div>
 
   <!-- ═══════════ 提示浮层 ═══════════ -->

@@ -3,7 +3,7 @@
  * 数据传输方案：二进制帧 + 量化坐标 + AOI 进出 + 增量更新 + 校准快照
  * 扩展：输入上报携带预测位置 px/py/pz（防作弊校验），处理 SELF（回退）与 KICK。
  */
-import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, makeFrame, MSG } from './protocol.js';
+import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, makeFrame, MSG, Writer } from './protocol.js';
 export class NetworkClient {
   constructor() {
     this.ws = null;
@@ -37,6 +37,19 @@ export class NetworkClient {
     this.onQuestResult = null;
     this.onQuestComplete = null;
     this.onQuestNotify = null;
+    // 社交系统回调（S2C_FRIEND/GUILD/CHAT_*，已由 parseS2C 解码为对象）
+    this.onFriendRequest = null;
+    this.onFriendList = null;
+    this.onFriendStatus = null;
+    this.onFriendResult = null;
+    this.onGuildInfo = null;
+    this.onGuildResult = null;
+    this.onGuildNotify = null;
+    this.onGuildList = null;
+    this.onGuildApplyN = null;
+    this.onChatMsg = null;
+    this.onChatHistory = null;
+    this.onChatResult = null;
     // 协议透传转换监控：每次二进制帧解码为可读对象后触发（dir: 's2c' | 'c2s'，obj 为解码结果）
     this.onProtocol = null;
     // 自身预测位置（解码相对坐标用参考）
@@ -188,6 +201,43 @@ export class NetworkClient {
         case MSG.S2C_QUEST_NOTIFY:
           if (this.onQuestNotify) this.onQuestNotify(payload);
           break;
+        // ---- 社交系统 S2C 分发 ----
+        case MSG.S2C_FRIEND_REQUEST:
+          if (this.onFriendRequest) this.onFriendRequest(msg);
+          break;
+        case MSG.S2C_FRIEND_LIST:
+          if (this.onFriendList) this.onFriendList(msg);
+          break;
+        case MSG.S2C_FRIEND_STATUS:
+          if (this.onFriendStatus) this.onFriendStatus(msg);
+          break;
+        case MSG.S2C_FRIEND_RESULT:
+          if (this.onFriendResult) this.onFriendResult(msg);
+          break;
+        case MSG.S2C_GUILD_INFO:
+          if (this.onGuildInfo) this.onGuildInfo(msg);
+          break;
+        case MSG.S2C_GUILD_RESULT:
+          if (this.onGuildResult) this.onGuildResult(msg);
+          break;
+        case MSG.S2C_GUILD_NOTIFY:
+          if (this.onGuildNotify) this.onGuildNotify(msg);
+          break;
+        case MSG.S2C_GUILD_LIST:
+          if (this.onGuildList) this.onGuildList(msg);
+          break;
+        case MSG.S2C_GUILD_APPLY_N:
+          if (this.onGuildApplyN) this.onGuildApplyN(msg);
+          break;
+        case MSG.S2C_CHAT_MSG:
+          if (this.onChatMsg) this.onChatMsg(msg);
+          break;
+        case MSG.S2C_CHAT_HISTORY:
+          if (this.onChatHistory) this.onChatHistory(msg);
+          break;
+        case MSG.S2C_CHAT_RESULT:
+          if (this.onChatResult) this.onChatResult(msg);
+          break;
         case MSG.S2C_ERROR:
           console.error('[net]', msg.code, msg.msg);
           break;
@@ -254,6 +304,123 @@ export class NetworkClient {
     if (!this.connected) return;
     this._send(encodeConsole(cmd));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'CONSOLE', cmd });
+  }
+  // ---- 社交系统发送方法 ----
+  /** 发送好友请求 */
+  sendFriendAdd(targetName, message = '') {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName); w.str(message);
+    this._send(makeFrame(MSG.C2S_FRIEND_ADD, w.finish()));
+  }
+  /** 接受好友请求 */
+  sendFriendAccept(fromUser) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(fromUser);
+    this._send(makeFrame(MSG.C2S_FRIEND_ACCEPT, w.finish()));
+  }
+  /** 拒绝好友请求 */
+  sendFriendReject(fromUser) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(fromUser);
+    this._send(makeFrame(MSG.C2S_FRIEND_REJECT, w.finish()));
+  }
+  /** 删除好友 */
+  sendFriendRemove(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_FRIEND_REMOVE, w.finish()));
+  }
+  /** 拉黑 */
+  sendFriendBlock(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_FRIEND_BLOCK, w.finish()));
+  }
+  /** 取消拉黑 */
+  sendFriendUnblock(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_FRIEND_UNBLOCK, w.finish()));
+  }
+  /** 请求好友列表 */
+  sendFriendList() {
+    if (!this.connected) return;
+    this._send(makeFrame(MSG.C2S_FRIEND_LIST, new Uint8Array(0)));
+  }
+  /** 创建公会 */
+  sendGuildCreate(name) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(name);
+    this._send(makeFrame(MSG.C2S_GUILD_CREATE, w.finish()));
+  }
+  /** 解散公会 */
+  sendGuildDisband() {
+    if (!this.connected) return;
+    this._send(makeFrame(MSG.C2S_GUILD_DISBAND, new Uint8Array(0)));
+  }
+  /** 申请入会 */
+  sendGuildApply(guildId) {
+    if (!this.connected) return;
+    const w = new Writer(); w.u32(guildId);
+    this._send(makeFrame(MSG.C2S_GUILD_APPLY, w.finish()));
+  }
+  /** 审批入会 */
+  sendGuildApprove(applicantName, approve) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(applicantName); w.u8(approve ? 1 : 0);
+    this._send(makeFrame(MSG.C2S_GUILD_APPROVE, w.finish()));
+  }
+  /** 踢出成员 */
+  sendGuildKick(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_GUILD_KICK, w.finish()));
+  }
+  /** 晋升 */
+  sendGuildPromote(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_GUILD_PROMOTE, w.finish()));
+  }
+  /** 降级 */
+  sendGuildDemote(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_GUILD_DEMOTE, w.finish()));
+  }
+  /** 退出公会 */
+  sendGuildLeave() {
+    if (!this.connected) return;
+    this._send(makeFrame(MSG.C2S_GUILD_LEAVE, new Uint8Array(0)));
+  }
+  /** 转让会长 */
+  sendGuildTransfer(targetName) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(targetName);
+    this._send(makeFrame(MSG.C2S_GUILD_TRANSFER, w.finish()));
+  }
+  /** 编辑公告 */
+  sendGuildNotice(notice) {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(notice);
+    this._send(makeFrame(MSG.C2S_GUILD_NOTICE, w.finish()));
+  }
+  /** 请求公会信息 */
+  sendGuildInfo() {
+    if (!this.connected) return;
+    this._send(makeFrame(MSG.C2S_GUILD_INFO, new Uint8Array(0)));
+  }
+  /** 请求公会列表 */
+  sendGuildList(keyword = '') {
+    if (!this.connected) return;
+    const w = new Writer(); w.str(keyword);
+    this._send(makeFrame(MSG.C2S_GUILD_LIST, w.finish()));
+  }
+  /** 发送聊天消息 */
+  sendChat(channel, target, content) {
+    if (!this.connected) return;
+    const w = new Writer(); w.u8(channel); w.str(target); w.str(content);
+    this._send(makeFrame(MSG.C2S_CHAT_SEND, w.finish()));
   }
   /** 通用二进制发送：type + payload（ArrayBuffer） */
   send(type, payload) {

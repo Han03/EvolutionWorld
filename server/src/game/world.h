@@ -37,6 +37,13 @@ public:
   // 生命周期
   void seedWorld();
   void tick();  // 每 tickMs 调用一次
+  // ---- 世界初始化执行器（大型网游规模：数据驱动生成，代码不保存地形/生物布局）----
+  // 生成连通可通行 mask + 主城 + 分组生物投放（写入 terrain mask 与 spawns_，不刷实体）。
+  // 内存模式每次启动调用；数据库模式仅在无存档时调用。调用后需 seedWorld()/reseedCreatures()。
+  bool runWorldInit();
+  // 世界数据持久化（数据库模式）：把 mask + 出生点保存到 / 从 Store 还原（还原不刷实体）。
+  bool saveWorldToStore(Store& s);
+  bool loadWorldFromStore(Store& s);
   // ---- 生物出生点（大型网游规模：数据驱动 + 剧本编辑器热重载） ----
   const SpawnConfig& spawns() const { return spawns_; }
   SpawnConfig& spawnsMut() { return spawns_; }
@@ -81,6 +88,9 @@ public:
   GameData& data() { return data_; }
   const GameData& data() const { return data_; }
   const ItemDef* itemDef(uint32_t id) const { return data_.item(id); }
+  // 应用编辑器提交的物品/生物配置（热替换内存 + 持久化 data/*.json；生物附带世界热重载）
+  bool applyItems(const std::string& itemsJson, const std::string& dataDir);
+  bool applyMonsters(const std::string& monstersJson, const std::string& dataDir);
   // 玩家攻击世界实体（服务端权威校验 + 伤害/仇恨/死亡/复活/掉落）
   bool playerAttack(const std::string& playerId, uint32_t targetWid, uint8_t slot);
   // 拾取地面掉落物（金币/物品进背包）
@@ -132,6 +142,15 @@ public:
   const std::unordered_set<std::string>& buffsDirty() const { return buffsDirty_; }
   void clearSkillsDirty() { skillsDirty_.clear(); }
   void clearBuffsDirty() { buffsDirty_.clear(); }
+  // ---- 测试/调试控制标志（控制台命令切换；默认全 false=正常玩法）----
+  // 全局生效（影响世界内所有玩家/怪物），供自动化测试确定性构造场景，替代不可预测操作。
+  struct TestFlags {
+    bool monstersPaused = false;    // 冻结全部怪物/Boss 的 AI、移动与施放（站桩测试）
+    bool noSkillCost = false;       // 技能/普攻无蓝耗、无冷却（重复测试同一技能）
+    bool antiCheatBypass = false;   // 关闭防作弊频率/序号/轨迹校验（输入直接接受）
+  };
+  TestFlags& testFlags() { return testFlags_; }
+  const TestFlags& testFlags() const { return testFlags_; }
   // ---- 控制台/调试辅助（GameConsole 与 /api/debug 复用） ----
   // 生成一只怪物（type 见 monsters 表），返回实体；坐标非法/水面自动找干地
   Entity* spawnMonster(const std::string& type, double x, double z);
@@ -198,6 +217,8 @@ private:
   void spawnNpcAt(const SpawnPoint& sp);
   // 怪物死亡掉落：金币 + 按概率表掉物品（生成地面掉落物实体）
   void rollDrops(Entity& killer, Entity& victim);
+  // 玩家获得经验：累加 + 循环升级（成长基础属性/回满血蓝），结束后标记属性脏
+  void grantExp(Entity& p, uint32_t amount);
   void spawnDrop(double x, double z, uint32_t itemId, uint32_t gold);
   // 应用怪物类型配置属性（type 见 monsters.json / GameData 默认）
   void applyMonsterStats(Entity& m, const std::string& type);
@@ -238,6 +259,7 @@ private:
   uint64_t tick_ = 0;
   int64_t entitySeq_ = 0;
   int64_t wireSeq_ = 0;
+  TestFlags testFlags_;   // 测试/调试控制标志（控制台命令切换，默认正常玩法）
   Mulberry32 rng_;
   // 社交系统
   Store* store_ = nullptr;

@@ -7,11 +7,17 @@ import { InputState } from './input.js';
 import { createRenderer } from './renderer.js';
 import { EntityViewManager } from './entities.js';
 import { Predictor } from './predict.js';
-import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME, skillDef, skillName } from './items.js';
+import { ITEM_DEFS, itemDef, itemName, itemIcon, typeName, itemDesc, SLOT_NAME, skillDef, skillName, applyGameData, rarityColor } from './items.js';
 import { EVT } from './protocol.js';
 import { Reader } from './protocol.js';
-import { loadEditCells } from './terrain.js';
+import { loadEditCells, loadWalkMask } from './terrain.js';
 import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, toggleQuestPanel, sendQuestList } from './quests.js';
+import { initSocialUI, toggleFriendPanel, toggleGuildPanel, toggleChatFocus, isChatFocused,
+  handleFriendRequest, handleFriendList, handleFriendStatus, handleFriendResult,
+  handleGuildInfo, handleGuildResult, handleGuildNotify, handleGuildList, handleGuildApplyN,
+  handleChatMsg, handleChatHistory, handleChatResult, addChatMessage } from './social.js';
+// 登录态持久化：与世界编辑器（editor.js）共用同一份 localStorage 会话
+import { saveSession, loadSession, clearSession } from './session.js';
 
 const $ = (id) => document.getElementById(id);
 const overlay = $('login-overlay');
@@ -45,7 +51,7 @@ let inputAcc = 0;
 let bossStates = new Map(); // wid -> 世界Boss共享状态（S2C_BOSS 最新）
 let bossDisplay = null;     // HUD 顶栏展示的 Boss
 // 物品系统状态（服务端权威，S2C_INVENTORY/S2C_STATS 刷新）
-let playerStats = { maxHp: 100, maxMp: 50, attack: 12, defense: 3, hp: 100, mp: 50 };
+let playerStats = { maxHp: 100, maxMp: 50, attack: 12, defense: 3, hp: 100, mp: 50, level: 1, exp: 0, expToNext: 100 };
 let inventory = {};   // itemId -> 数量
 let equip = {};       // 槽位值 -> itemId
 let gold = 0;
@@ -83,18 +89,6 @@ function showMsg(text, ok) {
   const el = $('login-msg');
   el.textContent = text || '';
   el.className = 'msg' + (ok ? ' ok' : '');
-}
-
-// ---- 登录态持久化（localStorage）----
-const SESSION_KEY = 'ew_session';
-function saveSession(token, username) {
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token, username })); } catch (_) {}
-}
-function loadSession() {
-  try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (_) { return null; }
-}
-function clearSession() {
-  try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
 }
 
 let loggingIn = false; // 防重入：submit 按钮会同时触发 click+submit，避免双重连接
@@ -154,11 +148,24 @@ async function enterWorld(token, username, worldMeta) {
       $('hud-conn').className = 'hud-status-chip off';
     };
     await net.connect(token);
+    // 加载服务器可通行 mask（世界初始化执行器产物；客户端不再程序化生成，与服务端同源）
+    // 必须在任何 terrainBlocked/预测/渲染前安装，否则未加载时全图视为空洞。
+    try {
+      const mr = await fetch('/api/terrain/mask');
+      const mj = await mr.json();
+      if (mj && mj.ok) loadWalkMask(mj);
+    } catch (_) {}
     // 加载服务器地形编辑层（地形编辑器产物；客户端/服务端同源，保证预测与碰撞一致）
     try {
       const r = await fetch('/api/terrain/edit');
       const j = await r.json();
       if (j && j.ok) loadEditCells(j.cells);
+    } catch (_) {}
+    // 加载服务器游戏数据（物品/生物配置；替换静态镜像，支持编辑器热更新）
+    try {
+      const gr = await fetch('/api/gamedata');
+      const gj = await gr.json();
+      if (gj && gj.ok) applyGameData(gj);
     } catch (_) {}
   } catch (e) {
     loading.classList.add('hidden');
@@ -202,6 +209,7 @@ async function enterWorld(token, username, worldMeta) {
   }
   window.__ewEntities = entities; // 测试/调试钩子
   input = new InputState(renderer.canvas);
+  input.setTerrainRenderer(renderer.terrainRenderer);
   window.__ewInput = input;
   // 本地预测器：从 hello 位置起步
   predictor = new Predictor();
@@ -353,6 +361,22 @@ async function enterWorld(token, username, worldMeta) {
   // 初始化任务 UI（tab 切换 + 关闭按钮 + 全局回调）
   initQuestUI(net);
 
+  // ---- 社交系统回调接入 ----
+  net.onFriendRequest = (msg) => handleFriendRequest(msg);
+  net.onFriendList = (msg) => handleFriendList(msg);
+  net.onFriendStatus = (msg) => handleFriendStatus(msg);
+  net.onFriendResult = (msg) => handleFriendResult(msg);
+  net.onGuildInfo = (msg) => handleGuildInfo(msg);
+  net.onGuildResult = (msg) => handleGuildResult(msg);
+  net.onGuildNotify = (msg) => handleGuildNotify(msg);
+  net.onGuildList = (msg) => handleGuildList(msg);
+  net.onGuildApplyN = (msg) => handleGuildApplyN(msg);
+  net.onChatMsg = (msg) => handleChatMsg(msg);
+  net.onChatHistory = (msg) => handleChatHistory(msg);
+  net.onChatResult = (msg) => handleChatResult(msg);
+  // 初始化社交 UI（聊天栏 + 好友/公会面板事件绑定）
+  initSocialUI(net);
+
   net.onSelf = (msg) => {
     // 服务端后校验不通过 → 回退到权威位置
     predictor.correction(msg.x, msg.y, msg.z);
@@ -421,6 +445,22 @@ function protocolLog(dir, msg) {
     case 'S2C_QUEST_RESULT': detail = '任务操作结果'; break;
     case 'S2C_QUEST_COMPLETE': detail = '任务目标完成'; break;
     case 'S2C_QUEST_NOTIFY': detail = '任务进度通知'; break;
+    // 社交系统
+    case 'S2C_FRIEND_REQUEST': detail = `from=${msg.from} msg=${msg.message}`; break;
+    case 'S2C_FRIEND_LIST': detail = `好友数=${msg.friends.length}`; break;
+    case 'S2C_FRIEND_STATUS': detail = `${msg.name} ${msg.online ? '上线' : '离线'}`; break;
+    case 'S2C_FRIEND_RESULT': detail = `op=${msg.opCode} code=${msg.resultCode}`; break;
+    case 'S2C_GUILD_INFO': detail = `${msg.name} Lv${msg.level} ${msg.memberCount}/${msg.maxMembers}`; break;
+    case 'S2C_GUILD_RESULT': detail = `op=${msg.opCode} code=${msg.code}`; break;
+    case 'S2C_GUILD_NOTIFY': detail = `event=${msg.eventType} ${msg.data}`; break;
+    case 'S2C_GUILD_LIST': detail = `搜索结果=${msg.guilds.length}`; break;
+    case 'S2C_GUILD_APPLY_N': detail = `applicant=${msg.applicant}`; break;
+    case 'S2C_CHAT_MSG': detail = `[${msg.channel}] ${msg.sender}: ${msg.content.slice(0, 30)}`; break;
+    case 'S2C_CHAT_HISTORY': detail = `历史消息=${msg.messages.length}`; break;
+    case 'S2C_CHAT_RESULT': detail = `code=${msg.code}${msg.errorMsg ? ' ' + msg.errorMsg : ''}`; break;
+    case 'CHAT_SEND': detail = `ch=${msg.channel} target=${msg.target} content=${msg.content.slice(0, 30)}`; break;
+    case 'FRIEND_ADD': detail = `target=${msg.targetName}`; break;
+    case 'GUILD_CREATE': detail = `name=${msg.name}`; break;
     default: detail = JSON.stringify(msg).slice(0, 80); break;
   }
   line.textContent = `[${dir === 's2c' ? '↓S2C' : '↑C2S'}] ${t} ${detail}`;
@@ -450,6 +490,17 @@ function renderHud() {
   const sa = $('stat-attack'), sd = $('stat-defense');
   if (sa) sa.textContent = Math.round(playerStats.attack);
   if (sd) sd.textContent = Math.round(playerStats.defense);
+  // 等级 + 经验条（S2C_STATS 携带 level/exp/expToNext）
+  const lv = $('hud-level');
+  if (lv) lv.textContent = playerStats.level || 1;
+  const ef = $('exp-fill');
+  if (ef) {
+    const need = playerStats.expToNext || 0;
+    const pct = need > 0 ? Math.max(0, Math.min(100, ((playerStats.exp || 0) / need) * 100)) : 0;
+    ef.style.width = pct + '%';
+    const et = $('exp-text');
+    if (et) et.textContent = `${Math.round(playerStats.exp || 0)}/${Math.round(need)}`;
+  }
 }
 function findNearbyShopNpc(px, pz, range) {
   let best = null, bestD = range;
@@ -524,13 +575,15 @@ function renderInventory() {
   for (const id of ids) {
     const cnt = inventory[id];
     const d = itemDef(id);
+    const rc = rarityColor(id);
     const cell = document.createElement('div');
     cell.className = 'inv-cell';
+    cell.style.borderColor = rc;
     cell.innerHTML = `
       <div class="item-icon">${d.icon}</div>
       <div class="item-cnt">×${cnt}</div>
-      <div class="item-name">${d.name}</div>
-      <div class="item-sub">${typeName(d.type)}${d.slot ? '·' + (SLOT_NAME[d.slot] || '') : ''}</div>
+      <div class="item-name" style="color:${rc}">${d.name}</div>
+      <div class="item-sub">${typeName(d.type)}${d.slot ? '·' + (SLOT_NAME[d.slot] || '') : ''}${d.levelReq > 1 ? '·Lv' + d.levelReq : ''}</div>
       <div class="item-actions">
         ${d.type === 'equip' ? `<button class="act-btn" data-act="equip" data-slot="${d.slot}" data-id="${id}">穿戴</button>` : ''}
         ${d.type === 'consumable' ? `<button class="act-btn" data-act="use" data-id="${id}">使用</button>` : ''}
@@ -553,12 +606,13 @@ function renderEquip() {
   for (let slot = 1; slot <= 6; slot++) {
     const itemId = equip[slot] || 0;
     const d = itemDef(itemId);
+    const rc = itemId ? rarityColor(itemId) : '';
     const row = document.createElement('div');
     row.className = 'equip-row' + (itemId ? ' filled' : '');
     row.innerHTML = `
       <span class="equip-slot">${SLOT_NAME[slot] || slot}</span>
       <span class="item-icon">${itemId ? d.icon : '—'}</span>
-      <span class="equip-name">${itemId ? d.name : '（空）'}</span>
+      <span class="equip-name"${rc ? ` style="color:${rc}"` : ''}>${itemId ? d.name : '（空）'}</span>
       ${itemId ? `<button class="act-btn" data-slot="${slot}">卸下</button>` : ''}`;
     const btn = row.querySelector('.act-btn');
     if (btn) {
@@ -671,7 +725,7 @@ function loop(now) {
   lastT = now;
 
   // 1) 读取输入 → 本地预测即时生效（死亡时门控：不移动/不发送/不施放）
-  const mv = input.moveVector();
+  const mv = input.moveVector(predictor.predicted());
   inputAcc += dt;
   // 与服务端同频（20Hz）发送并推进预测
   if (inputAcc >= 0.05) {
@@ -681,7 +735,7 @@ function loop(now) {
       // 死亡：丢弃待处理输入（避免复活后残留触发）
       input.takeAttack(); input.takeSkillSlot();
       input.takeInvToggle(); input.takeShop(); input.takePickup();
-      input.takeQuestToggle();
+      input.takeQuestToggle(); input.takeSocialToggle();
     } else {
       predictor.applyInput(mv.x, mv.z, jump);
       const pred = predictor.predicted();
@@ -715,6 +769,11 @@ function loop(now) {
   // 物品系统交互（selfPos 已就绪）
   if (input.takeInvToggle()) toggleInventoryPanel();
   if (input.takeQuestToggle()) toggleQuestPanel();
+  // 社交系统快捷键
+  const socialToggle = input.takeSocialToggle();
+  if (socialToggle === 1) toggleFriendPanel();
+  else if (socialToggle === 2) toggleGuildPanel();
+  else if (socialToggle === 3) toggleChatFocus();
   if (input.takeShop()) {
     const npc = findNearbyShopNpc(selfPos.x, selfPos.z, 4);
     if (npc) net.sendShopOpen(npc.wid);
@@ -739,6 +798,7 @@ function loop(now) {
   renderer.updateTerrain(selfPos.x, selfPos.z);
   renderer.setSelf(selfPos.x, selfPos.y, selfPos.z, net.selfName, selfDead);
   renderer.setEntities(entities.forRender());
+  renderer.setClickTarget(input.clickTarget);
   renderer.draw();
 
   // 4) HUD

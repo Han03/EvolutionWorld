@@ -125,6 +125,7 @@ async function main() {
   };
   const heal = () => consoleCmd(token, 'heal');
   // 施放技能并重试直到目标掉血（撕裂等技能可能因目标游走 miss；重试前清 CD/回蓝）
+  // 命中判定：成功施放后目标 HP 下降，或目标直接被击杀（高伤 AOE 秒杀低血怪时 monsterByWid 读不到尸体）。
   const castUntilHit = async (skillId, wid, attempts = 3) => {
     for (let a = 0; a < attempts; a++) {
       await heal();
@@ -134,12 +135,13 @@ async function main() {
       await wait(() => evtSkill, 1800);
       await sleep(300);
       const after = await monsterByWid(wid);
-      if (r.fb && r.fb.ok === 1 && before && after && after.hp < before.hp) {
-        return { hit: true, fb: r.fb, before, after };
+      if (r.fb && r.fb.ok === 1 && before) {
+        if (!after) return { hit: true, killed: true, fb: r.fb, before, after: { hp: 0, maxHp: before.maxHp } };
+        if (after.hp < before.hp) return { hit: true, killed: false, fb: r.fb, before, after };
       }
       await sleep(200);
     }
-    return { hit: false, fb: null, before: null, after: null };
+    return { hit: false, killed: false, fb: null, before: null, after: null };
   };
 
   await wait(() => gotHello && skills, 3000);
@@ -150,7 +152,10 @@ async function main() {
   }
   await heal();
 
-  // ---- 1) 取消目标检测：无目标施放全部新技能 ----
+  // ---- 测试环境确定性化 ----
+  // monsterpause on: 冻结怪物游走，保证 AOE/减益技能落点命中（前摇+飞行期间目标不移出半径）。
+  //   仅验证位移语义的步骤（4 眩晕静止 / 5 击退位移）需怪物活跃，那里临时 off。
+  await consoleCmd(token, 'monsterpause on');
   {
     const r1 = await castNoTarget(1015);
     check('无目标施放 SELF(疾风步)', r1.fb && r1.fb.ok === 1, r1.fb ? `ok=${r1.fb.ok}` : '');
@@ -169,7 +174,7 @@ async function main() {
     if (f) {
       const h = await castUntilHit(1011, f.wid);
       check('范围命中：撕裂 AOE 命中落点内怪物', h.hit,
-        h.after ? `hp=${h.after.hp}` : '未命中');
+        h.killed ? `秒杀(before hp=${h.before ? h.before.hp : '?'})` : (h.after ? `hp=${h.after.hp}` : '未命中'));
     } else check('范围命中：生成测试怪物', false);
   }
 
@@ -188,6 +193,7 @@ async function main() {
 
   // ---- 4) 眩晕：震荡波(1014, stun 2s)后怪物位置静止 ----
   {
+    await consoleCmd(token, 'monsterpause off'); // 本步验证 stun 使追击中的怪物停下，需怪物活跃
     const f = await spawnFresh('wolf');
     if (f) {
       const r = await castNoTarget(1014, f.wid);
@@ -200,10 +206,12 @@ async function main() {
       check('眩晕：震荡波后怪物位置静止(<0.4m)', r.fb && r.fb.ok === 1 && dist < 0.4,
         `移动=${dist.toFixed(2)}m fb=${r.fb ? r.fb.ok : 'null'}`);
     } else check('眩晕：生成测试怪物', false);
+    await consoleCmd(token, 'monsterpause on');
   }
 
   // ---- 5) 击退：猛击(1016, knockback 6m)后怪物位移>3m ----
   {
+    await consoleCmd(token, 'monsterpause off'); // 本步验证击退位移，需怪物可被推动
     const f = await spawnFresh('wolf');
     if (f) {
       const posA = { x: f.x, z: f.z };
@@ -215,6 +223,7 @@ async function main() {
       check('击退：猛击后怪物位移>3m', r.fb && r.fb.ok === 1 && dist > 3.0,
         `位移=${dist.toFixed(2)}m fb=${r.fb ? r.fb.ok : 'null'}`);
     } else check('击退：生成测试怪物', false);
+    await consoleCmd(token, 'monsterpause on');
   }
 
   // ---- 6) 霸体：SUPER_ARMOR 免疫眩晕 + 期间仍可施放 ----
@@ -279,6 +288,8 @@ async function main() {
     } else check('减攻：生成测试怪物', false);
   }
 
+  // ---- 复位测试标志（把服务端恢复为正常玩法，避免污染在线世界）----
+  await consoleCmd(token, 'monsterpause off');
   ws.close();
   console.log(`\n结果: PASS=${pass} FAIL=${fail}`);
   process.exit(fail ? 1 : 0);

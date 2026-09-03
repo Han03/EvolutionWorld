@@ -30,6 +30,8 @@ public:
   // 处理一条 input 消息；上层根据结果决定是否应用输入/下发 correction/kick
   AntiCheatResult process(Entity& p, const Json& msg, uint64_t nowMs);
   void reset(Entity& p);
+  // 测试模式：跳过全部校验（频率/序号/轨迹），输入直接接受（由 World::testFlags().antiCheatBypass 驱动）
+  void setBypass(bool b) { bypass_ = b; }
 
 private:
   struct RateBucket { double tokens; uint64_t lastMs; };
@@ -42,6 +44,7 @@ private:
   void onViolation(Entity& p, AntiCheatResult& out, const std::string& reason);
 
   const Config& cfg_;
+  bool bypass_ = false;   // 测试模式：跳过校验（默认关闭）
   std::unordered_map<std::string, RateBucket> buckets_;
   std::unordered_map<std::string, Claim> claims_;
 };

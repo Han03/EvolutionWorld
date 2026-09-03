@@ -58,6 +58,91 @@ node scripts/ai_void_test.mjs                  # AI 空洞区域判断：怪物�
 
 ---
 
+## 部署（两种方式）
+
+服务端只能跑在 Linux（依赖 `epoll` / POSIX socket / `fcntl`），本机开发环境为
+**Windows + WSL2 Ubuntu**：MySQL / Redis 装在 Windows 侧，WSL2 通过
+`/etc/resolv.conf` 的 nameserver 动态拿到 Windows 主机 IP 再连过去（重启后 IP 会变）。
+两种方式最终都部署到 WSL 内的 `/opt/evolutionworld`。
+
+### 方式一：推送代码触发 GitHub 自托管 runner（`.github/workflows/ci.yml`）
+`git push origin main` → 本机 self-hosted runner 领取任务 → 在 WSL2 内构建 →
+部署到 `/opt/evolutionworld` → 启动并保留常驻，供浏览器手动验证。
+特点：代码来源为 GitHub 上的 `main`；每次 `rm -rf build` 全量重建；每次
+`rm -rf /opt/evolutionworld`（**运行时数据会被清空**）。
+
+### 方式二：本机直接部署脚本（日常推荐，不走 GitHub）
+直接用本地工作副本（含未提交改动）部署到同一台机器的 WSL2，无需提交 / 推送：
+
+```powershell
+# 完整部署：增量构建 + 停旧进程 + 部署 + 启动 + 健康检查
+powershell -ExecutionPolicy Bypass -File deploy\deploy-local.ps1
+# 等价快捷方式
+npm run deploy:wsl
+```
+
+常用参数：
+
+| 命令 | 用途 |
+|---|---|
+| `deploy\deploy-local.ps1` | 增量构建 + 部署 + 重启 + 健康检查（实测约 45s） |
+| `-Clean` | 清空 `server/build` 全量重建 |
+| `-SkipBuild` | 只改了客户端静态文件时跳过 C++ 构建，直接重新部署（实测约 20s） |
+| `-Status` | 查看部署产物 / 进程 / 端口 / 健康状态 / 运行时数据 |
+| `-StopOnly` | 停止服务（实测约 6s） |
+| `-NoStart` | 只构建 + 部署，不启动 |
+| `-WipeData` | 清空运行时数据（账号 / 地形编辑 / 出生点），对齐 CI 行为 |
+| `-NoDb` | 不注入 MySQL/Redis，纯内存模式 |
+| `-Port 4000` | 换端口（注入 `EW_PORT`） |
+| `-Distro Ubuntu-22.04` | 指定其他 WSL 发行版 |
+
+也可以绕过 PowerShell 编排层，直接在 WSL 内执行 bash 脚本：
+
+```bash
+bash deploy/deploy_wsl.sh --src /mnt/c/MyProjects/EvolutionWorld
+bash deploy/deploy_wsl.sh --status
+bash deploy/deploy_wsl.sh --stop-only
+bash deploy/deploy_wsl.sh --src /mnt/c/MyProjects/EvolutionWorld --clean
+```
+
+**与方式一的差异（均为有意设计）**
+- **保留运行时数据**：默认不清空 `/opt/evolutionworld/server/data`
+  （`users.json` 账号 / `terrain_edit.json` 地形编辑 / `spawns.json` 出生点），
+  而 CI 的 `rm -rf /opt/evolutionworld` 会一并删掉；
+- **增量构建**：默认复用 `server/build` 缓存，CI 每次全量重建；
+- **代码来源**：本地工作副本，CI 取 GitHub 上的 `main`。
+
+**脚本内建的 WSL2 容错（踩过的坑，勿改回）**
+1. **分级唤醒**：先做 25s 快速探活；探活失败时用 `vmmem`/`vmmemWSL` 是否存在来区分
+   「VM 在跑但会话被残留 `wsl.exe` 客户端阻塞」（清理客户端，秒级恢复）与
+   「VM 未运行的真冷启动」（首次调用会打印 `Provisioning the new WSL instance`，
+   实测 1-3 分钟，只能耐心等且期间不能清理任何进程）。
+2. **不使用 `wsl --shutdown`**：有用户会话时它会无限期挂死；恢复统一走 Windows 层
+   `Stop-Process` / `taskkill` 强杀 `wslservice`、`wslhost`（与 CI 一致），
+   服务管理也完全绕开 `systemctl`。
+3. **超时只清理本次新起的 `wsl.exe`**：无差别杀光所有 `wsl.exe` 会连带拆掉 WSL VM，
+   导致下次调用又要重新 provisioning。
+4. **所有 WSL 调用都放在后台作业里并带超时**：直接前台调用一旦挂死会无限期阻塞，
+   同时输出仍能流式打印。
+5. **两阶段启动**：先 `timeout 5` 前台跑一遍把启动期崩溃直接打到控制台，确认正常后
+   再 `nohup ... & disown` 常驻（直接后台启动时崩溃日志常常来不及落盘）。
+6. **精确停进程**：按 `/proc/<pid>/exe` 的真实二进制匹配来 kill，**不用**
+   `pkill -f evolution_server` —— 脚本自身命令行含 `--log /tmp/evolution_server.log`，
+   会被该模式匹配到而自杀（进程 comm 名也被内核截断成 `evolution_serve`，
+   `pgrep -x` 同样不可靠）。
+7. **行尾与编码**：`.gitattributes` 强制 `*.sh` 用 LF（CRLF 会让 bash 直接报语法错误），
+   部署前还会再生成一份剥掉 CR 的副本 `deploy/.deploy_wsl.local.sh`（已 gitignore）；
+   WSL 侧脚本的运行时输出一律用 ASCII，避免 Windows 控制台（gb2312 代码页）
+   解码 UTF-8 时乱码。
+
+> 注：`deploy-local.ps1` 含中文，必须以 **UTF-8 with BOM** 保存，否则
+> Windows PowerShell 5.1 会按 ANSI 代码页解析而报一堆莫名的语法错误。
+
+部署完成后浏览器打开 `http://localhost:3000`；服务日志在 WSL 内
+`/tmp/evolution_server.log`。
+
+---
+
 ## 已实现功能
 | 模块 | 说明 |
 |---|---|
@@ -241,6 +326,10 @@ node scripts/ai_void_test.mjs                  # AI 空洞区域判断：怪物�
 ## 项目结构
 ```
 EvolutionWorld/
+├── .github/workflows/ci.yml       # 部署方式一：推送触发本机自托管 runner 部署到 WSL2
+├── deploy/                        # ★ 部署方式二：本机直接部署到 WSL2（不走 GitHub）
+│   ├── deploy-local.ps1           # Windows 侧编排：WSL 唤醒/分级恢复 + 流式调用 + 超时兜底
+│   └── deploy_wsl.sh              # WSL 内执行：构建 → 停旧进程 → 部署产物 → 两阶段启动 → 健康检查
 ├── client/                        # 网页测试客户端（Canvas 2D，零依赖）
 │   ├── index.html                 # 登录页 + HUD + 协议透传监控面板
 │   ├── css/style.css

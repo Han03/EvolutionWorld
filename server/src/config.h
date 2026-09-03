@@ -21,6 +21,19 @@ struct Config {
   int terrainGridPoints = 33;  // 区块高度场数据每边采样点数（世界地图数据存储粒度）
   int monsterCount = 24;
   int npcCount = 12;
+  // ---- 世界初始化执行器（大型网游规模：数据驱动生成，代码不保存地形/生物布局）----
+  // 每次内存模式启动 / 编辑器“重新初始化世界”时，由 WorldInitializer 依据以下参数生成：
+  //   连通可通行区域（主城 + 主干道路网，BFS 裁剪保证全图可达）+ 分组生物投放（近弱远强）。
+  double worldCityRadius = 11.0;         // 主城可通行圆盘半径（米）
+  int worldRoads = 8;                    // 主干道数量（从主城向外辐射，保证全图连通）
+  int worldRoadSteps = 55;               // 每条主干道随机游走步数（决定世界延伸范围）
+  double worldRoadWidth = 2.6;           // 主干道半宽（米）
+  double worldMonsterFreeRadius = 28.0;  // 主城免怪半径（米）：此范围内不投放怪物
+  double worldMonsterMaxRadius = 112.0;  // 怪物投放最远距离（米）：越远实力越强
+  int worldMonsterGroups = 22;           // 怪物群数量（相同怪物成群出现）
+  int worldMonsterGroupMin = 3;          // 每群怪物数量下限
+  int worldMonsterGroupMax = 6;          // 每群怪物数量上限
+  double worldMonsterGroupSpacing = 14.0;// 群锚点最小间距（米，避免怪物扎堆重叠）
   // ---- 世界怪物 & 世界 Boss（状态共享）----
   int bossCount = 3;                 // 世界 Boss 数量（全区共享实体）
   float bossHp = 500.0f;             // Boss 生命

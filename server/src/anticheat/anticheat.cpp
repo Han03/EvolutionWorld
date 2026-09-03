@@ -26,6 +26,17 @@ AntiCheatResult AntiCheat::process(Entity& p, const Json& msg, uint64_t nowMs) {
   if (!std::isfinite(py)) py = p.pos.y;
   if (!std::isfinite(pz)) pz = p.pos.z;
 
+  // ---- 测试模式：跳过频率/序号/轨迹全部校验，输入直接接受（不下发 correction/kick）----
+  if (bypass_) {
+    p.input.moveX = moveX;
+    p.input.moveZ = moveZ;
+    if (jump) p.input.jump = true;
+    p.lastSeq = seq;
+    p.acceptedInputs++;
+    p.lastAcceptMs = nowMs;
+    return out;  // accepted=true, correction=false, kick=false
+  }
+
   // ---- 1) 限制上报频率（令牌桶，防高频瞬移包轰炸） ----
   if (!checkRate(p, nowMs)) {
     p.rateDrops++;

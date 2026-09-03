@@ -261,7 +261,7 @@ std::string inventoryFrame(const Entity& p) {
   }
   return frame(S2C_INVENTORY, w.data());
 }
-// 自身属性帧（血量/蓝量/攻击/防御）
+// 自身属性帧（血量/蓝量/攻击/防御/等级/经验）
 std::string statsFrame(const Entity& p) {
   Writer w;
   w.u32((uint32_t)p.maxHp);
@@ -270,6 +270,9 @@ std::string statsFrame(const Entity& p) {
   w.u32((uint32_t)p.defense);
   w.u32((uint32_t)p.hp);
   w.u32((uint32_t)p.mp);
+  w.u32((uint32_t)p.level);            // 等级
+  w.u32((uint32_t)p.pl.exp);           // 当前级已累计经验
+  w.u32(playerExpToNext(p.level));     // 升下一级所需经验
   return frame(S2C_STATS, w.data());
 }
 // 拾取反馈帧

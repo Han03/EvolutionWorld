@@ -1,6 +1,7 @@
 // world.cpp - 世界管理器实现 + 世界怪物/世界Boss 状态共享（服务端单点权威）
 #include "world.h"
 #include "terrain.h"
+#include "worldinit.h"
 #include <cstdio>
 #include "ai.h"
 #include "net/protocol.h"
@@ -26,7 +27,8 @@ static void dropSystem(World& w, double dt);
 World::World(const Config& cfg)
     : cfg_(cfg), physics_(cfg), chunks_(*this, cfg),
       aoi_(cfg.aoiCellSizeM), rng_((uint32_t)cfg.worldSeed ^ 0x51ab) {
-  spawns_.loadDefaults(cfg);   // 确定性默认出生点（可被 data/spawns.json 覆盖）
+  // 出生点布局不再硬编码：由世界初始化执行器（runWorldInit）数据驱动生成，
+  // 或数据库模式从库还原（loadWorldFromStore）。构造时不填充默认布局。
   // 初始化社交系统
   friends_ = std::make_unique<FriendSystem>(*this);
   guilds_ = std::make_unique<GuildSystem>(*this);
@@ -68,8 +70,28 @@ void World::addEntity(Entity&& e) {
   aoi_.move(entities_[id].wid, entities_[id].pos.x, entities_[id].pos.z);
 }
 void World::seedWorld() {
-  // 数据驱动出生点：从 spawns_（默认确定性生成 或 data/spawns.json 覆盖）刷出全部生物
+  // 数据驱动出生点：从 spawns_（世界初始化生成 / 数据库还原 / 编辑器覆盖）刷出全部生物
   for (const auto& sp : spawns_.list()) spawnFromPoint(sp);
+}
+// ---- 世界初始化执行器 / 持久化（委托 worldinit.cpp）----
+bool World::runWorldInit() {
+  bool ok = generateWorld(*this, cfg_);
+  fprintf(stderr, "[worldinit] 世界初始化%s：mask %dx%d 就绪=%d，出生点 %zu\n",
+          ok ? "完成" : "失败", terrainWalkMaskN(), terrainWalkMaskN(),
+          (int)terrainWalkMaskReady(), spawns_.size());
+  return ok;
+}
+bool World::saveWorldToStore(Store& s) {
+  return s.saveWorldData("world", worldDataToJson(spawns_));
+}
+bool World::loadWorldFromStore(Store& s) {
+  std::string out;
+  if (!s.loadWorldData("world", out) || out.empty()) return false;
+  bool ok = worldDataFromJson(*this, out);
+  if (ok)
+    fprintf(stderr, "[worldinit] 从数据库还原世界：mask %dx%d，出生点 %zu\n",
+            terrainWalkMaskN(), terrainWalkMaskN(), spawns_.size());
+  return ok;
 }
 void World::spawnBossAt(double hx, double hz, const std::string& name) {
   Entity b = makeMonster(nextEntityId("boss"), "gargoyle");
@@ -101,8 +123,15 @@ void World::spawnBossAt(double hx, double hz, const std::string& name) {
 // 按出生点生成一只生物（monster/npc/boss）
 void World::spawnFromPoint(const SpawnPoint& sp) {
   if (sp.kind == SP_MONSTER) {
-    for (int i = 0; i < sp.count; i++)
-      spawnMonster(sp.type.empty() ? "wolf" : sp.type, sp.x, sp.z);
+    // 相同怪物成群：群内围绕锚点小半径散布（确定性），避免完全重叠；
+    // spawnMonster 会在附近自动寻找可通行干地，保证不落空洞/水中。
+    const std::string type = sp.type.empty() ? "wolf" : sp.type;
+    int n = sp.count > 0 ? sp.count : 1;
+    for (int i = 0; i < n; i++) {
+      double ang = (double)i / (double)n * 6.283185307;
+      double rr = (i == 0) ? 0.0 : 2.0 + (double)(i % 3) * 1.6;   // 0 / 2.0 / 3.6 / 5.2 米内散布
+      spawnMonster(type, sp.x + std::cos(ang) * rr, sp.z + std::sin(ang) * rr);
+    }
   } else if (sp.kind == SP_NPC) {
     spawnNpcAt(sp);
   } else if (sp.kind == SP_BOSS) {
@@ -150,7 +179,30 @@ void World::reseedCreatures() {
 bool World::applySpawns(const std::string& json, const std::string& dataDir) {
   if (!spawns_.fromJson(json)) return false;
   spawns_.saveFile(dataDir + "/spawns.json");
+  // 数据库模式：同步将出生点（连同当前 mask）落库，保证重启后一致
+  if (store_ && store_->worldDataPersistent()) saveWorldToStore(*store_);
   reseedCreatures();
+  return true;
+}
+// 应用编辑器物品配置：热替换内存 items_ → 持久化 data/items.json（物品为查询型，无需重建实体）
+bool World::applyItems(const std::string& itemsJson, const std::string& dataDir) {
+  try {
+    Json arr = Json::parse(itemsJson);
+    if (!data_.replaceItems(arr)) return false;
+  } catch (...) { return false; }
+  data_.saveItemsFile(dataDir + "/items.json");
+  fprintf(stderr, "[gamedata] 物品配置热重载：%zu 件\n", data_.items().size());
+  return true;
+}
+// 应用编辑器生物配置：热替换内存 monsters_ → 持久化 data/monsters.json → 热重载世界生物
+bool World::applyMonsters(const std::string& monstersJson, const std::string& dataDir) {
+  try {
+    Json obj = Json::parse(monstersJson);
+    if (!data_.replaceMonsters(obj)) return false;
+  } catch (...) { return false; }
+  data_.saveMonstersFile(dataDir + "/monsters.json");
+  reseedCreatures();
+  fprintf(stderr, "[gamedata] 生物配置热重载：%zu 种\n", data_.monsters().size());
   return true;
 }
 Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
@@ -207,8 +259,9 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   if (!t || !t->active) return false;
   if (t->kind != EntityKind::Monster) return false;  // 只可攻击世界怪物/Boss
   uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
-  // 攻击冷却（服务端权威，客户端不可伪造频率）
-  if (nowMs - p->lastAttackMs < (uint64_t)(cfg_.playerAttackCdSec * 1000.0)) return false;
+  // 攻击冷却（服务端权威，客户端不可伪造频率）；测试无消耗模式下跳过，便于快速重复击杀
+  if (!testFlags_.noSkillCost &&
+      nowMs - p->lastAttackMs < (uint64_t)(cfg_.playerAttackCdSec * 1000.0)) return false;
   // 范围判定
   if (p->pos.dist2D(t->pos) > cfg_.playerAttackRange) return false;
   p->lastAttackMs = nowMs;
@@ -228,6 +281,12 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
 // 目标死亡统一处理（普攻/技能共用）：Boss 复活 / 普通怪物失活+复活 + 掉落
 void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
   victim.hp = 0;
+  // 击杀奖励经验（仅玩家击杀者）：怪物按 expReward，Boss 无类型配置时兜底
+  if (killer.kind == EntityKind::Player) {
+    const MonsterDef* kdef = victim.monsterType.empty() ? nullptr : data_.monster(victim.monsterType);
+    uint32_t exp = kdef ? kdef->expReward : (victim.isBoss ? 500u : 0u);
+    if (exp) grantExp(killer, exp);
+  }
   if (victim.isBoss) {
     victim.bossState = BS_DEAD;
     victim.bossTarget = 0;
@@ -249,6 +308,19 @@ void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
     victim.vel = {0, 0, 0};
     pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
   }
+}
+// 玩家获得经验：累加 + 循环升级（每级 +20HP/+8MP/+2ATK/+1DEF，升级回满血蓝）
+void World::grantExp(Entity& p, uint32_t amount) {
+  if (p.kind != EntityKind::Player || amount == 0) return;
+  p.pl.exp += amount;
+  while (p.level < 999 && p.pl.exp >= playerExpToNext(p.level)) {
+    p.pl.exp -= playerExpToNext(p.level);
+    p.level += 1;
+    p.pl.baseHp += 20; p.pl.baseMp += 8; p.pl.baseAttack += 2; p.pl.baseDefense += 1;
+    recomputeStats(p);
+    p.hp = p.maxHp; p.mp = p.maxMp;
+  }
+  markStatsDirty(p.id);
 }
 // ---------- 技能系统（大型网游规模，数据驱动，服务端权威） ----------
 bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
@@ -272,9 +344,10 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
   if (!sd) return false;
   if (!p->learnedSkills.count(skillId)) return false;  // 未学习
   uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  const bool freeCast = testFlags_.noSkillCost;  // 测试：无冷却/无蓝耗，便于重复施放同一技能
   auto cdit = p->skillCd.find(skillId);
-  if (cdit != p->skillCd.end() && cdit->second > nowMs) return false;  // 冷却中
-  if (p->mp < sd->manaCost) return false;  // 蓝量不足
+  if (!freeCast && cdit != p->skillCd.end() && cdit->second > nowMs) return false;  // 冷却中
+  if (!freeCast && p->mp < sd->manaCost) return false;  // 蓝量不足
   // 取消目标检测：无目标（targetWid=0）也可施放。命中全部按「落点 + radius」范围计算。
   // 落点语义：SELF=自身位置；ENEMY/AOE=客户端指定落点（用于范围命中判定）。
   double gx = tx, gz = tz;
@@ -308,8 +381,10 @@ static double hitRadius(const SkillDef& sd) { return sd.radius > 0 ? sd.radius :
 // 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 按范围施加效果
 void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz) {
   uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
-  caster.mp -= sd.manaCost;
-  caster.skillCd[sd.id] = nowMs + (uint64_t)sd.cooldownMs;
+  if (!testFlags_.noSkillCost) {  // 测试：无消耗模式下不扣蓝、不上冷却（可连续施放）
+    caster.mp -= sd.manaCost;
+    caster.skillCd[sd.id] = nowMs + (uint64_t)sd.cooldownMs;
+  }
   if (caster.kind == EntityKind::Player) { markStatsDirty(caster.id); markSkillsDirty(caster.id); }
   // 落点（结算时以落点为准；SELF=施法者位置）
   double gx = tx, gz = tz;
@@ -680,6 +755,7 @@ void World::applyMonsterStats(Entity& m, const std::string& type) {
   m.mp = m.maxMp = def->mp;
   m.attack = def->attack;
   m.defense = def->defense;
+  m.ai.speed = def->moveSpeed;  // 移动速度（AI 巡逻/追击用）
   m.skillIds = def->skillIds;
 }
 // 怪物死亡掉落：金币 + 概率表物品（掉落物生成在世界，可拾取）
@@ -768,6 +844,7 @@ bool World::equipItem(const std::string& playerId, uint8_t slot, uint32_t itemId
   const ItemDef* def = data_.item(itemId);
   if (!def || def->type != ItemType::EQUIP) return false;
   if (def->slot != (EquipSlot)slot) return false;
+  if (def->levelReq > p->level) return false;  // 需求等级不足，不可装备
   // 需拥有该物品
   auto inv = p->pl.inventory.find(itemId);
   if (inv == p->pl.inventory.end() || inv->second < 1) return false;
@@ -981,12 +1058,15 @@ static void moveSystem(World& w, double dt) {
     // 任务钩子：移动后检测到达目标
     w.quests().onPlayerMove(*p);
   }
+  const bool paused = w.testFlags().monstersPaused;  // 测试：冻结怪物移动（仍受重力贴地，不漂移）
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (e.kind == EntityKind::Player || !e.active) continue;
     const double px = e.pos.x, pz = e.pos.z;
-    const bool wantsMove = (e.ai.targetVX != 0.0 || e.ai.targetVZ != 0.0);
-    moveEntityCollide(w, e, e.ai.targetVX, e.ai.targetVZ, dt);
+    const double tvx = paused ? 0.0 : e.ai.targetVX;
+    const double tvz = paused ? 0.0 : e.ai.targetVZ;
+    const bool wantsMove = (tvx != 0.0 || tvz != 0.0);
+    moveEntityCollide(w, e, tvx, tvz, dt);
     // 卡住检测：有移动意图但实际位移≈0（被空洞/深水/悬崖/实体墙挡住）→ 累积；否则恢复
     if (wantsMove && std::hypot(e.pos.x - px, e.pos.z - pz) < 0.05) e.ai.stuckT += dt;
     else e.ai.stuckT = std::max(0.0, e.ai.stuckT - dt);
@@ -1026,9 +1106,11 @@ static void moveSystem(World& w, double dt) {
 static void castSystem(World& w, double dt) {
   (void)dt;
   uint64_t nowMs = w.tickCount() * (uint64_t)w.config().tickMs;
+  const bool paused = w.testFlags().monstersPaused;  // 测试：冻结怪物/Boss 前摇推进
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (!e.active || e.castingSkillId == 0) continue;
+    if (paused && e.kind != EntityKind::Player) continue;  // 冻结期间怪物不结算施放
     const SkillDef* sd = w.data().skill(e.castingSkillId);
     if (!sd) { e.castingSkillId = 0; continue; }
     // 移动打断：玩家按了移动键（目标速度非零）即取消
@@ -1087,6 +1169,7 @@ static void buffSystem(World& w, double dt) {
 }
 // 生物/NPC AI：大规模调度（AOI 激活 + 时间片轮转 + 距离分级）→ 状态机
 static void aiSystem(World& w, double dt) {
+  if (w.testFlags().monstersPaused) return;  // 测试：全局冻结怪物/NPC AI（站桩测试）
   const auto& cfg = w.config();
   AiScheduler sched(cfg);
   uint64_t tick = w.tickCount();
@@ -1113,6 +1196,7 @@ static void dropSystem(World& w, double) {
 
 // 世界 Boss 状态机：全区共享（Idle 回血/侦测 → Engage 追击/普攻/范围技能 → Dead 复活计时）
 static void bossSystem(World& w, double dt) {
+  if (w.testFlags().monstersPaused) return;  // 测试：全局冻结 Boss AI（站桩测试）
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (!e.isBoss || !e.active) continue;

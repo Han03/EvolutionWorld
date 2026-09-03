@@ -135,6 +135,18 @@ public:
     return it == playerQuests_.end() ? "" : it->second;
   }
 
+  // ---- 世界数据（内存模式：进程内保存，重启丢失 → 每次启动重新初始化）----
+  bool saveWorldData(const std::string& key, const std::string& val) override {
+    world_[key] = val;
+    return true;
+  }
+  bool loadWorldData(const std::string& key, std::string& out) override {
+    auto it = world_.find(key);
+    if (it == world_.end()) return false;
+    out = it->second;
+    return true;
+  }
+
   // 供 Store 门面在降级/路由时访问
   const std::unordered_map<std::string, UserRecord>& users() const { return users_; }
   std::unordered_map<std::string, UserRecord>& usersMut() { return users_; }
@@ -150,6 +162,7 @@ private:
   std::unordered_map<uint32_t, GuildSave> guilds_;
   std::unordered_map<uint32_t, std::string> guildMembers_; // guildId -> membersJson
   std::unordered_map<std::string, std::string> playerQuests_; // username -> questsJson
+  std::unordered_map<std::string, std::string> world_;        // key -> 世界数据 JSON（mask+出生点）
 };
 
 // ============ 配置解析（环境变量） ============
@@ -399,6 +412,17 @@ std::string Store::loadQuests(const std::string& username) {
     if (!q.empty()) return q;
   }
   return memory_->loadQuests(username);
+}
+
+// ---- 世界数据（内存必写 + MySQL 尽力；读 MySQL 优先回退内存）----
+bool Store::saveWorldData(const std::string& key, const std::string& val) {
+  bool m = memory_->saveWorldData(key, val);
+  bool x = mysql_ ? mysql_->saveWorldData(key, val) : false;
+  return m || x;
+}
+bool Store::loadWorldData(const std::string& key, std::string& out) {
+  if (mysql_ && mysql_->loadWorldData(key, out)) return true;
+  return memory_->loadWorldData(key, out);
 }
 
 } // namespace ew

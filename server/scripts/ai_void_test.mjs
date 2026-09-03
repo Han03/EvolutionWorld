@@ -6,7 +6,7 @@
  * 需要服务端 EW_DEBUG=1（依赖 /api/console 与 /api/debug/teleport）
  */
 import { parseS2C, MSG, KIND } from '../../client/js/protocol.js';
-import { terrainBlocked } from '../../client/js/terrain.js';
+import { terrainBlocked, loadWalkMask } from '../../client/js/terrain.js';
 
 const BASE = 'http://localhost:3000';
 const WS = 'ws://localhost:3000/ws';
@@ -62,6 +62,8 @@ function decodeFrames(buf) {
 }
 
 async function main() {
+  const mj = await (await fetch(BASE + '/api/terrain/mask')).json();
+  if (!loadWalkMask(mj)) { console.error('FATAL: 无法加载可通行 mask', JSON.stringify(mj)); process.exit(1); }
   await post('/api/register', { username: UN, password: 'pass1234' }).catch(() => {});
   const j = await post('/api/login', { username: UN, password: 'pass1234' });
   const token = j.token;

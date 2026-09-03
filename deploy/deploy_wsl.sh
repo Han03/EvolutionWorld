@@ -127,6 +127,32 @@ resolve_win_host() {
   grep nameserver /etc/resolv.conf 2>/dev/null | head -1 | cut -d' ' -f2 | tr -d '\r'
 }
 
+# ---- 精确定位服务端进程 ----
+# 必须按 /proc/<pid>/exe 的真实二进制匹配，不能用 pkill -f evolution_server：
+# 本脚本自身的命令行里含 --log /tmp/evolution_server.log，会被该模式匹配到而自杀。
+# 另：进程 comm 名被内核截断为 15 字符（evolution_serve），pgrep -x 也不可靠。
+find_server_pids() {
+  local p exe
+  for p in /proc/[0-9]*; do
+    [ -r "$p/exe" ] || continue
+    exe="$(readlink "$p/exe" 2>/dev/null)" || continue
+    case "$exe" in
+      */evolution_server) printf '%s\n' "${p#/proc/}" ;;
+    esac
+  done
+}
+
+kill_server_pids() {
+  local pids p
+  pids="$(find_server_pids)"
+  [ -n "$pids" ] || return 1
+  for p in $pids; do
+    log "killing server pid $p"
+    kill -9 "$p" 2>/dev/null || true
+  done
+  return 0
+}
+
 # ---- 状态查询 ----
 show_status() {
   step "Deployment status"
@@ -149,7 +175,14 @@ show_status() {
   fi
 
   printf '\n--- process ---\n'
-  ps aux | grep -F evolution_server | grep -v grep || log "server not running"
+  local pids
+  pids="$(find_server_pids)"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    ps -o pid,etime,rss,args -p $pids 2>/dev/null || log "server not running"
+  else
+    log "server not running"
+  fi
 
   printf '\n--- port %s ---\n' "$PORT"
   ss -tlnp 2>/dev/null | grep ":$PORT " || log "port $PORT not listening"
@@ -166,10 +199,11 @@ show_status() {
 stop_server() {
   step "Stopping old server"
   # 部分进程会忽略 SIGTERM，统一 -9；kill 后等待 1s 再补一刀
-  pkill -9 -f evolution_server 2>/dev/null || true
+  kill_server_pids || log "no running evolution_server process found"
+  # 端口兜底：万一有其他进程占着目标端口
   fuser -k "$PORT/tcp" 2>/dev/null || true
   sleep 1
-  pkill -9 -f evolution_server 2>/dev/null || true
+  kill_server_pids || true
 
   local i
   for i in $(seq 1 10); do
@@ -303,7 +337,7 @@ start_server() {
   ( cd "$DEST/server" && env "${env_args[@]}" nohup ./build/evolution_server > "$LOG_FILE" 2>&1 & disown; sleep 1 )
   sleep 2
 
-  SERVER_PID="$(pgrep -f "$DEST/server/build/evolution_server" 2>/dev/null | head -1)"
+  SERVER_PID="$(find_server_pids | head -1)"
   if [ -n "${SERVER_PID:-}" ]; then
     ok "server started, pid=$SERVER_PID"
   else
@@ -330,7 +364,7 @@ health_check() {
   printf -- '--- server log (%s) ---\n' "$LOG_FILE"
   tail -n 60 "$LOG_FILE" 2>/dev/null || printf '(no log file)\n'
   printf -- '--- process ---\n'
-  ps aux | grep -F evolution_server | grep -v grep || printf '(no server process)\n'
+  ps -o pid,etime,args -p "$(find_server_pids | tr '\n' ',' | sed 's/,$//')" 2>/dev/null || printf '(no server process)\n'
   printf -- '--- port %s ---\n' "$PORT"
   ss -tlnp 2>/dev/null | grep ":$PORT " || printf '(port not listening)\n'
   printf -- '--- missing shared libs ---\n'
@@ -339,16 +373,18 @@ health_check() {
 }
 
 summary() {
+  # 注意：格式串以 '-' 开头时会被 bash 的 printf 当成选项（printf: --: invalid option），
+  #      因此分隔线统一走 '%s\n'。
   printf '\n==============================================================\n'
   printf ' DEPLOY OK (local WSL, no GitHub Actions involved)\n'
-  printf '--------------------------------------------------------------\n'
+  printf '%s\n' '--------------------------------------------------------------'
   printf ' binary : %s/server/build/evolution_server\n' "$DEST"
   printf ' pid    : %s\n' "${SERVER_PID:-unknown}"
   printf ' url    : http://localhost:%s\n' "$PORT"
   printf ' log    : %s\n' "$LOG_FILE"
   printf ' client : %s/client\n' "$DEST"
   printf ' data   : %s/server/data\n' "$DEST"
-  printf '--------------------------------------------------------------\n'
+  printf '%s\n' '--------------------------------------------------------------'
   printf ' stop   : powershell -File deploy/deploy-local.ps1 -StopOnly\n'
   printf ' status : powershell -File deploy/deploy-local.ps1 -Status\n'
   printf '==============================================================\n'

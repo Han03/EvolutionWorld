@@ -169,8 +169,11 @@ export class TerrainRenderer {
   }
   /** 相机等距偏移 x */
   _camSx() { return (this.cam.cx - this.cam.cz) * ISO * this.cam.zoom; }
-  /** 相机等距偏移 y */
-  _camSy() { return (this.cam.cx + this.cam.cz) * ISO * 0.5 * this.cam.zoom; }
+  /** 相机等距偏移 y（含相机位置地形高度校正，保证玩家始终居中） */
+  _camSy() {
+    const camH = terrainHeight(this.cam.cx, this.cam.cz);
+    return ((this.cam.cx + this.cam.cz) * ISO * 0.5 - camH * HS) * this.cam.zoom;
+  }
 
   // ---- 相机控制 ----
   pan(dxScreen, dyScreen) {

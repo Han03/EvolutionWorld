@@ -49,6 +49,7 @@ struct Entity {
     // 基础属性（等级成长，装备加成在 maxHp/maxMp/attack/defense 上叠加，服务端权威）
     double baseHp = 100, baseMp = 50, baseAttack = 12, baseDefense = 3;
     uint32_t gold = 0;                                  // 金币（也是物品）
+    uint64_t exp = 0;                                   // 累计经验（升级系统；当前等级见 Entity.level）
     std::array<uint32_t, 6> equip = {};                 // 已穿戴装备 itemId（槽位值-1 下标，0=空）
     std::unordered_map<uint32_t, uint32_t> inventory;   // 背包：itemId -> 数量
     uint32_t openShopId = 0;                            // 当前打开的商店 ID（0=未打开）

@@ -24,7 +24,7 @@ export function createRenderer(container) {
   window.addEventListener('resize', resize);
 
   // 运行时状态（每帧由 boot 同步）
-  const state = { selfX: 0, selfY: 5, selfZ: 0, self: null, entities: [] };
+  const state = { selfX: 0, selfY: 5, selfZ: 0, self: null, entities: [], clickTarget: null };
 
   // 技能简易效果（前摇进度圈 / AOE 范围圈 / 打断闪红）：
   //   {kind:'cast'|'aoe'|'cancel', wid, x, z, radius, color, startMs, durMs}
@@ -100,6 +100,8 @@ export function createRenderer(container) {
     tr.drawChunks(ctx);
     // 1.5) AOE 范围圈（地面层，实体之下）
     drawAoeEffects(performance.now());
+    // 1.6) 鼠标点击移动目标标记（地面层）
+    drawClickTarget(performance.now());
     // 2) 实体（2.5D 投影 + 深度排序，远→近）
     const ents = [...state.entities];
     ents.sort((a, b) => (a.x + a.z) - (b.x + b.z));
@@ -232,6 +234,30 @@ export function createRenderer(container) {
         ctx.stroke();
       }
     }
+  }
+  /** 鼠标点击移动目标标记（脉冲绿色小圆 + 十字线） */
+  function drawClickTarget(now) {
+    const t = state.clickTarget;
+    if (!t) return;
+    const zr = tr.cam.zoom;
+    const gy = terrainHeight(t.x, t.z);
+    const [px, py] = ellipsePath(t.x, gy, t.z, 0.5);
+    const pulse = 0.6 + 0.4 * Math.sin(now * 0.006);
+    const R = Math.max(6, 0.5 * ENTITY_PX * zr);
+    // 外圆脉冲
+    ctx.beginPath();
+    ctx.ellipse(px, py, R * pulse, R * 0.5 * pulse, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(74,222,128,${0.7 * pulse})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // 十字线
+    const cr = R * 0.4;
+    ctx.beginPath();
+    ctx.moveTo(px - cr, py); ctx.lineTo(px + cr, py);
+    ctx.moveTo(px, py - cr * 0.5); ctx.lineTo(px, py + cr * 0.5);
+    ctx.strokeStyle = 'rgba(74,222,128,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
   }
 
   function hexToRgba(hex, a) {
@@ -376,6 +402,10 @@ export function createRenderer(container) {
   function setEntities(list) {
     state.entities = list;
   }
+  /** 同步鼠标点击移动目标（渲染目标标记） */
+  function setClickTarget(target) {
+    state.clickTarget = target;
+  }
   /** 同步世界 Boss 共享状态 */
   function setBossState(b) {
     if (!b || !b.wid) return;
@@ -387,7 +417,7 @@ export function createRenderer(container) {
   }
 
   return {
-    canvas, ctx, updateTerrain, setSelf, setEntities, setBossState, draw, resize,
+    canvas, ctx, updateTerrain, setSelf, setEntities, setClickTarget, setBossState, draw, resize,
     addSkillEffect, clearCasting, showAoePreview, fxSnapshot,
     /** 暴露共享地形渲染器（供外部高级用法） */
     terrainRenderer: tr,

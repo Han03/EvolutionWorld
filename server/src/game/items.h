@@ -23,6 +23,13 @@ inline double calcDamage(double atk, double def, double variance) {
   return std::max(1.0, d);
 }
 
+// 玩家升级经验曲线（服务端权威，protocol/world 共用）：
+// 升到下一级所需经验 = 100 × 1.35^(level-1)（level 1→100, 2→135, 3→182 …）
+inline uint32_t playerExpToNext(int level) {
+  if (level < 1) level = 1;
+  return (uint32_t)(100.0 * std::pow(1.35, (double)(level - 1)));
+}
+
 // ---------- 物品类型 ----------
 enum class ItemType : uint8_t {
   EQUIP = 1,      // 装备
@@ -55,15 +62,20 @@ struct ItemDef {
   double restoreHp = 0, restoreMp = 0;
   uint32_t price = 0;     // 商店售价（金币）
   uint32_t stackMax = 99; // 单格堆叠上限
+  int rarity = 0;         // 品质/稀有度：0普通 1优秀 2稀有 3史诗 4传说（客户端着色展示）
+  int levelReq = 1;       // 需求等级（穿戴校验：玩家等级 < levelReq 不可装备）
 };
 
 // ---------- 掉落表（怪物配置） ----------
 struct DropEntry { uint32_t itemId = 0; double prob = 0.0; }; // prob 0..1（每次击杀独立判定）
 struct MonsterDef {
-  std::string type;      // 怪物类型 key（配置文件/程序内引用）
+  std::string type;      // 怪物类型 key（配置文件/程序内引用；亦即生物「ID」）
   std::string name;
+  std::string desc;      // 描述（编辑器配置，客户端展示）
   int level = 1;
   double hp = 50, mp = 20, attack = 8, defense = 2;
+  double moveSpeed = 1.5;            // 移动速度（写入 Entity.ai.speed；对齐 makeMonster 默认 1.5）
+  uint32_t expReward = 0;            // 击杀奖励经验（接入玩家升级系统）
   uint32_t goldMin = 1, goldMax = 3;   // 击杀掉落金币区间
   std::vector<DropEntry> drops;        // 掉落物品概率表
   double dropRadius = 1.6;             // 掉落物散布半径
@@ -106,6 +118,17 @@ public:
 
   static ItemType itemTypeFromJson(const Json& j, ItemType def);
   static EquipSlot slotFromJson(const Json& j, EquipSlot def);
+  // 反查：枚举 → JSON 字符串（序列化用，与上面两个互逆）
+  static const char* itemTypeToString(ItemType t);
+  static const char* slotToString(EquipSlot s);
+
+  // ---- 序列化 / 热替换（世界编辑器物品·生物配置用） ----
+  std::string itemsToJson() const;    // ItemDef 数组（字段与 loadFromJson 对齐）
+  std::string monstersToJson() const; // MonsterDef 对象（键=type）
+  bool replaceItems(const Json& arr);    // 清空并用完整数组重填 items_
+  bool replaceMonsters(const Json& obj); // 清空并用完整对象重填 monsters_
+  bool saveItemsFile(const std::string& path);   // 写 itemsToJson() 到文件
+  bool saveMonstersFile(const std::string& path);// 写 monstersToJson() 到文件
 
 private:
   void addDefaultItem(uint32_t id, const char* name, const char* desc, const char* icon,

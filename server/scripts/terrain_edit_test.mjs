@@ -10,7 +10,7 @@
  */
 import {
   terrainHeight, terrainBlocked, terrainVoid, setEditCell, clearEdit,
-  getEditCells, loadEditCells, editCellCount, WATER_LEVEL,
+  getEditCells, loadEditCells, editCellCount, WATER_LEVEL, loadWalkMask, walkMaskReady,
 } from '../../client/js/terrain.js';
 const BASE = 'http://localhost:3000';
 let pass = 0, fail = 0;
@@ -27,28 +27,32 @@ async function post(path, body) {
 async function get(path) { const r = await fetch(BASE + path); return r.json(); }
 
 async function main() {
-  // ---- 1) 路径地图空洞（确定性 + 连通性） ----
-  console.log('[1] 路径地图空洞 mask（确定性 / 主城+主干道可通行 / 远处空洞）');
+  // ---- 0) 加载服务端下发的数据驱动可通行 mask ----
+  const mj = await get('/api/terrain/mask');
+  if (!loadWalkMask(mj)) { console.error('FATAL: 无法加载可通行 mask', JSON.stringify(mj)); process.exit(1); }
+
+  // ---- 1) 可通行 mask（数据驱动：确定性 / 主城可通行 / 远角空洞） ----
+  console.log('[1] 可通行 mask（数据驱动 / 主城中心可通行 / 远角空洞 / 确定性）');
   clearEdit();
-  const pts = [
-    [0, 0, false], [6, 6, false], [10, 40, true], [50, 50, true], [70, 0, true],
-    [15, 0, false], [-30, 0, false], [90, -90, true],
-  ];
+  check('服务端已下发并加载可通行 mask', walkMaskReady() && mj.ok === true,
+    `n=${mj.n} off=${mj.off}`);
+  // 确定性：同格多次采样一致
   let determinOk = true;
-  for (const [x, z, expectVoid] of pts) {
-    const v = terrainVoid(x, z);
-    if (v !== expectVoid) determinOk = false;
-    if (terrainVoid(x, z) !== terrainVoid(x, z)) determinOk = false; // 两次一致
+  for (let x = -60; x <= 60; x += 7) for (let z = -60; z <= 60; z += 7) {
+    if (terrainVoid(x + 0.5, z + 0.5) !== terrainVoid(x + 0.5, z + 0.5)) determinOk = false;
   }
-  check('空洞 mask 确定性且符合预期（主城/干道可通行，远处空洞）', determinOk);
-  // 主干道从主城出发均连通
-  let roadOk = true;
-  for (let i = 0; i < 6; i++) {
-    const a = i * Math.PI / 3;
-    const x = Math.cos(a) * 6, z = Math.sin(a) * 6;
-    if (terrainVoid(x, z)) roadOk = false;
+  check('空洞 mask 确定性（同格多次一致）', determinOk);
+  // 主城中心可通行
+  check('主城中心 (0,0) 可通行', terrainVoid(0.5, 0.5) === false);
+  // 主城圆盘内半径 6 环形采样可通行
+  let cityOk = true;
+  for (let i = 0; i < 12; i++) {
+    const a = i * Math.PI / 6;
+    if (terrainVoid(Math.cos(a) * 6 + 0.5, Math.sin(a) * 6 + 0.5)) cityOk = false;
   }
-  check('6 条主干道从主城出发可通行（连通）', roadOk);
+  check('主城圆盘内半径 6 环形采样可通行', cityOk);
+  // 世界远角为空洞（连通区从主城向外有限生长）
+  check('世界远角 (120,120) 为空洞', terrainVoid(120.5, 120.5) === true);
 
   // ---- 2) 编辑层 JS 侧 ----
   console.log('[2] 编辑层（JS 侧：高度/可通行覆盖 + 序列化往返）');

@@ -104,6 +104,20 @@ async function main() {
   const nearestMonster = () => [...known.values()]
     .filter((e) => e.kind === KIND.MONSTER)
     .sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z))[0];
+  const consoleCmd = async (command) => {
+    const r = await fetch(BASE + '/api/console', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, command }),
+    });
+    return r.json().catch(() => ({ ok: false }));
+  };
+
+  // ---- 测试环境确定性化 ----
+  // monsterpause on: 冻结怪物 AI/施放，避免怪物技能(wolf 2001)广播 EVT_SKILL/EVT_SKILL_CASTING
+  //                  污染“玩家打断后未结算/瞬发无前摇”的判定（本测试只关心玩家自己的施放）。
+  // anticheat off:   多次传送 + 移动打断不被轨迹校验回退，输入直接生效。
+  await consoleCmd('monsterpause on');
+  await consoleCmd('anticheat off');
 
   await wait(() => gotHello && skills, 3000);
   await wait(() => known.size > 0, 2000);
@@ -193,6 +207,9 @@ async function main() {
     check('瞬发未触发前摇事件', evtCasting === null);
   }
 
+  // ---- 复位测试标志（把服务端恢复为正常玩法，避免污染在线世界）----
+  await consoleCmd('monsterpause off');
+  await consoleCmd('anticheat on');
   ws.close();
   console.log(`\n结果: PASS=${pass} FAIL=${fail}`);
   process.exit(fail ? 1 : 0);

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 
 namespace ew {
 
@@ -53,6 +54,14 @@ EquipSlot GameData::slotFromJson(const Json& j, EquipSlot def) {
   if (s == "weapon") return EquipSlot::WEAPON;
   return def;
 }
+const char* GameData::itemTypeToString(ItemType t) {
+  switch (t) {
+    case ItemType::CONSUMABLE: return "consumable";
+    case ItemType::QUEST: return "quest";
+    default: return "equip";
+  }
+}
+const char* GameData::slotToString(EquipSlot s) { return slotKey(s); }
 
 // ---------- 查询 ----------
 const ItemDef* GameData::item(uint32_t id) const {
@@ -152,17 +161,31 @@ void GameData::loadDefaults() {
   addDefaultItem(3003, "骷髅碎片", "骷髅兵的骨片，蕴含魔力", "bone", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 12, 50);
   addDefaultItem(3004, "石像鬼之核", "石像鬼的能量核心，稀有", "core", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 25, 50);
 
+  // ---- 品质/需求等级示例（其余默认 rarity=0 / levelReq=1） ----
+  items_[1002].rarity = 1; items_[1002].levelReq = 2;  // 铁盔
+  items_[1102].rarity = 1; items_[1102].levelReq = 2;  // 锁子甲
+  items_[1502].rarity = 1; items_[1502].levelReq = 3;  // 铁剑
+  items_[1503].rarity = 2; items_[1503].levelReq = 5;  // 烈焰剑
+
   // ---- 怪物：由内向外难度梯度 ----
   addDefaultMonster("wolf", "野狼", 1, 45, 10, 7, 1, 2, 5);
+  monsters_["wolf"].desc = "游荡在近郊的饥饿野狼，成群出没";
+  monsters_["wolf"].expReward = 25; monsters_["wolf"].moveSpeed = 1.7;
   monsters_["wolf"].drops = {{3001, 0.35}, {2001, 0.10}, {1001, 0.03}};
   monsters_["wolf"].skillIds = {2001};
   addDefaultMonster("goblin", "哥布林", 2, 70, 20, 10, 3, 4, 9);
+  monsters_["goblin"].desc = "狡诈的绿皮掠夺者，随身携带赃物";
+  monsters_["goblin"].expReward = 45; monsters_["goblin"].moveSpeed = 1.5;
   monsters_["goblin"].drops = {{3002, 0.30}, {2001, 0.15}, {1501, 0.05}, {1101, 0.03}};
   monsters_["goblin"].skillIds = {2002};
   addDefaultMonster("skeleton", "骷髅兵", 3, 95, 30, 13, 5, 6, 14);
+  monsters_["skeleton"].desc = "被亡灵法术复苏的枯骨士兵";
+  monsters_["skeleton"].expReward = 70; monsters_["skeleton"].moveSpeed = 1.3;
   monsters_["skeleton"].drops = {{3003, 0.28}, {2002, 0.08}, {1502, 0.05}, {1002, 0.03}, {1202, 0.03}};
   monsters_["skeleton"].skillIds = {2003};
   addDefaultMonster("gargoyle", "石像鬼", 5, 150, 50, 17, 8, 10, 24);
+  monsters_["gargoyle"].desc = "边境石柱上苏醒的魔法石像，坚硬凶猛";
+  monsters_["gargoyle"].expReward = 120; monsters_["gargoyle"].moveSpeed = 1.2;
   monsters_["gargoyle"].drops = {{3004, 0.20}, {2002, 0.12}, {1503, 0.04}, {1102, 0.04}, {1302, 0.03}};
   monsters_["gargoyle"].skillIds = {2004};
 
@@ -250,20 +273,20 @@ void GameData::loadDefaults() {
   // ---- 怪物专属技能（ID 2000+，不与玩家技能冲突）----
   // 2001 撕咬：野狼普攻，附带流血 DoT
   addDefaultSkill(2001, "撕咬", "野狼凶猛撕咬，造成 100% 伤害并使其流血（每秒 8 点，3 秒）", "m_atk1",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 0, 1.0, 0, 0,
-                  BuffType::BLEED, 8, 3.0, 0, 0);  // 瞬发，无冷却（由 monsterAttackCdSec 兆底）
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 3.0, 1.0, 0, 0,
+                  BuffType::BLEED, 8, 3.0, 0, 400);  // 前摇 0.4s，范围 3m
   // 2002 利爪挥击：哥布林普攻，附带减速
   addDefaultSkill(2002, "利爪挥击", "哥布林挥动利爪，造成 100% 伤害并减速 20%（2 秒）", "m_atk2",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 0, 1.0, 0, 0,
-                  BuffType::MOVE_SLOW, 0.2, 2.0, 0, 0);
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 3.0, 1.0, 0, 0,
+                  BuffType::MOVE_SLOW, 0.2, 2.0, 0, 500);  // 前摇 0.5s，范围 3m
   // 2003 骨刺投掷：骷髅兵普攻，远程附带减防
   addDefaultSkill(2003, "骨刺投掷", "投掷尖锐骨刺，造成 90% 伤害并降低目标防御 3 点（4 秒）", "m_atk3",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1200, 5.0, 0, 0.9, 0, 0,
-                  BuffType::DEF_DOWN, -3, 4.0, 0, 0);
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1200, 5.0, 5.0, 0.9, 0, 0,
+                  BuffType::DEF_DOWN, -3, 4.0, 0, 600);  // 前摇 0.6s，范围 5m
   // 2004 石像冲击：石像鬼普攻，高伤附带击退
   addDefaultSkill(2004, "石像冲击", "石像鬼重击目标，造成 120% 伤害并击退 2 米", "m_atk4",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1500, 3.0, 0, 1.2, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 0, false, false, 2.0);
+                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1500, 3.0, 3.0, 1.2, 0, 0,
+                  BuffType::NONE, 0, 0, 0, 700, false, false, 2.0);  // 前摇 0.7s，范围 3m
   // ---- Boss 专属技能（ID 2100+）----
   // 2100 地裂冲击：Boss AOE，范围伤害 + 击退（前摇 1.5s 蓄力提示）
   addDefaultSkill(2100, "地裂冲击", "巨兽踏裂大地，对 6m 内敌人造成 80% 伤害并击退 3 米", "b_s1",
@@ -285,6 +308,64 @@ static std::string readFile(const std::string& path) {
   ss << f.rdbuf();
   return ss.str();
 }
+static bool writeFile(const std::string& path, const std::string& content) {
+  std::ofstream f(path, std::ios::binary);
+  if (!f) return false;
+  f << content;
+  return (bool)f;
+}
+// 物品 JSON → ItemDef（loadFromJson 与 replaceItems 共用；新字段均有 has() 守卫保证向后兼容）
+static ItemDef parseItemDef(const Json& j) {
+  ItemDef d;
+  d.id = (uint32_t)j.at("id").asInt();
+  if (j.has("name")) d.name = j.at("name").asString();
+  if (j.has("desc")) d.desc = j.at("desc").asString();
+  if (j.has("icon")) d.icon = j.at("icon").asString();
+  if (j.has("type")) d.type = GameData::itemTypeFromJson(j.at("type"), ItemType::EQUIP);
+  if (j.has("slot")) d.slot = GameData::slotFromJson(j.at("slot"), EquipSlot::WEAPON);
+  d.hpBonus = j.at("hpBonus").asNumber();
+  d.mpBonus = j.at("mpBonus").asNumber();
+  d.attackBonus = j.at("attackBonus").asNumber();
+  d.defenseBonus = j.at("defenseBonus").asNumber();
+  d.restoreHp = j.at("restoreHp").asNumber();
+  d.restoreMp = j.at("restoreMp").asNumber();
+  d.price = (uint32_t)j.at("price").asInt();
+  d.stackMax = (uint32_t)(j.has("stackMax") ? j.at("stackMax").asInt() : 99);
+  d.rarity = (int)(j.has("rarity") ? j.at("rarity").asInt() : 0);
+  d.levelReq = (int)(j.has("levelReq") ? j.at("levelReq").asInt() : 1);
+  return d;
+}
+// 生物 JSON → MonsterDef（type 为键；新增 desc/expReward/moveSpeed/skillIds 解析）
+static MonsterDef parseMonsterDef(const std::string& type, const Json& j) {
+  MonsterDef d;
+  d.type = type;
+  if (j.has("name")) d.name = j.at("name").asString();
+  if (j.has("desc")) d.desc = j.at("desc").asString();
+  d.level = j.has("level") ? (int)j.at("level").asInt() : 1;
+  d.hp = j.at("hp").asNumber();
+  d.mp = j.at("mp").asNumber();
+  d.attack = j.at("attack").asNumber();
+  d.defense = j.at("defense").asNumber();
+  d.moveSpeed = j.has("moveSpeed") ? j.at("moveSpeed").asNumber() : 1.5;
+  d.expReward = (uint32_t)(j.has("expReward") ? j.at("expReward").asInt() : 0);
+  d.goldMin = (uint32_t)j.at("goldMin").asInt();
+  d.goldMax = (uint32_t)j.at("goldMax").asInt();
+  if (j.has("drops") && j.at("drops").type() == Json::Type::Array) {
+    for (const auto& e : j.at("drops").asArray()) {
+      DropEntry de;
+      de.itemId = (uint32_t)e.at("item").asInt();
+      de.prob = e.has("prob") ? e.at("prob").asNumber() : 0.0;
+      if (de.itemId) d.drops.push_back(de);
+    }
+  }
+  if (j.has("skillIds") && j.at("skillIds").type() == Json::Type::Array) {
+    for (const auto& s : j.at("skillIds").asArray()) {
+      uint32_t sid = (uint32_t)s.asInt();
+      if (sid) d.skillIds.push_back(sid);
+    }
+  }
+  return d;
+}
 bool GameData::loadFromJson(const std::string& dir) {
   bool any = false;
   std::string sep = dir.empty() || dir.back() == '/' ? "" : "/";
@@ -296,22 +377,8 @@ bool GameData::loadFromJson(const std::string& dir) {
         Json arr = Json::parse(content);
         if (arr.type() == Json::Type::Array) {
           for (const auto& j : arr.asArray()) {
-            ItemDef d;
-            d.id = (uint32_t)j.at("id").asInt();
+            ItemDef d = parseItemDef(j);
             if (d.id == 0) continue;
-            d.name = j.at("name").asString();
-            d.desc = j.at("desc").asString();
-            d.icon = j.at("icon").asString();
-            d.type = itemTypeFromJson(j.at("type"), ItemType::EQUIP);
-            d.slot = slotFromJson(j.at("slot"), EquipSlot::WEAPON);
-            d.hpBonus = j.at("hpBonus").asNumber();
-            d.mpBonus = j.at("mpBonus").asNumber();
-            d.attackBonus = j.at("attackBonus").asNumber();
-            d.defenseBonus = j.at("defenseBonus").asNumber();
-            d.restoreHp = j.at("restoreHp").asNumber();
-            d.restoreMp = j.at("restoreMp").asNumber();
-            d.price = (uint32_t)j.at("price").asInt();
-            d.stackMax = (uint32_t)(j.has("stackMax") ? j.at("stackMax").asInt() : 99);
             items_[d.id] = d;
           }
           any = true;
@@ -330,24 +397,7 @@ bool GameData::loadFromJson(const std::string& dir) {
         Json obj = Json::parse(content);
         if (obj.type() == Json::Type::Object) {
           for (auto& [type, j] : obj.asObject()) {
-            MonsterDef d;
-            d.type = type;
-            d.name = j.at("name").asString();
-            d.level = (int)j.at("level").asInt();
-            d.hp = j.at("hp").asNumber();
-            d.mp = j.at("mp").asNumber();
-            d.attack = j.at("attack").asNumber();
-            d.defense = j.at("defense").asNumber();
-            d.goldMin = (uint32_t)j.at("goldMin").asInt();
-            d.goldMax = (uint32_t)j.at("goldMax").asInt();
-            if (j.has("drops") && j.at("drops").type() == Json::Type::Array) {
-              for (const auto& e : j.at("drops").asArray()) {
-                DropEntry de;
-                de.itemId = (uint32_t)e.at("item").asInt();
-                de.prob = e.at("prob").asNumber();
-                if (de.itemId) d.drops.push_back(de);
-              }
-            }
+            MonsterDef d = parseMonsterDef(type, j);
             monsters_[type] = d;
           }
           any = true;
@@ -430,5 +480,91 @@ bool GameData::loadFromJson(const std::string& dir) {
   }
   return any;
 }
+
+// ---------- 序列化（供编辑器/客户端读取，字段与 loadFromJson 对齐） ----------
+std::string GameData::itemsToJson() const {
+  std::vector<uint32_t> ids;
+  ids.reserve(items_.size());
+  for (const auto& [id, d] : items_) { (void)d; ids.push_back(id); }
+  std::sort(ids.begin(), ids.end());
+  Json arr = Json::array();
+  for (uint32_t id : ids) {
+    const ItemDef& d = items_.at(id);
+    Json j = Json::object();
+    j["id"] = (int64_t)d.id;
+    j["name"] = d.name;
+    j["desc"] = d.desc;
+    j["icon"] = d.icon;
+    j["type"] = itemTypeToString(d.type);
+    j["slot"] = slotToString(d.slot);
+    j["hpBonus"] = d.hpBonus;
+    j["mpBonus"] = d.mpBonus;
+    j["attackBonus"] = d.attackBonus;
+    j["defenseBonus"] = d.defenseBonus;
+    j["restoreHp"] = d.restoreHp;
+    j["restoreMp"] = d.restoreMp;
+    j["price"] = (int64_t)d.price;
+    j["stackMax"] = (int64_t)d.stackMax;
+    j["rarity"] = (int64_t)d.rarity;
+    j["levelReq"] = (int64_t)d.levelReq;
+    arr.push_back(j);
+  }
+  return arr.dump();
+}
+std::string GameData::monstersToJson() const {
+  Json obj = Json::object();
+  for (const auto& [type, d] : monsters_) {
+    Json j = Json::object();
+    j["name"] = d.name;
+    j["desc"] = d.desc;
+    j["level"] = (int64_t)d.level;
+    j["hp"] = d.hp;
+    j["mp"] = d.mp;
+    j["attack"] = d.attack;
+    j["defense"] = d.defense;
+    j["moveSpeed"] = d.moveSpeed;
+    j["expReward"] = (int64_t)d.expReward;
+    j["goldMin"] = (int64_t)d.goldMin;
+    j["goldMax"] = (int64_t)d.goldMax;
+    Json drops = Json::array();
+    for (const auto& de : d.drops) {
+      Json e = Json::object();
+      e["item"] = (int64_t)de.itemId;
+      e["prob"] = de.prob;
+      drops.push_back(e);
+    }
+    j["drops"] = drops;
+    Json sk = Json::array();
+    for (uint32_t sid : d.skillIds) sk.push_back(Json((int64_t)sid));
+    j["skillIds"] = sk;
+    obj[type] = j;
+  }
+  return obj.dump();
+}
+
+// ---------- 热替换（编辑器保存完整列表 → 清空重填） ----------
+bool GameData::replaceItems(const Json& arr) {
+  if (arr.type() != Json::Type::Array) return false;
+  std::unordered_map<uint32_t, ItemDef> next;
+  for (const auto& j : arr.asArray()) {
+    ItemDef d = parseItemDef(j);
+    if (d.id == 0) continue;
+    next[d.id] = d;
+  }
+  items_ = std::move(next);
+  return true;
+}
+bool GameData::replaceMonsters(const Json& obj) {
+  if (obj.type() != Json::Type::Object) return false;
+  std::unordered_map<std::string, MonsterDef> next;
+  for (const auto& [type, j] : obj.asObject()) {
+    if (type.empty()) continue;
+    next[type] = parseMonsterDef(type, j);
+  }
+  monsters_ = std::move(next);
+  return true;
+}
+bool GameData::saveItemsFile(const std::string& path) { return writeFile(path, itemsToJson()); }
+bool GameData::saveMonstersFile(const std::string& path) { return writeFile(path, monstersToJson()); }
 
 } // namespace ew
