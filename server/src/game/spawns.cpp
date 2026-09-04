@@ -35,6 +35,10 @@ bool SpawnConfig::fromJson(const std::string& json) {
       if (jv.has("z")) sp.z = jv.at("z").asNumber();
       if (jv.has("count")) sp.count = (int)jv.at("count").asInt();
       if (sp.count < 1) sp.count = 1;
+      if (jv.has("npcTag")) sp.npcTag = (uint32_t)jv.at("npcTag").asInt();
+      if (jv.has("npcGroup")) sp.npcGroup = (int)jv.at("npcGroup").asInt();
+      if (jv.has("cityId")) sp.cityId = (int)jv.at("cityId").asInt();
+      if (jv.has("npcId")) sp.npcId = jv.at("npcId").asString();  // NPC 插件：按 ID 引用
       next.push_back(sp);
     }
     list_ = std::move(next);
@@ -53,6 +57,12 @@ std::string SpawnConfig::toJson() const {
     j["x"] = sp.x;
     j["z"] = sp.z;
     j["count"] = sp.count;
+    if (sp.kind == SP_NPC) {
+      if (!sp.npcId.empty()) j["npcId"] = sp.npcId;  // NPC 插件：按 ID 引用
+      if (sp.npcTag) j["npcTag"] = (int64_t)sp.npcTag;
+      if (sp.npcGroup) j["npcGroup"] = (int64_t)sp.npcGroup;
+      if (sp.cityId >= 0) j["cityId"] = (int64_t)sp.cityId;
+    }
     arr.push_back(j);
   }
   Json root = Json::object();

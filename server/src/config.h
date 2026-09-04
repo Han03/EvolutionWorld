@@ -9,13 +9,12 @@ struct Config {
   // ---- 服务 ----
   int port = 3000;
   std::string host = "0.0.0.0";
-  std::string clientDir = "../client";   // 相对服务端运行目录，或绝对路径
-  std::string userDbFile = "data/users.json";
-  std::string dataDir = "data";      // 物品/怪物/商店配置目录（items.json/monsters.json/shop.json）
+  std::string clientDir = "../client/dist";   // Vite 构建产物目录
+  std::string dataDir = "data";      // 商店配置目录（shop.json）
   int sessionTtlSec = 24 * 3600;
 
   // ---- 世界 ----
-  int worldSeed = 20260901;
+  int worldSeed = 0;   // 0 = 每次启动随机生成（可通过 EW_SEED 环境变量覆盖）
   float viewRangeM = 100.0f;   // 可见/加载范围（半径，米）
   float chunkSizeM = 50.0f;    // 区块边长
   int terrainGridPoints = 33;  // 区块高度场数据每边采样点数（世界地图数据存储粒度）
@@ -23,17 +22,20 @@ struct Config {
   int npcCount = 12;
   // ---- 世界初始化执行器（大型网游规模：数据驱动生成，代码不保存地形/生物布局）----
   // 每次内存模式启动 / 编辑器“重新初始化世界”时，由 WorldInitializer 依据以下参数生成：
-  //   连通可通行区域（主城 + 主干道路网，BFS 裁剪保证全图可达）+ 分组生物投放（近弱远强）。
-  double worldCityRadius = 11.0;         // 主城可通行圆盘半径（米）
-  int worldRoads = 8;                    // 主干道数量（从主城向外辐射，保证全图连通）
-  int worldRoadSteps = 55;               // 每条主干道随机游走步数（决定世界延伸范围）
-  double worldRoadWidth = 2.6;           // 主干道半宽（米）
-  double worldMonsterFreeRadius = 28.0;  // 主城免怪半径（米）：此范围内不投放怪物
-  double worldMonsterMaxRadius = 112.0;  // 怪物投放最远距离（米）：越远实力越强
-  int worldMonsterGroups = 22;           // 怪物群数量（相同怪物成群出现）
-  int worldMonsterGroupMin = 3;          // 每群怪物数量下限
-  int worldMonsterGroupMax = 6;          // 每群怪物数量上限
-  double worldMonsterGroupSpacing = 14.0;// 群锚点最小间距（米，避免怪物扎堆重叠）
+  //   岛屿 + 主城 + 连通道路网 + 分组生物投放（近弱远强）。
+  int worldCityCount = 5;                  // 主城数量 X（标号 0..X-1，玩家出生在主城 0）
+  double worldCityRadius = 50.0;           // 主城可通行圆盘半径（米），>=100m×100m
+  int worldNpcGroupsPerCity = 4;           // 每城 NPC 组别数（每组含基础功能/任务/商店/铁匠各一）
+  double worldIslandRingDist = 120.0;      // 大岛环形分布距离参考值（实际由不重叠约束自动求解）
+  double worldSmallIslandMinR = 5.0;       // 小岛最小半径（米）
+  double worldSmallIslandMaxR = 12.0;      // 小岛最大半径（米）
+  double worldRoadWidth = 4.5;             // 岛屿连接道路半宽（米）
+  double worldMonsterFreeRadius = 55.0;    // 主城免怪半径（米）：主城范围内不投放怪物
+  double worldMonsterMaxRadius = 120.0;    // 怪物投放最远距离（米）：越远实力越强
+  int worldMonsterGroups = 30;             // 怪物群数量（相同怪物成群出现）
+  int worldMonsterGroupMin = 3;            // 每群怪物数量下限
+  int worldMonsterGroupMax = 6;            // 每群怪物数量上限
+  double worldMonsterGroupSpacing = 14.0;  // 群锚点最小间距（米，避免怪物扎堆重叠）
   // ---- 世界怪物 & 世界 Boss（状态共享）----
   int bossCount = 3;                 // 世界 Boss 数量（全区共享实体）
   float bossHp = 500.0f;             // Boss 生命
@@ -60,6 +62,9 @@ struct Config {
   float monsterPatrolRadius = 12.0f; // 巡逻半径（围绕出生点）
   float monsterPatrolPauseSec = 2.0f;// 巡逻转向间隔下限（秒）
   float monsterPatrolArrive = 1.0f;  // 巡逻到达 waypoint 判定距离（米）
+  float monsterRecoverRegenPerSec = 5.0f;  // 恢复态回血速率（HP/秒）
+  float monsterRecoverSpeedMul = 2.5f;     // 恢复态移动速度倍率（相对基础速度）
+  float monsterRecoverChaseThreshold = 5.0f; // 追击超时阈值（秒）：仇恨态连续追击超过此时长触发恢复态
   float bossChaseSpeed = 3.0f;       // Boss 追击速度（m/s）
   // AI LOD 分级：距最近玩家 <aiLodNearM 每 tick、<aiLodMidM 每 2 tick、其余每 aiLodFarStride tick
   float aiLodNearM = 25.0f;
@@ -77,7 +82,6 @@ struct Config {
 
   // ---- 物理 ----
   float gravity = -9.81f;
-  float jumpVelocity = 7.0f;
   float maxMoveSpeed = 7.0f;
   float acceleration = 40.0f;
   float friction = 12.0f;
@@ -88,9 +92,13 @@ struct Config {
   int inputBurst = 60;           // 短时突发容忍（1s 窗口内）
   int rateKickAfter = 15;        // 窗口内超频丢弃达到该次数直接踢出
   int sampleRatePct = 30;        // 随机采样校验比例（0-100）
-  float teleportToleranceM = 3.0f;  // 横向轨迹校验容错（网络抖动+预测误差）
-  float verticalToleranceM = 6.0f;  // 纵向校验容错
-  int kickThreshold = 6;         // 累计违规达到该阈值踢出
+  float teleportToleranceM = 5.0f;  // 横向轨迹校验容错（网络抖动+预测误差+碰撞推挤发散）
+  // 地形校验容错（圆盘半径收缩量）：吸收上报 0.01m 量化与双端浮点分歧。
+  // 严格级（radius）失败时收缩到 radius-该值再判一次，通过则把位置夹紧回严格可通行点，
+  // 因此该值同时是「允许贴墙多近」的上限；远小于 1m 格宽，视觉上无可见穿墙。
+  // 设为 0 可退回旧的零容差硬判定。
+  float terrainToleranceM = 0.15f;
+  int kickThreshold = 6;         // 累计违规达到该阈值踢出（terrain_blocked 软失败不计入）
   int seqReorderWindow = 20;     // 乱序容忍窗口（允许回退的 seq 数）
   int seqJumpWindow = 80;        // 序号跳变容忍（允许前进的 seq 数）
   int graceInputs = 5;           // 出生后前 N 个输入免轨迹校验（允许初始误差）

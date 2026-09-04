@@ -1,19 +1,21 @@
 /**
- * 实体数据管理（二进制协议版，Canvas 2D 俯视渲染）
- *  - 当前角色：橙色圆球 + 半透明白色描边
- *  - 其他玩家：绿色圆球 / 怪物：红色圆球 / NPC：蓝色圆球
+ * 实体数据管理（二进制协议版，Canvas 2D 圆形渲染）
+ *  - 当前角色：橙色圆圈 / 其他玩家：绿色圆圈 / 怪物：红色圆圈 / NPC：蓝色圆圈
  *
  * 怪物同步（消除 rubber-banding，重构后）：
  *  - 服务端广播「移动意图」（aiState + 目标速度 + 速度倍率）+ 权威位置/瞬时速度；
  *  - 客户端对每个怪物/NPC/Boss 维护一份与服务端同款物理的确定性推演（sim，复用 predict.js stepSim），
  *    收到意图后按 20Hz 步进外推，不再用指数衰减朝最新位置追赶；
  *  - 渲染走「快照插值」：hist 存最近 4 个推演快照，渲染时钟落后一拍（renderClock ≤ simTime-1），
- *    在两份快照间线性插值平滑输出 60fps——抖动吸收 + 无追尾过冲；
+ *    在两份快照间线性插值平滑输出 60fps——吸收速度量化抖动；
+ *    相机同步延迟一帧（boot.js），使实体与相机时间参考系对齐，消除视差偏移；
+ *  - AI 推演增加静态地形碰撞（circleBlocked），防止旧意图下怪物走入空洞/水域后闪回；
  *  - 收到新权威位置时分级处理：偏差≤噪声阈值忽略（信任外推）→ 偏差≤快照阈值平滑收敛归位 →
  *    超阈值硬快照（瞬移，仅网络级失步触发）。
  */
 import { KIND, MASK } from './protocol.js';
-import { stepSim, PHYS } from './predict.js';
+import { stepSim, PHYS, circleBlocked } from './predict.js';
+import { terrainHeight } from './terrain.js';
 
 const KIND_NAME = { [KIND.PLAYER]: 'player', [KIND.MONSTER]: 'monster', [KIND.NPC]: 'npc', [KIND.ITEM]: 'item' };
 const TICK_SEC = PHYS.TICK_MS / 1000;      // 0.05s（与服务端 tick 对齐）
@@ -29,6 +31,8 @@ export class EntityViewManager {
   constructor(selfWid) {
     this.selfWid = selfWid;
     this.views = new Map(); // wid -> view
+    this._renderArr = [];     // 复用渲染数组
+    this._renderPool = new Map(); // wid -> 复用对象
   }
   _kindName(kind) { return KIND_NAME[kind] || 'monster'; }
   _isAi(v) { return AI_KINDS.has(v.kind); }
@@ -131,6 +135,18 @@ export class EntityViewManager {
       state: e.state,
       dying: false,
     };
+    // NPC 插件：存储 npcId + npcTag（客户端据此渲染交互菜单）
+    if (e.kind === KIND.NPC) {
+      v.npcId = e.npcId || '';
+      v.npcTag = e.npcTag || 0;
+    }
+    // 掉落物：存储 itemId/gold + 装备实例（instId!=0 为装备，携带强化等级）
+    if (e.kind === KIND.ITEM) {
+      v.itemId = e.itemId || 0;
+      v.gold = e.gold || 0;
+      v.dropInstId = e.dropInstId || 0;
+      v.dropEnhance = e.dropEnhance || 0;
+    }
     if (this._isAi(v)) {
       // 确定性推演状态（世界绝对坐标；radius 来自服务端广播，碰撞逐位一致）
       v.sim = {
@@ -156,6 +172,7 @@ export class EntityViewManager {
     } else {
       v.x = e.x; v.y = e.y; v.z = e.z;
       v.tx = e.x; v.ty = e.y; v.tz = e.z;
+      v.radius = e.radius || 0.5;   // 其他玩家半径：物理层实体阻挡用
     }
     this.views.set(e.wid, v);
   }
@@ -173,6 +190,7 @@ export class EntityViewManager {
       if (e.radius) v.sim.radius = e.radius;
     } else {
       v.tx = e.x; v.ty = e.y; v.tz = e.z;
+      if (e.radius) v.radius = e.radius;
     }
   }
   /** 权威位置校正：噪声忽略 / 平滑收敛 / 硬快照 */
@@ -213,11 +231,25 @@ export class EntityViewManager {
       }
     }
     stepSim(s, tx, tz, TICK_SEC);
+    // 贴地：stepSim 是纯 2D 水平物理，不更新 Y；
+    // 坡面移动时地形高度变化，必须对齐 terrainHeight 否则球体穿入坡面。
+    // 与服务端 Physics::step 地表碰撞一致：grounded 时 pos.y = terrainHeight + radius
+    s.y = terrainHeight(s.x, s.z) + s.radius;
+    // 地形碰撞：AI 推演也做静态地形阻挡（与服务端 moveEntityCollide 对齐），
+    // 防止旧意图下怪物走入空洞/水域后等权威校正闪回
+    if (circleBlocked(s.x, s.z, s.radius)) {
+      // 回退到推演前位置（hist 末尾即上一 tick 的安全位置）
+      const prev = v.hist.length > 0 ? v.hist[v.hist.length - 1] : null;
+      if (prev) { s.x = prev.x; s.z = prev.z; }
+      s.vx = 0; s.vz = 0;
+      // 回退后也需重新贴地
+      s.y = terrainHeight(s.x, s.z) + s.radius;
+    }
     v.simTime += 1;
     v.hist.push({ t: v.simTime, x: s.x, y: s.y, z: s.z });
     if (v.hist.length > 4) v.hist.shift();
   }
-  /** 从推演快照插值渲染（落后一拍缓冲） */
+  /** 从推演快照插值渲染（落后一拍缓冲，吸收速度量化抖动） */
   _renderFromHist(v) {
     const h = v.hist;
     if (h.length === 0) { v.x = v.sim.x; v.y = v.sim.y; v.z = v.sim.z; return; }
@@ -254,7 +286,7 @@ export class EntityViewManager {
           this._simTick(v);
           stepped++;
         }
-        // 渲染时钟连续推进，但不得超前于 simTime-1（落后一拍吸收抖动）
+        // 渲染时钟连续推进，但不得超前于 simTime-1（落后一拍吸收速度量化抖动）
         v.renderClock = Math.min(v.renderClock + dt / TICK_SEC, Math.max(0, v.simTime - 1));
         this._renderFromHist(v);
       } else {
@@ -276,19 +308,27 @@ export class EntityViewManager {
     v.x = x; v.y = y; v.z = z;
     v.tx = x; v.ty = y; v.tz = z;
   }
-  /** 供渲染器每帧读取（返回普通对象数组） */
+  /** 供渲染器每帧读取（复用数组+对象，减少 GC） */
   forRender() {
-    const out = [];
-    const now = performance.now();
+    const arr = this._renderArr;
+    const pool = this._renderPool;
+    let idx = 0;
+    const active = new Set();
     for (const v of this.views.values()) {
       if (v.wid === this.selfWid) continue;
-      out.push({
-        wid: v.wid, kind: v.kind, name: v.name,
-        x: v.x, y: v.y, z: v.z, state: v.state,
-        dying: v.dying || false, dyingAt: v.dyingAt || 0, dieY: v.dieY || v.y,
-      });
+      active.add(v.wid);
+      let o = pool.get(v.wid);
+      if (!o) { o = { wid: 0, kind: '', name: '', x: 0, y: 0, z: 0, state: 0, radius: 0.5, dying: false, dyingAt: 0, dieY: 0 }; pool.set(v.wid, o); }
+      o.wid = v.wid; o.kind = v.kind; o.name = v.name;
+      o.x = v.x; o.y = v.y; o.z = v.z; o.state = v.state;
+      o.radius = this._isAi(v) ? v.sim.radius : (v.radius || 0.5);  // 真实半径：物理层实体阻挡用
+      o.dying = v.dying || false; o.dyingAt = v.dyingAt || 0; o.dieY = v.dieY || v.y;
+      arr[idx++] = o;
     }
-    return out;
+    arr.length = idx;
+    // 清理已移除实体的池对象
+    for (const wid of pool.keys()) { if (!active.has(wid)) pool.delete(wid); }
+    return arr;
   }
   /** 当前角色位置（相机跟随） */
   selfPosition() {

@@ -16,6 +16,9 @@
 #include "guild.h"
 #include "chat.h"
 #include "quests.h"
+#include "npc.h"   // NPC 插件模块
+#include "economy.h"   // 经济系统门面（强化/分解/合成）
+#include "warehouse.h"   // 仓库系统（阶段5：存储域）
 #include "util/random.h"
 #include "../config.h"
 namespace ew {
@@ -84,27 +87,74 @@ public:
   Collision& collision() { return collision_; }
   ChunkManager& chunks() { return chunks_; }
   uint64_t tickCount() const { return tick_; }
+  // 逻辑时钟（虚拟 tick 钟）：原点为本进程启动，单调递增、与 tick 严格对齐、不受系统
+  // 时间调整（NTP/手动改钟）影响。所有「会话内运行时计时」统一以它为准：技能/攻击冷却、
+  // 复活时刻、掉落过期、Buff 时长、AI 状态机、脱战回血判定。
+  // 两条硬约束（违反即产生跨进程不可比的脏数据）：
+  //   ① tick 循环落后时不追帧（GameServer::run 的重同步直接跳过积压 tick），故它只会
+  //      慢于真实时间、且漂移单调累积 —— 不可当作真实时间使用；
+  //   ② 原点随进程重启归零 —— 任何要落库的时间语义必须存「剩余量」而非「到期时刻」，
+  //      参见 QuestSystem::serializeQuests 的 cooldownRemain。
+  // 与 GameServer::steadyMs()（steady_clock 墙钟，防作弊 dt/频率校验专用）分属不同时
+  // 钟域，原点相差「系统启动到进程启动的时长」，两者数值不可直接相减比较。
+  uint64_t logicNowMs() const { return tick_ * (uint64_t)cfg_.tickMs; }
   // ---- 物品/属性/商店/掉落（大型网游规模） ----
   GameData& data() { return data_; }
   const GameData& data() const { return data_; }
   const ItemDef* itemDef(uint32_t id) const { return data_.item(id); }
-  // 应用编辑器提交的物品/生物配置（热替换内存 + 持久化 data/*.json；生物附带世界热重载）
+  // 应用编辑器提交的物品/生物配置（热替换内存；数据库模式持久化，内存模式重启即重置）
   bool applyItems(const std::string& itemsJson, const std::string& dataDir);
   bool applyMonsters(const std::string& monstersJson, const std::string& dataDir);
+  bool applyNpcs(const std::string& npcsJson, const std::string& dataDir);
+  // 应用编辑器经济配置（阶段7：强化/分解/合成/商店；热替换内存 + 数据库模式落库）
+  bool applyEnhance(const std::string& json, const std::string& dataDir);
+  bool applyDecompose(const std::string& json, const std::string& dataDir);
+  bool applyCraft(const std::string& json, const std::string& dataDir);
+  bool applyShop(const std::string& json, const std::string& dataDir);
   // 玩家攻击世界实体（服务端权威校验 + 伤害/仇恨/死亡/复活/掉落）
   bool playerAttack(const std::string& playerId, uint32_t targetWid, uint8_t slot);
   // 拾取地面掉落物（金币/物品进背包）
   bool playerPickup(const std::string& playerId, uint32_t dropWid);
   // 移除地面掉落物（拾取/超时消失）
   void despawnDrop(const std::string& id);
-  // 穿戴/卸下装备（slot 槽位值 1..6，itemId=0 卸下）
-  bool equipItem(const std::string& playerId, uint8_t slot, uint32_t itemId);
+  // 穿戴/卸下装备（slot 槽位值 1..6，instId=0 卸下；装备实例化）
+  bool equipItem(const std::string& playerId, uint8_t slot, uint64_t instId);
   // 使用消耗品
   bool useItem(const std::string& playerId, uint32_t itemId, uint16_t count);
   // 打开商店（校验与商店 NPC 距离）
   bool openShop(const std::string& playerId, uint32_t npcWid);
-  // 购买物品（金币扣减 + 进背包）
+  // 购买物品（金币扣减 + 进背包；阶段1：限购校验 + 折扣价 + 每日/每周刷新）
   bool buyItem(const std::string& playerId, uint32_t itemId, uint16_t count);
+  // 出售回收（阶段1）：isInstance=true 卖装备实例(按 instId)，否则卖堆叠物品(itemId×count)。
+  // 返回获得金币（0=失败/需在商店）；装备按回收价×强化系数，堆叠按回收价×数量。
+  uint32_t sellItem(const std::string& playerId, bool isInstance, uint64_t instId, uint32_t itemId, uint16_t count);
+  // 商店限购周期刷新（每日/每周重置到期条目的购买计数；logicNowMs 基准）
+  void refreshShopLimits(Entity& p);
+  // 计算物品在指定商店的回收单价（商店 sellPrice 优先，否则 ItemDef.price×默认回收率）
+  uint32_t calcSellPrice(uint32_t shopId, uint32_t itemId) const;
+  // 查商店条目的刷新类型（0不刷新 1每日 2每周；未上架返回 0）
+  uint8_t entryRefreshType(uint32_t shopId, uint32_t itemId) const;
+  // 装备强化（阶段2）：校验铁匠 NPC 邻近 + BLACKSMITH 标签 → 消耗金币/强化石(/保护符)
+  // → 成功升级 / 失败降级（保护符防降）→ 重算属性。返回 EnhanceResult（failCode 见 enhance.h）。
+  EnhanceResult enhanceEquip(const std::string& playerId, uint64_t instId, bool useProtect);
+  // 装备分解（阶段3）：校验铁匠 NPC 邻近 + BLACKSMITH 标签 → 已穿戴需先卸下（failCode 4）/ 锁定拒绝（failCode 1）
+  // → 按品质规则产出材料 + 金币 + 强化石返还 → 移除实例。返回 DecomposeOutput（failCode 见 enhance.h）。
+  DecomposeOutput decomposeEquip(const std::string& playerId, uint64_t instId);
+  // 物品合成（阶段4）：校验合成 NPC 邻近（按配方 npcTag）→ 查配方 → doCraft（等级/材料/金币校验+扣除）
+  // → 装备产出走实例（giveEquipInstance）、堆叠产出入背包。返回 CraftOutput（failCode 见 craft.h）。
+  CraftOutput craftItem(const std::string& playerId, uint32_t recipeId, uint32_t count);
+  // 合成配方列表（阶段4）：按 npcWid 对应 NPC 的标签 + 玩家等级过滤，返回可用 recipeId 列表。
+  std::vector<uint32_t> craftList(const std::string& playerId, uint32_t npcWid);
+  // 打开仓库（阶段5）：银行 NPC 邻近校验（BANK 标签）→ ensureInit → 返回仓库数据（nullptr=失败/超距）
+  const WarehouseData* openWarehouse(const std::string& playerId, uint32_t npcWid);
+  // 获取玩家仓库数据（存取/扩展后下发 S2C_WAREHOUSE 用；无 NPC 校验，ensureInit 保证已初始化）
+  const WarehouseData* warehouseData(const std::string& playerId);
+  // 存入物品（阶段5）：银行邻近校验 → deposit（金币 itemId=0 / 装备实例 / 堆叠合并）→ 标记脏。返回 WarehouseCode。
+  uint8_t depositItem(const std::string& playerId, bool isInstance, uint64_t instId, uint32_t itemId, uint32_t count);
+  // 取出物品（阶段5）：银行邻近校验 → withdraw（装备保留强化 / 堆叠回背包）→ 标记脏。返回 WarehouseCode。
+  uint8_t withdrawItem(const std::string& playerId, bool isInstance, uint64_t instId, uint32_t itemId, uint32_t count);
+  // 扩展仓库（阶段5）：银行邻近校验 → expand（扣金币 1000×1.5^n，解锁一页；满150拒绝）→ 标记脏。返回 WarehouseCode。
+  uint8_t expandWarehouse(const std::string& playerId);
   // 根据基础属性 + 装备加成重算派生属性（maxHp/maxMp/attack/defense）
   void recomputeStats(Entity& p);
   // 玩家属性/资源变化后标记，netcode 每 tick 向该玩家补发 S2C_STATS
@@ -148,6 +198,7 @@ public:
     bool monstersPaused = false;    // 冻结全部怪物/Boss 的 AI、移动与施放（站桩测试）
     bool noSkillCost = false;       // 技能/普攻无蓝耗、无冷却（重复测试同一技能）
     bool antiCheatBypass = false;   // 关闭防作弊频率/序号/轨迹校验（输入直接接受）
+    int enhanceForce = 0;           // 强化结果旁路：0=正常 RNG / 1=强制成功 / 2=强制失败
   };
   TestFlags& testFlags() { return testFlags_; }
   const TestFlags& testFlags() const { return testFlags_; }
@@ -165,6 +216,20 @@ public:
   // 发放物品/金币（控制台测试命令）
   bool giveItem(const std::string& playerId, uint32_t itemId, uint16_t count);
   bool giveGold(const std::string& playerId, int64_t amount);
+  // ---- 装备实例化辅助（阶段 0 地基）----
+  // 分配全局唯一实例 ID（单调递增；进程内唯一，持久化后从存档恢复水位）
+  uint64_t allocInstId() { return nextInstId_++; }
+  // 设置实例 ID 起始水位（加载存档后取 max(instId)+1，避免新分配与旧档冲突）
+  void setInstIdFloor(uint64_t v) { if (v >= nextInstId_) nextInstId_ = v + 1; }
+  // 为玩家创建一件装备实例并入背包（返回 instId；itemId 非装备则返回 0）
+  uint64_t giveEquipInstance(Entity& p, uint32_t itemId, uint8_t enhance = 0);
+  // 智能发放：装备→新建实例入 equipBag；其余→堆叠入 inventory
+  void giveItemSmart(Entity& p, uint32_t itemId, uint16_t count);
+  // 在 equip + equipBag 中按 instId 查找装备实例（返回指针，未找到 nullptr）
+  ItemInstance* findInstance(Entity& p, uint64_t instId);
+  // 装备实例 ID 计数器持久化（跨重启唯一性；仅 MySQL 模式生效，内存模式随存档重置）
+  void loadInstIdCounter();   // 启动时从世界数据 KV 恢复水位
+  void saveInstIdCounter();   // 玩家存档时回写当前水位
   // 生成地面掉落物（控制台测试命令）
   void spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold);
   // 世界 Boss 状态摘要（控制台查看）
@@ -204,6 +269,15 @@ public:
   // ---- 任务系统（大型网游规模，数据驱动） ----
   QuestSystem& quests() { return *quests_; }
   const QuestSystem& quests() const { return *quests_; }
+  // ---- NPC 插件（ID 驱动 + 标签功能路由 + 唯一性追踪） ----
+  NpcManager& npcs() { return *npcs_; }
+  const NpcManager& npcs() const { return *npcs_; }
+  // ---- 经济系统（强化/分解/合成，门面聚合） ----
+  EconomySystem& economy() { return *economy_; }
+  const EconomySystem& economy() const { return *economy_; }
+  // ---- 仓库系统（阶段5：存储域，玩家数据存 Entity.pl.warehouse）----
+  WarehouseSystem& warehouse() { return *warehouse_; }
+  const WarehouseSystem& warehouse() const { return *warehouse_; }
   // 任务进度变化后标记，netcode 每 tick 补发 S2C_QUEST_PROGRESS
   void markQuestDirty(const std::string& playerId);
   const std::unordered_set<std::string>& questDirty() const { return questDirty_; }
@@ -215,16 +289,21 @@ private:
   void spawnFromPoint(const SpawnPoint& sp);
   // 按出生点生成一个城镇 NPC（就近找干地，可带商店/名称）
   void spawnNpcAt(const SpawnPoint& sp);
+  // 附近是否存在带指定标签的 NPC（铁匠/商店等距离校验；range 米内，服务端权威防伪造）
+  bool nearNpcWithTag(const Entity& p, uint32_t tag, double range) const;
   // 怪物死亡掉落：金币 + 按概率表掉物品（生成地面掉落物实体）
   void rollDrops(Entity& killer, Entity& victim);
   // 玩家获得经验：累加 + 循环升级（成长基础属性/回满血蓝），结束后标记属性脏
   void grantExp(Entity& p, uint32_t amount);
   void spawnDrop(double x, double z, uint32_t itemId, uint32_t gold);
-  // 应用怪物类型配置属性（type 见 monsters.json / GameData 默认）
+  // 装备实例掉落（保留强化等级；itemId 供客户端展示图标/名称）
+  void spawnDropInst(double x, double z, const ItemInstance& inst);
+  // 应用怪物类型配置属性（type 见 GameData 默认/编辑器配置）
   void applyMonsterStats(Entity& m, const std::string& type);
   // 目标死亡统一处理（Boss 复活/普通怪物失活+复活+掉落），供普攻/技能复用
   void onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs);
-  // 击退：沿 from→target 方向把 target 位移 dist 米（霸体免疫；落回地形高度），并触发受击打断
+  // 击退：沿 from→target 方向把 target 位移最多 dist 米（逐步圆盘检测，撞墙即止），
+  // 落回地表（groundFootY）；霸体/无敌免疫；并触发受击打断
   void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
@@ -259,6 +338,7 @@ private:
   uint64_t tick_ = 0;
   int64_t entitySeq_ = 0;
   int64_t wireSeq_ = 0;
+  uint64_t nextInstId_ = 1;   // 装备实例 ID 分配水位（单调递增，0 保留为空）
   TestFlags testFlags_;   // 测试/调试控制标志（控制台命令切换，默认正常玩法）
   Mulberry32 rng_;
   // 社交系统
@@ -267,5 +347,8 @@ private:
   std::unique_ptr<GuildSystem> guilds_;
   std::unique_ptr<ChatSystem> chat_;
   std::unique_ptr<QuestSystem> quests_;
+  std::unique_ptr<NpcManager> npcs_;   // NPC 插件
+  std::unique_ptr<EconomySystem> economy_;   // 经济系统门面（强化/分解/合成）
+  std::unique_ptr<WarehouseSystem> warehouse_;   // 仓库系统（阶段5：存储域）
 };
 } // namespace ew

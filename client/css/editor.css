@@ -1,12 +1,4 @@
 /* editor.css - 地形编辑器页面样式（EvolutionWorld） */
-.editor-login {
-  position: fixed; inset: 0;
-  background: linear-gradient(160deg, #20232a, #131418);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 50;
-}
-.editor-login .login-card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); }
-.editor-login .subtitle { color: #9aa0aa; }
 
 .hidden { display: none !important; }
 
@@ -50,8 +42,8 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 .tool-status { font-size: 12px; color: #666; line-height: 1.6; }
 .tool-info { font-size: 12px; color: #777; line-height: 1.7; }
 
-.editor-canvas-wrap { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #ffffff; }
-#editor-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+.editor-canvas-wrap { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #87bfe8; }
+.editor-canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .editor-coord {
   position: absolute; left: 10px; bottom: 10px;
   background: rgba(0,0,0,0.6); color: #fff;
@@ -97,7 +89,8 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 
 /* ---- 配置面板（物品/生物）：白卡片 + 蓝色主调，与现有一致 ---- */
 .mode-row { flex-wrap: wrap; row-gap: 6px; }
-#panel-item, #panel-creature { display: flex; flex-direction: column; gap: 12px; }
+#panel-item, #panel-creature, #panel-npc, #panel-quest { display: flex; flex-direction: column; gap: 12px; }
+#panel-enhance, #panel-decompose, #panel-craft, #panel-shop { display: flex; flex-direction: column; gap: 12px; }
 .cfg-list { max-height: 168px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
 .cfg-item {
   display: flex; align-items: center; gap: 6px;
@@ -135,3 +128,12 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 .drop-row select { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .drop-row input[type="number"] { flex: 0 0 56px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .drop-row .drop-pct { flex: none; color: #888; font-size: 11px; }
+/* 任务目标子表 */
+.quest-obj-row { display: flex; align-items: center; gap: 4px; margin: 3px 0; min-width: 0; flex-wrap: wrap; }
+.quest-obj-row select.quest-obj-type { flex: 0 0 56px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
+.quest-obj-row input[type="text"] { flex: 1 1 60px; min-width: 0; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
+.quest-obj-row input[type="number"] { flex: 0 0 48px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
+/* 经济配置子块（分解品质档 / 商店条目）：分组边框 */
+.de-rule { border: 1px solid #e6e8ee; border-radius: 6px; padding: 5px; margin: 4px 0; background: #fcfcfd; }
+.de-rule .drop-row { margin: 3px 0; }
+.de-mat-add { font-size: 11px; padding: 2px 6px; margin-top: 3px; flex: 0 0 auto; }

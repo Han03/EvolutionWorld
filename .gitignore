@@ -2,8 +2,10 @@
 node_modules/
 build/
 *.o
+*.d
 server/evolution_server
 server/build/
+client/dist/
 
 # 运行时数据（用户账号、会话）
 server/data/
@@ -16,3 +18,6 @@ artifacts/
 
 # 本机 WSL 部署脚本生成的 LF 副本（由 deploy/deploy-local.ps1 自动生成）
 deploy/.deploy_wsl.local.sh
+
+# 阶段7 编辑器配置面板浏览器验证的临时截图（本机产物，不入库）
+/step*.png

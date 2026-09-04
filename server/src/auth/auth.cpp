@@ -1,17 +1,15 @@
 // auth.cpp - 鉴权实现（SHA-256 加盐哈希，OpenSSL）
+// 文件持久化已移除：内存模式启动即空白；数据库模式由 MySQL 灌入账号。
 #include "auth.h"
 #include "util/random.h"
 #include <openssl/sha.h>
 #include <cstdio>
 #include <ctime>
-#include <sys/stat.h>
-#include <fstream>
 #include <regex>
 
 namespace ew {
 
 Auth::Auth(const Config& cfg, Store& store) : cfg_(cfg), store_(store) {
-  load();
   // 若 MySQL 可用，启动时把 MySQL 账号合并进内存（跨进程/跨重启持久）
   for (const auto& u : store_.mysqlLoadAllUsers())
     users_[u.username] = User{u.username, u.salt, u.hash, u.createdAt};
@@ -28,49 +26,6 @@ std::string Auth::hashPassword(const std::string& password, const std::string& s
   out.reserve(64);
   for (unsigned char c : h1) { out += HEX[c >> 4]; out += HEX[c & 0xF]; }
   return out;
-}
-
-void Auth::load() {
-  std::ifstream f(cfg_.userDbFile);
-  if (!f.is_open()) return;
-  std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  try {
-    Json doc = Json::parse(content);
-    if (doc.has("users")) {
-      for (const auto& u : doc.at("users").asArray()) {
-        User user;
-        user.username = u.at("username").asString();
-        user.salt = u.at("salt").asString();
-        user.hash = u.at("hash").asString();
-        user.createdAt = u.at("createdAt").asString();
-        users_[user.username] = user;
-      }
-    }
-  } catch (...) {}
-}
-
-void Auth::save() {
-  Json doc = Json::object();
-  doc["version"] = 1;
-  Json arr = Json::array();
-  for (const auto& [name, u] : users_) {
-    Json j = Json::object();
-    j["username"] = u.username;
-    j["salt"] = u.salt;
-    j["hash"] = u.hash;
-    j["createdAt"] = u.createdAt;
-    arr.push_back(j);
-  }
-  doc["users"] = arr;
-  // 确保目录存在
-  std::string path = cfg_.userDbFile;
-  size_t pos = path.find_last_of('/');
-  if (pos != std::string::npos) {
-    std::string dir = path.substr(0, pos);
-    mkdir(dir.c_str(), 0755);
-  }
-  std::ofstream f(path, std::ios::trunc);
-  if (f.is_open()) f << doc.dump();
 }
 
 Json Auth::registerUser(const std::string& username, const std::string& password) {
@@ -104,7 +59,6 @@ Json Auth::registerUser(const std::string& username, const std::string& password
   u.hash = hashPassword(password, u.salt);
   u.createdAt = "now";
   users_[uname] = u;
-  save();
   // 同步到 MySQL（尽力而为；失败由 Store 自动降级，不影响功能）
   store_.upsertUser(UserRecord{u.username, u.salt, u.hash, u.createdAt});
 

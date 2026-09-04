@@ -12,8 +12,9 @@
  * 需要服务端 EW_DEBUG=1 运行
  */
 import { parseS2C, MSG, Reader, Writer, makeFrame } from '../../client/js/protocol.js';
-const BASE = 'http://localhost:3000';
-const WS = 'ws://localhost:3000/ws';
+// 默认 localhost；可用 EW_TEST_BASE 覆盖（如 Windows→WSL2 localhost 转发失效时改用 WSL IP）。
+const BASE = process.env.EW_TEST_BASE || 'http://localhost:3000';
+const WS = process.env.EW_TEST_WS || (BASE.replace(/^http/, 'ws') + '/ws');
 const UN = 'questtest' + Math.floor(Math.random() * 100000);
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') {
@@ -54,7 +55,8 @@ function decodeQuestList(payload) {
   const count = r.u16();
   const list = [];
   for (let i = 0; i < count; i++) {
-    const q = { questId: r.u32(), category: r.u8(), name: r.str(), desc: r.str(), levelReq: r.i32(), objectives: [], rewards: { gold: 0, items: [], skills: [] } };
+    const q = { questId: r.u32(), category: r.u8(), name: r.str(), desc: r.str(), levelReq: r.i32(),
+                giverNpcWid: r.u32(), objectives: [], rewards: { gold: 0, items: [], skills: [] }, nextQuestIds: [] };
     const objCount = r.u16();
     for (let j = 0; j < objCount; j++) {
       q.objectives.push({ type: r.u8(), targetId: r.u32(), required: r.u32(), desc: r.str() });
@@ -64,6 +66,8 @@ function decodeQuestList(payload) {
     for (let j = 0; j < itemCount; j++) q.rewards.items.push({ itemId: r.u32(), count: r.u16() });
     const skillCount = r.u16();
     for (let j = 0; j < skillCount; j++) q.rewards.skills.push(r.u32());
+    const nextCount = r.u16();
+    for (let j = 0; j < nextCount; j++) q.nextQuestIds.push(r.u32());
     list.push(q);
   }
   return list;
@@ -88,9 +92,10 @@ function decodeQuestResult(payload) {
 }
 
 // C2S 编码
-function encodeQuestAccept(questId) {
+function encodeQuestAccept(questId, npcWid = 0) {
   const w = new Writer();
   w.u32(questId);
+  w.u32(npcWid);
   return makeFrame(MSG.C2S_QUEST_ACCEPT, w.finish());
 }
 function encodeQuestAbandon(questId) {
@@ -103,8 +108,10 @@ function encodeQuestTurnIn(questId, npcWid) {
   w.u32(questId); w.u32(npcWid || 0);
   return makeFrame(MSG.C2S_QUEST_TURNIN, w.finish());
 }
-function encodeQuestList() {
-  return makeFrame(MSG.C2S_QUEST_LIST, new Uint8Array(0));
+function encodeQuestList(npcWid = 0) {
+  const w = new Writer();
+  w.u32(npcWid);
+  return makeFrame(MSG.C2S_QUEST_LIST, w.finish());
 }
 function encodeConsole(cmd) {
   const w = new Writer();
@@ -130,6 +137,7 @@ async function main() {
   let questResultData = null;
   let questNotifyData = null;
   let questCompleteData = null;
+  let questChainData = null;
   let consoleText = '';
 
   const wait = (condFn, ms) => new Promise(async (res) => {
@@ -146,7 +154,8 @@ async function main() {
       // 标准消息走 parseS2C
       if (f.type !== MSG.S2C_QUEST_LIST && f.type !== MSG.S2C_QUEST_PROGRESS &&
           f.type !== MSG.S2C_QUEST_RESULT && f.type !== MSG.S2C_QUEST_COMPLETE &&
-          f.type !== MSG.S2C_QUEST_NOTIFY && f.type !== MSG.S2C_CONSOLE) {
+          f.type !== MSG.S2C_QUEST_NOTIFY && f.type !== MSG.S2C_QUEST_CHAIN &&
+          f.type !== MSG.S2C_CONSOLE) {
         try { parseS2C(f.type, f.payload, ref.x, ref.y, ref.z); } catch (e) {}
       }
       if (f.type === MSG.S2C_HELLO) {
@@ -168,6 +177,13 @@ async function main() {
       } else if (f.type === MSG.S2C_QUEST_COMPLETE) {
         const r = new Reader(f.payload);
         questCompleteData = { questId: r.u32() };
+      } else if (f.type === MSG.S2C_QUEST_CHAIN) {
+        const r = new Reader(f.payload);
+        const completedId = r.u32();
+        const count = r.u16();
+        const nextIds = [];
+        for (let i = 0; i < count; i++) nextIds.push(r.u32());
+        questChainData = { completedId, nextIds };
       } else if (f.type === MSG.S2C_CONSOLE) {
         const m = parseS2C(f.type, f.payload, ref.x, ref.y, ref.z);
         consoleText = m.text || '';
@@ -195,9 +211,14 @@ async function main() {
     check('任务有名称', q0.name && q0.name.length > 0, `name=${q0.name}`);
     check('任务有分类', q0.category >= 1 && q0.category <= 4, `cat=${q0.category}`);
     check('任务有目标', q0.objectives && q0.objectives.length > 0, `objs=${q0.objectives.length}`);
+    // 验证新字段
+    check('任务有 giverNpcWid 字段', q0.giverNpcWid !== undefined, `giverNpcWid=${q0.giverNpcWid}`);
+    check('任务有 nextQuestIds 字段', Array.isArray(q0.nextQuestIds), `nextQuestIds=[${q0.nextQuestIds}]`);
     // 打印所有任务
     for (const q of questListData) {
-      console.log(`    任务 #${q.questId} [${['','主线','支线','日常','可重复'][q.category]}] ${q.name} (Lv${q.levelReq}) 奖励: ${q.rewards.gold}金`);
+      const chain = q.nextQuestIds.length > 0 ? ` 🔗→[${q.nextQuestIds}]` : '';
+      const giver = q.giverNpcWid > 0 ? ` [NPC#${q.giverNpcWid}]` : '';
+      console.log(`    任务 #${q.questId} [${['','主线','支线','日常','可重复'][q.category]}] ${q.name} (Lv${q.levelReq})${giver}${chain} 奖励: ${q.rewards.gold}金`);
     }
   }
 
@@ -276,6 +297,10 @@ async function main() {
     questProgressData = null;
     send(encodeQuestList()); // 触发列表刷新（同时也会推送进度）
     await wait(() => questProgressData !== null || questListData !== null, 2000);
+    // 检查链式任务解锁通知
+    if (questChainData) {
+      check('链式任务解锁通知收到', true, `completedId=${questChainData.completedId} nextIds=[${questChainData.nextIds}]`);
+    }
   }
 
   // 7) 接受另一个任务然后放弃

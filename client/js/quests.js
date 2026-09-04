@@ -17,18 +17,19 @@ const QUEST_OP = { ACCEPT: 0, ABANDON: 1, TURNIN: 2, LIST: 3 };
 const QUEST_RESULT_CODE = {
   0: '成功', 1: '任务不存在', 2: '已在进行中', 3: '前置任务未完成',
   4: '等级不足', 5: '任务栏已满', 6: '任务不在进行中', 7: '目标未完成',
-  8: '不在 NPC 范围', 9: '冷却中', 10: '不可重复',
+  8: '不在 NPC 范围', 9: '冷却中', 10: '不可重复', 11: '不在发布者 NPC 范围',
 };
 
 // ---------- 状态 ----------
-let questList = [];      // 可接任务列表 [{questId, category, name, desc, levelReq, objectives, rewards}]
+let questList = [];      // 可接任务列表 [{questId, category, name, desc, levelReq, giverNpcWid, objectives, rewards, nextQuestIds}]
 let questProgress = [];  // 活跃任务 [{questId, status, objectives: [{current, required}]}]
 let questPanelOpen = false;
 let questTab = 'active'; // available / active / completed
+let currentNpcFilter = 0; // NPC 过滤模式：0=全部，>0=指定 NPC wid
 
 // ---------- 协议解析 ----------
 
-/** 解析 S2C_QUEST_LIST */
+/** 解析 S2C_QUEST_LIST（含 giverNpcWid + nextQuestIds） */
 export function decodeQuestList(r) {
   const count = r.u16();
   const list = [];
@@ -39,8 +40,10 @@ export function decodeQuestList(r) {
       name: r.str(),
       desc: r.str(),
       levelReq: r.i32(),
+      giverNpcWid: r.u32(), // 发布者 NPC wid
       objectives: [],
       rewards: { gold: 0, items: [], skills: [] },
+      nextQuestIds: [],
     };
     const objCount = r.u16();
     for (let j = 0; j < objCount; j++) {
@@ -59,6 +62,11 @@ export function decodeQuestList(r) {
     const skillCount = r.u16();
     for (let j = 0; j < skillCount; j++) {
       q.rewards.skills.push(r.u32());
+    }
+    // 链式后续任务 ID
+    const nextCount = r.u16();
+    for (let j = 0; j < nextCount; j++) {
+      q.nextQuestIds.push(r.u32());
     }
     list.push(q);
   }
@@ -119,11 +127,27 @@ export function decodeQuestComplete(r) {
   return { questId };
 }
 
+/** 解析 S2C_QUEST_CHAIN（链式任务解锁通知） */
+export function decodeQuestChain(r) {
+  const completedId = r.u32();
+  const count = r.u16();
+  const nextIds = [];
+  for (let i = 0; i < count; i++) nextIds.push(r.u32());
+  // 显示链式解锁提示
+  const names = nextIds.map(id => {
+    const q = questList.find(lq => lq.questId === id);
+    return q ? q.name : `任务#${id}`;
+  });
+  showToast(`🔗 新任务解锁: ${names.join('、')}`);
+  return { completedId, nextIds };
+}
+
 // ---------- C2S 发送 ----------
 
-export function sendQuestAccept(net, questId) {
+export function sendQuestAccept(net, questId, npcWid = 0) {
   const w = new Writer();
   w.u32(questId);
+  w.u32(npcWid);
   net.send(MSG.C2S_QUEST_ACCEPT, w.finish());
 }
 
@@ -140,8 +164,10 @@ export function sendQuestTurnIn(net, questId, npcWid) {
   net.send(MSG.C2S_QUEST_TURNIN, w.finish());
 }
 
-export function sendQuestList(net) {
-  net.send(MSG.C2S_QUEST_LIST, new Uint8Array(0));
+export function sendQuestList(net, npcWid = 0) {
+  const w = new Writer();
+  w.u32(npcWid);
+  net.send(MSG.C2S_QUEST_LIST, w.finish());
 }
 
 export function sendQuestTrack(net) {
@@ -167,6 +193,9 @@ export function toggleQuestPanel() {
 }
 
 export function isQuestPanelOpen() { return questPanelOpen; }
+export function getQuestList() { return questList; }
+export function getQuestProgress() { return questProgress; }
+export function setNpcFilter(npcWid) { currentNpcFilter = npcWid; }
 
 function renderQuestPanel() {
   const content = document.getElementById('quest-content');
@@ -177,13 +206,18 @@ function renderQuestPanel() {
   });
   let html = '';
   if (questTab === 'available') {
-    // 请求可接任务列表
-    if (questList.length === 0) {
+    // 请求可接任务列表（按 NPC 过滤）
+    if (questList.length === 0 && currentNpcFilter === 0) {
       html = '<div class="quest-empty">当前无可接任务</div>';
+    } else if (questList.length === 0) {
+      html = '<div class="quest-empty">该 NPC 当前无可接任务</div>';
     } else {
       for (const q of questList) {
         const catColor = CATEGORY_COLORS[q.category] || '#fff';
         const catName = CATEGORY_NAMES[q.category] || '未知';
+        const giverText = q.giverNpcWid > 0 ? `<span class="quest-giver">发布: NPC#${q.giverNpcWid}</span>` : '';
+        const chainText = q.nextQuestIds && q.nextQuestIds.length > 0
+          ? `<span class="quest-chain">🔗 后续任务: ${q.nextQuestIds.length} 个</span>` : '';
         html += `<div class="quest-card" data-quest-id="${q.questId}">
           <div class="quest-card-header">
             <span class="quest-cat" style="color:${catColor}">[${catName}]</span>
@@ -191,6 +225,8 @@ function renderQuestPanel() {
             <span class="quest-level">Lv${q.levelReq}</span>
           </div>
           <div class="quest-desc">${q.desc}</div>
+          ${giverText ? `<div class="quest-meta">${giverText}</div>` : ''}
+          ${chainText ? `<div class="quest-meta">${chainText}</div>` : ''}
           <div class="quest-objectives">`;
         for (const obj of q.objectives) {
           html += `<div class="quest-obj">${OBJ_TYPE_NAMES[obj.type] || '?'} ${obj.desc} (0/${obj.required})</div>`;
@@ -306,15 +342,22 @@ export function initQuestUI(net) {
   document.querySelectorAll('.quest-tab').forEach(btn => {
     btn.addEventListener('click', () => {
       questTab = btn.dataset.tab;
-      if (questTab === 'available') sendQuestList(net);
+      if (questTab === 'available') sendQuestList(net, currentNpcFilter);
       renderQuestPanel();
     });
   });
   // 关闭按钮
   const closeBtn = document.getElementById('quest-close');
-  if (closeBtn) closeBtn.addEventListener('click', () => toggleQuestPanel());
+  if (closeBtn) closeBtn.addEventListener('click', () => {
+    toggleQuestPanel();
+    currentNpcFilter = 0; // 关闭时重置 NPC 过滤
+  });
   // 全局回调（HTML onclick 调用）
-  window.__questAccept = (questId) => { sendQuestAccept(net, questId); };
+  window.__questAccept = (questId) => {
+    const q = questList.find(lq => lq.questId === questId);
+    const npcWid = q ? q.giverNpcWid : 0;
+    sendQuestAccept(net, questId, npcWid);
+  };
   window.__questAbandon = (questId) => { sendQuestAbandon(net, questId); };
   window.__questTurnIn = (questId) => { sendQuestTurnIn(net, questId, 0); };
   // 初始追踪 HUD

@@ -1,4 +1,4 @@
-// physics.h - 简单物理系统（重力/地表碰撞/加速度/跳跃）
+// physics.h - 简单物理系统（重力/地表碰撞/加速度）
 #pragma once
 #include "entity.h"
 #include "../config.h"
@@ -13,8 +13,6 @@ public:
   void step(Entity& e, double dt);
   // 水平速度向目标逼近（加速度模型）
   void setHorizontalVelocity(Entity& e, double targetX, double targetZ, double dt);
-  // 触发跳跃（仅地面）
-  bool tryJump(Entity& e);
 
 private:
   const Config& cfg_;

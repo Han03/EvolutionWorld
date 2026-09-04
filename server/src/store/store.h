@@ -11,6 +11,7 @@
 #include <memory>
 #include <cstdint>
 #include <vector>
+#include <tuple>
 #include "../config.h"
 
 namespace ew {
@@ -38,6 +39,7 @@ struct PlayerSave {
   std::string equipJson;    // 例如 {"helm":1001,"weapon":1501} 或空
   std::string inventoryJson;// 例如 {"2001":5,"3001":3} 或空
   std::string questsJson;     // 任务数据 JSON（活跃/已完成/冷却）或空
+  std::string warehouseJson;  // 仓库数据 JSON（阶段5：{"gold":0,"unlocked":30,"slots":[...]}）或空
 };
 
 // 公会存档（MySQL 持久化用）
@@ -129,6 +131,8 @@ public:
 
   // 启动探测：尝试连接 MySQL/Redis，失败自动降级并记录日志
   void init();
+  // 启动时从 MySQL 批量加载好友/黑名单到内存后端（填充 MemoryStore 供子系统读取）
+  void populateFriendsBlocks();
 
   bool mysqlActive() const { return mysql_ && mysql_->available(); }
   bool redisActive() const { return redis_ && redis_->available(); }
@@ -164,6 +168,9 @@ public:
   void addBlock(const std::string& a, const std::string& b);
   void removeBlock(const std::string& a, const std::string& b);
   std::vector<std::string> loadBlocks(const std::string& username);
+  // 全量加载（启动时填充子系统内存用）
+  std::vector<std::tuple<std::string, std::string, uint64_t>> loadAllFriends();
+  std::vector<std::pair<std::string, std::string>> loadAllBlocks();
 
   // ---- 社交系统：公会（内存必写 + MySQL 尽力）----
   void saveGuild(const GuildSave& g);

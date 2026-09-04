@@ -34,6 +34,9 @@ World::World(const Config& cfg)
   guilds_ = std::make_unique<GuildSystem>(*this);
   chat_ = std::make_unique<ChatSystem>(*this);
   quests_ = std::make_unique<QuestSystem>(*this);
+  npcs_ = std::make_unique<NpcManager>();  // NPC 插件初始化
+  economy_ = std::make_unique<EconomySystem>();  // 经济系统门面（强化/分解/合成）
+  warehouse_ = std::make_unique<WarehouseSystem>();  // 仓库系统（阶段5：存储域）
   addSystem(10, "input", inputSystem);
   addSystem(20, "move", moveSystem);
   addSystem(30, "ai", aiSystem);
@@ -43,9 +46,18 @@ World::World(const Config& cfg)
   addSystem(50, "respawn", respawnSystem);
   addSystem(55, "player_respawn", playerRespawnSystem);
   addSystem(60, "drop", dropSystem);
-  // 配置系统：内置默认数据 + 可选 JSON 覆盖（data/items.json / monsters.json / shop.json）
+  // 配置系统：内置默认数据 + 商店 JSON 覆盖（shop.json）；物品/生物由编辑器热替换
   data_.loadDefaults();
   data_.loadFromJson(cfg.dataDir);
+  // NPC 插件：内置默认花名册 + 可选 JSON 覆盖
+  npcs_->loadDefaults();
+  npcs_->loadFromJson(cfg.dataDir);
+  // 经济系统：内置默认强化表 + 可选 enhance.json 覆盖
+  economy_->loadDefaults();
+  economy_->loadFromJson(cfg.dataDir);
+  // 仓库系统：内置默认配置 + 可选 warehouse.json 覆盖
+  warehouse_->loadDefaults();
+  warehouse_->loadFromJson(cfg.dataDir);
   // 任务系统：内置默认任务 + 可选 JSON 覆盖
   quests_->init();
 }
@@ -113,7 +125,7 @@ void World::spawnBossAt(double hx, double hz, const std::string& name) {
       if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { bx = px; bz = pz; found = true; break; }
     }
   }
-  b.pos = {bx, terrainHeight(bx, bz) + b.radius + 0.3, bz};
+  b.pos = {bx, groundFootY(bx, bz, b.radius), bz};
   b.ai.homeX = bx;
   b.ai.homeZ = bz;
   b.skillIds = {2100, 2101};  // Boss 技能：地裂冲击 / 暗影波动
@@ -139,7 +151,14 @@ void World::spawnFromPoint(const SpawnPoint& sp) {
   }
 }
 // 按出生点生成一个城镇 NPC：就近找干地，可带商店/名称
+// NPC 插件：按 npcId 查 NpcDef，应用属性 + 唯一性检查（相同 npcId 不能同时出现）
 void World::spawnNpcAt(const SpawnPoint& sp) {
+  // 唯一性检查：相同 npcId 不能同时出现在地图上
+  if (!sp.npcId.empty() && !npcs_->markSpawned(sp.npcId)) {
+    fprintf(stderr, "[npc] 拒绝重复生成 npcId=%s（已存在于地图上）\n", sp.npcId.c_str());
+    return;
+  }
+
   Entity n = makeNpc(nextEntityId("n"));
   double hx = sp.x, hz = sp.z;
   double sx = hx, sz = hz;
@@ -151,14 +170,38 @@ void World::spawnNpcAt(const SpawnPoint& sp) {
       if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; }
     }
   }
-  n.pos = {sx, terrainHeight(sx, sz) + n.radius + 0.3, sz};
+  n.pos = {sx, groundFootY(sx, sz, n.radius), sz};
   n.ai.homeX = n.pos.x;
   n.ai.homeZ = n.pos.z;
-  if (sp.shopId) { n.shopId = sp.shopId; n.ai.aiState = 0; } // 守店不游走
-  if (!sp.name.empty()) n.name = sp.name;
-  if (sp.shopId) {
-    fprintf(stderr, "[shopnpc] spawn id=%s pos=(%.2f,%.2f,%.2f) home=(%.2f,%.2f)\n",
-            n.id.c_str(), n.pos.x, n.pos.y, n.pos.z, n.ai.homeX, n.ai.homeZ);
+
+  // NPC 插件：按 npcId 查 NpcDef 应用属性
+  if (!sp.npcId.empty()) {
+    const NpcDef* def = npcs_->npc(sp.npcId);
+    if (def) {
+      n.npcId = def->npcId;
+      n.npcTag = def->npcTag;
+      n.name = def->name;
+      n.level = def->level;
+      n.shopId = def->shopId;
+      n.ai.wpR = def->wanderRadius;  // 游走半径
+      if (def->shopId) n.ai.aiState = 0;  // 守店不游走
+    } else {
+      fprintf(stderr, "[npc] 警告：npcId=%s 未找到定义，回退到 SpawnPoint 字段\n", sp.npcId.c_str());
+      n.npcId = sp.npcId;
+      n.npcTag = sp.npcTag;
+      if (!sp.name.empty()) n.name = sp.name;
+      if (sp.shopId) { n.shopId = sp.shopId; n.ai.aiState = 0; }
+    }
+  } else {
+    // 旧模式：无 npcId，使用 SpawnPoint 字段
+    n.npcTag = sp.npcTag;
+    if (!sp.name.empty()) n.name = sp.name;
+    if (sp.shopId) { n.shopId = sp.shopId; n.ai.aiState = 0; }
+  }
+
+  if (n.shopId) {
+    fprintf(stderr, "[npc] spawn npcId=%s name=%s pos=(%.2f,%.2f,%.2f) home=(%.2f,%.2f)\n",
+            n.npcId.c_str(), n.name.c_str(), n.pos.x, n.pos.y, n.pos.z, n.ai.homeX, n.ai.homeZ);
   }
   addEntity(std::move(n));
 }
@@ -172,37 +215,97 @@ void World::reseedCreatures() {
   }
   for (const auto& id : toRemove) despawnEntity(id);
   aliveBoss_ = 0;
+  npcs_->clearSpawned();  // NPC 插件：清空唯一性追踪
   seedWorld();
   fprintf(stderr, "[spawns] 热重载完成：%zu 个出生点 → 重建世界生物\n", spawns_.size());
 }
-// 应用新出生点配置：fromJson → 持久化 data/spawns.json → 热重载世界生物
+// 应用新出生点配置：fromJson → 热重载世界生物（数据库模式同步落库；内存模式重启即重置）
 bool World::applySpawns(const std::string& json, const std::string& dataDir) {
+  (void)dataDir;
   if (!spawns_.fromJson(json)) return false;
-  spawns_.saveFile(dataDir + "/spawns.json");
   // 数据库模式：同步将出生点（连同当前 mask）落库，保证重启后一致
   if (store_ && store_->worldDataPersistent()) saveWorldToStore(*store_);
   reseedCreatures();
   return true;
 }
-// 应用编辑器物品配置：热替换内存 items_ → 持久化 data/items.json（物品为查询型，无需重建实体）
+// 应用编辑器物品配置：热替换内存 items_（数据库模式同步落库；内存模式重启即重置）
 bool World::applyItems(const std::string& itemsJson, const std::string& dataDir) {
+  (void)dataDir;
   try {
     Json arr = Json::parse(itemsJson);
     if (!data_.replaceItems(arr)) return false;
   } catch (...) { return false; }
-  data_.saveItemsFile(dataDir + "/items.json");
+  // 数据库模式：同步落库
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("items", itemsJson);
   fprintf(stderr, "[gamedata] 物品配置热重载：%zu 件\n", data_.items().size());
   return true;
 }
-// 应用编辑器生物配置：热替换内存 monsters_ → 持久化 data/monsters.json → 热重载世界生物
+// 应用编辑器生物配置：热替换内存 monsters_ → 热重载世界生物（数据库模式同步落库）
 bool World::applyMonsters(const std::string& monstersJson, const std::string& dataDir) {
+  (void)dataDir;
   try {
     Json obj = Json::parse(monstersJson);
     if (!data_.replaceMonsters(obj)) return false;
   } catch (...) { return false; }
-  data_.saveMonstersFile(dataDir + "/monsters.json");
+  // 数据库模式：同步落库
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("monsters", monstersJson);
   reseedCreatures();
   fprintf(stderr, "[gamedata] 生物配置热重载：%zu 种\n", data_.monsters().size());
+  return true;
+}
+// 应用编辑器 NPC 配置：热替换内存 npcs_（数据库模式同步落库；NPC 为模板数据，无需 reseed）
+bool World::applyNpcs(const std::string& npcsJson, const std::string& dataDir) {
+  (void)dataDir;
+  try {
+    Json obj = Json::parse(npcsJson);
+    if (!npcs_->replaceNpcs(obj)) return false;
+  } catch (...) { return false; }
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("npcs", npcsJson);
+  fprintf(stderr, "[npc] NPC 配置热重载：%zu 种\n", npcs_->npcs().size());
+  return true;
+}
+// 应用编辑器强化配置：热替换内存 enhance 配置（数据库模式同步落库）
+bool World::applyEnhance(const std::string& json, const std::string& dataDir) {
+  (void)dataDir;
+  try {
+    Json obj = Json::parse(json);
+    if (!economy_->enhance().replaceConfig(obj)) return false;
+  } catch (...) { return false; }
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("enhance", json);
+  fprintf(stderr, "[economy] 强化配置热重载：%zu 级\n", economy_->enhance().config().levels.size());
+  return true;
+}
+// 应用编辑器分解配置：热替换内存 decompose 规则（数据库模式同步落库）
+bool World::applyDecompose(const std::string& json, const std::string& dataDir) {
+  (void)dataDir;
+  try {
+    Json obj = Json::parse(json);
+    if (!economy_->enhance().replaceDecomposeConfig(obj)) return false;
+  } catch (...) { return false; }
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("decompose", json);
+  fprintf(stderr, "[economy] 分解配置热重载：%zu 档\n", economy_->enhance().decomposeConfig().rules.size());
+  return true;
+}
+// 应用编辑器合成配方：热替换内存 craft 配方（数据库模式同步落库）
+bool World::applyCraft(const std::string& json, const std::string& dataDir) {
+  (void)dataDir;
+  try {
+    Json obj = Json::parse(json);
+    if (!economy_->craft().replaceConfig(obj)) return false;
+  } catch (...) { return false; }
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("craft", json);
+  fprintf(stderr, "[economy] 合成配方热重载：%zu 条\n", economy_->craft().recipes().size());
+  return true;
+}
+// 应用编辑器商店配置：热替换内存 shops_（数据库模式同步落库）
+bool World::applyShop(const std::string& json, const std::string& dataDir) {
+  (void)dataDir;
+  try {
+    Json obj = Json::parse(json);
+    if (!data_.replaceShops(obj)) return false;
+  } catch (...) { return false; }
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("shops", json);
+  fprintf(stderr, "[gamedata] 商店配置热重载：%zu 个\n", data_.shops().size());
   return true;
 }
 Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
@@ -222,7 +325,7 @@ Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
     Mulberry32 rng((uint32_t)(username.size() * 2654435761u + (uint64_t)entitySeq_));
     double x, y, z;
     townSpawn(rng, x, y, z);
-    p.pos = {x, terrainHeight(x, z) + p.radius + 0.3, z};
+    p.pos = {x, groundFootY(x, z, p.radius), z};
   }
   std::string id = p.id; // 移动前保存 id
   widToId_[p.wid] = id;
@@ -258,7 +361,7 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   Entity* t = findByWid(targetWid);
   if (!t || !t->active) return false;
   if (t->kind != EntityKind::Monster) return false;  // 只可攻击世界怪物/Boss
-  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  uint64_t nowMs = logicNowMs();
   // 攻击冷却（服务端权威，客户端不可伪造频率）；测试无消耗模式下跳过，便于快速重复击杀
   if (!testFlags_.noSkillCost &&
       nowMs - p->lastAttackMs < (uint64_t)(cfg_.playerAttackCdSec * 1000.0)) return false;
@@ -343,7 +446,7 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
   const SkillDef* sd = data_.skill(skillId);
   if (!sd) return false;
   if (!p->learnedSkills.count(skillId)) return false;  // 未学习
-  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  uint64_t nowMs = logicNowMs();
   const bool freeCast = testFlags_.noSkillCost;  // 测试：无冷却/无蓝耗，便于重复施放同一技能
   auto cdit = p->skillCd.find(skillId);
   if (!freeCast && cdit != p->skillCd.end() && cdit->second > nowMs) return false;  // 冷却中
@@ -380,7 +483,7 @@ static double hitRadius(const SkillDef& sd) { return sd.radius > 0 ? sd.radius :
 
 // 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 按范围施加效果
 void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz) {
-  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  uint64_t nowMs = logicNowMs();
   if (!testFlags_.noSkillCost) {  // 测试：无消耗模式下不扣蓝、不上冷却（可连续施放）
     caster.mp -= sd.manaCost;
     caster.skillCd[sd.id] = nowMs + (uint64_t)sd.cooldownMs;
@@ -445,6 +548,8 @@ void World::cancelCastOnHit(Entity& e) {
 }
 // 通用技能效果施加：伤害计算 + 仇恨 + 死亡 + 吸血 + 附带减益 + 击退（玩家→怪物、怪物→玩家 均可用）
 void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& sd, double variance) {
+  // 无敌免疫：恢复态怪物免疫所有伤害/减益/击退
+  if (target.ai.invincible) return;
   double dmg = calcDamage(caster.attack * sd.dmgMul, target.defense, variance) + sd.flatDmg;
   target.hp -= dmg;
   target.aggro[caster.wid] += dmg;
@@ -466,19 +571,40 @@ void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& s
     applyKnockback(caster, target, sd.knockback);
   }
   if (target.hp <= 0 && target.active) {
-    uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
-    onVictimDeath(target, caster, nowMs);
+    uint64_t nowMs = logicNowMs();
+    if (target.kind == EntityKind::Player) {
+      killPlayer(target, &caster);  // 玩家死亡：标记 + 复活计时 + EVT_DEATH
+    } else {
+      onVictimDeath(target, caster, nowMs);  // 怪物/Boss 死亡
+    }
   }
 }
-// 击退：沿 from→target 水平方向把 target 位移 dist 米，落回地形高度；霸体免疫；触发受击打断
+// 击退：沿 from→target 水平方向把 target 位移最多 dist 米（撞墙即止），落回地表；霸体免疫；触发受击打断
 void World::applyKnockback(Entity& from, Entity& target, double dist) {
   if (target.hasBuff((uint8_t)BuffType::SUPER_ARMOR)) return; // 霸体免疫击退
+  if (target.ai.invincible) return; // 无敌免疫击退（恢复态）
   double dx = target.pos.x - from.pos.x, dz = target.pos.z - from.pos.z;
   double len = std::hypot(dx, dz);
   if (len < 1e-4) { dx = 1; dz = 0; len = 1; } // 重叠时取固定方向
-  target.pos.x += dx / len * dist;
-  target.pos.z += dz / len * dist;
-  target.pos.y = terrainHeight(target.pos.x, target.pos.z); // 落回地表
+  const double ux = dx / len, uz = dz / len;
+  // 逐步推进 + 圆盘碰撞检测：击退落点必须可通行。旧实现直接整段位移且不查碰撞，
+  // 可把实体（含玩家）推入不可通行区 → 破坏「服务端权威位置恒严格可通行」不变式：
+  // 玩家后续每次上报都判 terrain_blocked，且 AntiCheat::clampToWalkable 因锚点自身
+  // 阻挡而放弃夹紧，退化为反复软失败（玩家原地卡死）。
+  // 每 0.1m 探测一次，撞到阻挡就停在上一步 —— 天然实现「撞墙即止」。
+  const double ox = target.pos.x, oz = target.pos.z;
+  double nx = ox, nz = oz;
+  const double kStep = 0.1;
+  const int steps = (int)std::ceil(dist / kStep);
+  for (int i = 1; i <= steps; i++) {
+    const double d = std::min(dist, kStep * (double)i);
+    const double cx = ox + ux * d, cz = oz + uz * d;
+    if (collision_.circleBlocked(cx, cz, target.radius)) break;
+    nx = cx; nz = cz;
+  }
+  target.pos.x = nx;
+  target.pos.z = nz;
+  target.pos.y = groundFootY(nx, nz, target.radius); // 落回地表（与其他贴地点同一语义）
   if (target.isBoss) markBossDirty();
   cancelCastOnHit(target); // 击退视为受击：打断目标前摇（霸体技能 castCancelOnHit=false 不受影响）
   // 位移由 netcode 的 UPDATE/SNAPSHOT 帧自动同步给视野内玩家，无需额外事件
@@ -521,14 +647,13 @@ void World::removeBuffType(Entity& e, uint8_t type) {
 // 复活由 playerRespawnSystem 处理。普攻/技能/Boss AOE/荆棘反伤共用。
 void World::killPlayer(Entity& p, Entity* killer) {
   if (p.kind != EntityKind::Player || p.dead) return;
-  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  uint64_t nowMs = logicNowMs();
   p.hp = 0;
   p.dead = true;
   p.respawnAtMs = nowMs + (uint64_t)(cfg_.playerRespawnSec * 1000.0);
   // 停止施放与移动意图
   cancelCast(p, 3);
   p.input.targetVX = p.input.targetVZ = 0;
-  p.input.moveX = p.input.moveZ = 0;
   // 清仇恨：所有怪物不再锁定死亡玩家
   for (auto& [id, e] : entities_) {
     (void)id;
@@ -558,7 +683,7 @@ double World::thornsReflect(Entity& victim, Entity& attacker, double dmg) {
 }
 // 已学技能 + 剩余冷却（S2C_SKILLS）
 std::string World::skillsFrame(const Entity& p) {
-  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  uint64_t nowMs = logicNowMs();
   proto::Writer w;
   w.u16((uint16_t)p.learnedSkills.size());
   for (uint32_t id : p.learnedSkills) {
@@ -600,7 +725,7 @@ Entity* World::spawnMonster(const std::string& type, double x, double z) {
   }
   Entity m = makeMonster(nextEntityId("m"), type);
   applyMonsterStats(m, type);
-  m.pos = {sx, terrainHeight(sx, sz) + m.radius + 0.3, sz};
+  m.pos = {sx, groundFootY(sx, sz, m.radius), sz};
   m.ai.homeX = sx;
   m.ai.homeZ = sz;
   m.active = true;
@@ -614,11 +739,12 @@ bool World::teleportPlayer(const std::string& playerId, double x, double z) {
   if (!p || p->kind != EntityKind::Player) return false;
   p->pos.x = x;
   p->pos.z = z;
-  p->pos.y = terrainHeight(x, z) + p->radius + 0.3;
+  p->pos.y = groundFootY(x, z, p->radius);
   p->vel = {0, 0, 0};
   p->grounded = true;
   // 防作弊重置：传送属管理/调试工具，避免在途输入被轨迹校验误判
   p->violations = 0;
+  p->terrainRejects = 0;
   p->acceptedInputs = 0;
   p->rateDrops = 0;
   p->lastSeq = 0;
@@ -628,7 +754,7 @@ bool World::killEntity(const std::string& playerId, uint32_t wid) {
   Entity* killer = findEntity(playerId);
   Entity* t = findByWid(wid);
   if (!t || !t->active || t->kind != EntityKind::Monster) return false;
-  uint64_t nowMs = tick_ * (uint64_t)cfg_.tickMs;
+  uint64_t nowMs = logicNowMs();
   onVictimDeath(*t, killer ? *killer : *t, nowMs);
   return true;
 }
@@ -656,7 +782,7 @@ bool World::respawnEntity(const std::string& id) {
     e->active = true;
     e->respawnAtMs = 0;
     e->buffs.clear();
-    e->pos = {e->ai.homeX, terrainHeight(e->ai.homeX, e->ai.homeZ) + e->radius + 0.3, e->ai.homeZ};
+    e->pos = {e->ai.homeX, groundFootY(e->ai.homeX, e->ai.homeZ, e->radius), e->ai.homeZ};
     pushEvent(proto::EVT_RESPAWN, e->wid, 0, 0, 0);
     return true;
   }
@@ -673,12 +799,56 @@ bool World::giveItem(const std::string& playerId, uint32_t itemId, uint16_t coun
   Entity* p = findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return false;
   if (!data_.item(itemId) || count == 0) return false;
-  p->pl.inventory[itemId] += count;
+  giveItemSmart(*p, itemId, count);
   markInvDirty(playerId);
   markStatsDirty(playerId);
   // 任务钩子：发放物品后检测收集任务进度
   quests_->onItemAcquired(*p, itemId, count);
   return true;
+}
+// ---- 装备实例化辅助（阶段 0 地基）----
+// 为玩家创建一件装备实例并入背包（返回 instId；itemId 非装备返回 0）
+uint64_t World::giveEquipInstance(Entity& p, uint32_t itemId, uint8_t enhance) {
+  const ItemDef* def = data_.item(itemId);
+  if (!def || def->type != ItemType::EQUIP) return 0;
+  ItemInstance ins;
+  ins.instId = allocInstId();
+  ins.itemId = itemId;
+  ins.enhance = enhance;
+  p.pl.equipBag.push_back(ins);
+  return ins.instId;
+}
+// 智能发放：装备→新建实例入 equipBag（count 件）；其余→堆叠入 inventory
+void World::giveItemSmart(Entity& p, uint32_t itemId, uint16_t count) {
+  const ItemDef* def = data_.item(itemId);
+  if (!def) return;
+  if (def->type == ItemType::EQUIP) {
+    for (uint16_t i = 0; i < count; i++) giveEquipInstance(p, itemId, 0);
+  } else {
+    p.pl.inventory[itemId] += count;
+  }
+}
+// 在 equip + equipBag 中按 instId 查找装备实例
+ItemInstance* World::findInstance(Entity& p, uint64_t instId) {
+  if (instId == 0) return nullptr;
+  for (auto& ins : p.pl.equip) if (ins.instId == instId) return &ins;
+  for (auto& ins : p.pl.equipBag) if (ins.instId == instId) return &ins;
+  return nullptr;
+}
+// 启动时从世界数据 KV 恢复实例 ID 水位（保证跨重启已存档 instId 不被重用）
+void World::loadInstIdCounter() {
+  if (!store_) return;
+  std::string v;
+  if (store_->loadWorldData("instIdCounter", v) && !v.empty()) {
+    uint64_t n = (uint64_t)strtoull(v.c_str(), nullptr, 10);
+    if (n > nextInstId_) nextInstId_ = n;   // 存储值为「下一个可分配」，直接抬升
+    fprintf(stderr, "[items] 装备实例 ID 计数器恢复：next=%llu\n", (unsigned long long)nextInstId_);
+  }
+}
+// 玩家存档时回写当前水位（仅数据库持久模式）
+void World::saveInstIdCounter() {
+  if (!store_ || !store_->worldDataPersistent()) return;
+  store_->saveWorldData("instIdCounter", std::to_string(nextInstId_));
 }
 bool World::giveGold(const std::string& playerId, int64_t amount) {
   Entity* p = findEntity(playerId);
@@ -701,7 +871,16 @@ void World::spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold) {
       if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { sx = px; sz = pz; found = true; break; }
     }
   }
-  spawnDrop(sx, sz, itemId, gold);
+  // 装备→实例掉落（分配 instId）；其余→普通掉落
+  const ItemDef* it = itemId ? data_.item(itemId) : nullptr;
+  if (it && it->type == ItemType::EQUIP) {
+    ItemInstance ins;
+    ins.instId = allocInstId();
+    ins.itemId = itemId;
+    spawnDropInst(sx, sz, ins);
+  } else {
+    spawnDrop(sx, sz, itemId, gold);
+  }
 }
 Json World::bossesStatus() const {
   Json arr = Json::array();
@@ -775,7 +954,17 @@ void World::rollDrops(Entity& killer, Entity& victim) {
   if (def) {
     for (const auto& de : def->drops) {
       if (rng01() < de.prob) {
-        spawnDrop(victim.pos.x, victim.pos.z, de.itemId, 0);
+        const ItemDef* it = data_.item(de.itemId);
+        if (it && it->type == ItemType::EQUIP) {
+          // 装备→实例掉落（分配 instId，强化等级 0）
+          ItemInstance ins;
+          ins.instId = allocInstId();
+          ins.itemId = de.itemId;
+          ins.enhance = 0;
+          spawnDropInst(victim.pos.x, victim.pos.z, ins);
+        } else {
+          spawnDrop(victim.pos.x, victim.pos.z, de.itemId, 0);
+        }
       }
     }
   }
@@ -788,7 +977,7 @@ void World::spawnDrop(double x, double z, uint32_t itemId, uint32_t gold) {
   double dz = z + std::sin(angle) * dist;
   double y = terrainHeight(dx, dz) + 0.35;
   Entity d = makeDrop(nextEntityId("drop"), dx, y, dz, itemId, gold);
-  d.dropExpireAtMs = tick_ * (uint64_t)cfg_.tickMs + (uint64_t)(cfg_.dropLifetimeSec * 1000.0);
+  d.dropExpireAtMs = logicNowMs() + (uint64_t)(cfg_.dropLifetimeSec * 1000.0);
   if (itemId) {
     const ItemDef* it = data_.item(itemId);
     d.name = it ? it->name : ("物品#" + std::to_string(itemId));
@@ -797,6 +986,20 @@ void World::spawnDrop(double x, double z, uint32_t itemId, uint32_t gold) {
   }
   addEntity(std::move(d));
   pushEvent(proto::EVT_DROP, (uint32_t)d.wid, itemId, (int32_t)gold, 0);
+}
+// 生成装备实例掉落（保留强化等级；dropItemId 同步为 itemId 供客户端展示）
+void World::spawnDropInst(double x, double z, const ItemInstance& inst) {
+  double angle = rng01() * 6.28318;
+  double dist = 0.5 + rng01() * 1.2;
+  double dx = x + std::cos(angle) * dist;
+  double dz = z + std::sin(angle) * dist;
+  double y = terrainHeight(dx, dz) + 0.35;
+  Entity d = makeDrop(nextEntityId("drop"), dx, y, dz, inst.itemId, 0, inst);
+  d.dropExpireAtMs = logicNowMs() + (uint64_t)(cfg_.dropLifetimeSec * 1000.0);
+  const ItemDef* it = data_.item(inst.itemId);
+  d.name = it ? it->name : ("物品#" + std::to_string(inst.itemId));
+  addEntity(std::move(d));
+  pushEvent(proto::EVT_DROP, (uint32_t)d.wid, inst.itemId, 0, 0);
 }
 // 移除地面掉落物
 void World::despawnEntity(const std::string& id) {
@@ -818,7 +1021,11 @@ bool World::playerPickup(const std::string& playerId, uint32_t dropWid) {
   if (p->pos.dist2D(d->pos) > cfg_.pickupRangeM) return false;
   // 转移（金币是物品，都进背包/钱包）
   if (d->dropGold > 0) p->pl.gold += d->dropGold;
-  if (d->dropItemId > 0) {
+  if (d->dropInst.instId != 0) {
+    // 装备实例：直接入背包（保留 instId + 强化等级）
+    p->pl.equipBag.push_back(d->dropInst);
+    quests_->onItemAcquired(*p, d->dropInst.itemId, 1);
+  } else if (d->dropItemId > 0) {
     p->pl.inventory[d->dropItemId] += 1;
     // 任务钩子：拾取物品后检测收集任务进度
     quests_->onItemAcquired(*p, d->dropItemId, 1);
@@ -826,35 +1033,36 @@ bool World::playerPickup(const std::string& playerId, uint32_t dropWid) {
   despawnDrop(d->id);
   return true;
 }
-// 穿戴/卸下装备（slot 槽位值 1..6；itemId=0 卸下）
-bool World::equipItem(const std::string& playerId, uint8_t slot, uint32_t itemId) {
+// 穿戴/卸下装备（slot 槽位值 1..6；instId=0 卸下）——装备实例化
+bool World::equipItem(const std::string& playerId, uint8_t slot, uint64_t instId) {
   Entity* p = findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return false;
   int idx;
   if (!GameData::slotIndex((EquipSlot)slot, idx)) return false;
-  if (itemId == 0) {
-    // 卸下
-    if (p->pl.equip[idx] != 0) {
-      p->pl.equip[idx] = 0;
+  if (instId == 0) {
+    // 卸下：已穿戴实例移回背包
+    if (p->pl.equip[idx].instId != 0) {
+      p->pl.equipBag.push_back(p->pl.equip[idx]);
+      p->pl.equip[idx] = ItemInstance{};
       recomputeStats(*p);
       return true;
     }
     return false;
   }
-  const ItemDef* def = data_.item(itemId);
+  // 在背包中查找该实例
+  int bagIdx = -1;
+  for (int i = 0; i < (int)p->pl.equipBag.size(); i++)
+    if (p->pl.equipBag[i].instId == instId) { bagIdx = i; break; }
+  if (bagIdx < 0) return false;   // 不在背包（已穿戴/不存在）
+  const ItemDef* def = data_.item(p->pl.equipBag[bagIdx].itemId);
   if (!def || def->type != ItemType::EQUIP) return false;
   if (def->slot != (EquipSlot)slot) return false;
   if (def->levelReq > p->level) return false;  // 需求等级不足，不可装备
-  // 需拥有该物品
-  auto inv = p->pl.inventory.find(itemId);
-  if (inv == p->pl.inventory.end() || inv->second < 1) return false;
-  // 身上已有装备：替换（旧装备回背包）
-  uint32_t old = p->pl.equip[idx];
-  if (old == itemId) return false;
-  if (old) p->pl.inventory[old] += 1;
-  p->pl.inventory[itemId] -= 1;
-  if (p->pl.inventory[itemId] == 0) p->pl.inventory.erase(itemId);
-  p->pl.equip[idx] = itemId;
+  // 交换：新实例上身，旧实例（如有）回背包
+  ItemInstance newIns = p->pl.equipBag[bagIdx];
+  p->pl.equipBag.erase(p->pl.equipBag.begin() + bagIdx);
+  if (p->pl.equip[idx].instId != 0) p->pl.equipBag.push_back(p->pl.equip[idx]);
+  p->pl.equip[idx] = newIns;
   recomputeStats(*p);
   return true;
 }
@@ -889,43 +1097,141 @@ bool World::openShop(const std::string& playerId, uint32_t npcWid) {
   if (!npc || npc->kind != EntityKind::Npc || npc->shopId == 0) return false;
   if (p->pos.dist2D(npc->pos) > cfg_.shopOpenRangeM) return false;
   p->pl.openShopId = npc->shopId;
+  refreshShopLimits(*p);   // 打开面板前结算到期的每日/每周限购重置，确保 bought 计数为最新
   return true;
 }
-// 购买物品（金币扣减 + 进背包；需商店已打开）
+// ---- 商店限购/回收辅助（阶段1）----
+// 限购计数 key：高 32 位 shopId + 低 32 位 itemId
+static inline uint64_t shopKey(uint32_t shopId, uint32_t itemId) {
+  return ((uint64_t)shopId << 32) | (uint64_t)itemId;
+}
+// 默认回收率：商店未显式配置 sellPrice 时，按 ItemDef.price × 此比例回收
+static constexpr double kShopSellRate = 0.5;
+
+// 购买物品（金币扣减 + 进背包；需商店已打开；阶段1：限购/折扣/刷新）
 bool World::buyItem(const std::string& playerId, uint32_t itemId, uint16_t count) {
   Entity* p = findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return false;
   if (p->pl.openShopId == 0) return false;
   const ShopDef* shop = data_.shop(p->pl.openShopId);
   if (!shop) { p->pl.openShopId = 0; return false; }
-  // 找商品（价格/库存）
+  // 找商品（价格/库存/限购）
   const ShopEntry* entry = nullptr;
   for (const auto& e : shop->entries) if (e.itemId == itemId) { entry = &e; break; }
   if (!entry) return false;
   const ItemDef* def = data_.item(itemId);
   if (!def) return false;
   uint16_t n = count < 1 ? 1 : count;
-  uint64_t cost = (uint64_t)entry->price * n;
+  // 限购周期刷新（每日/每周）：先结算到期重置，再校验本次购买
+  refreshShopLimits(*p);
+  // 限购校验（buyLimit>0 才限；按玩家累计）
+  if (entry->buyLimit > 0) {
+    uint32_t bought = p->pl.shopBuyCount[shopKey(p->pl.openShopId, itemId)];
+    if (bought + n > entry->buyLimit) {
+      fprintf(stderr, "[shop] 限购拒绝：玩家 %s 物品 %u 已购 %u 上限 %u 本次 %u\n",
+              playerId.c_str(), itemId, bought, entry->buyLimit, (unsigned)n);
+      return false;
+    }
+  }
+  // 折扣价优先（discountPrice>0 时用折扣价结算）
+  uint32_t unit = entry->discountPrice > 0 ? entry->discountPrice : entry->price;
+  uint64_t cost = (uint64_t)unit * n;
   if (cost > p->pl.gold) return false; // 金币不足
   if (entry->stock > 0 && entry->stock < n) return false; // 库存不足
   p->pl.gold -= (uint32_t)cost;
-  p->pl.inventory[itemId] += n;
+  giveItemSmart(*p, itemId, n);   // 装备→实例入背包；其余→堆叠
+  // 累计限购计数（仅 buyLimit>0 的条目追踪）
+  if (entry->buyLimit > 0) p->pl.shopBuyCount[shopKey(p->pl.openShopId, itemId)] += n;
   // 更新库存（stock>0 才扣减）
   // 注：ShopDef 为配置表，动态库存需独立维护；当前 stock=0 无限量，此处保留扩展位。
   return true;
 }
+
+// 商店限购周期刷新：按 logicNowMs 计算跨越的整天数，重置到期条目的购买计数。
+// 每日条目(refreshType=1)每天重置；每周条目(refreshType=2)满 7 天重置。
+// shopRefreshMs 按整天推进（保留不足一天的余数），确保每周计时不被每日刷新清零。
+void World::refreshShopLimits(Entity& p) {
+  const uint64_t DAY = 86400000ULL;
+  uint64_t now = logicNowMs();
+  if (p.pl.shopRefreshMs == 0) { p.pl.shopRefreshMs = now; return; } // 首次建立基准
+  if (now <= p.pl.shopRefreshMs) return;
+  uint64_t days = (now - p.pl.shopRefreshMs) / DAY;
+  if (days == 0) return;
+  bool weekly = days >= 7;
+  for (auto it = p.pl.shopBuyCount.begin(); it != p.pl.shopBuyCount.end(); ) {
+    uint32_t shopId = (uint32_t)(it->first >> 32);
+    uint32_t itemId = (uint32_t)(it->first & 0xFFFFFFFFULL);
+    uint8_t rt = entryRefreshType(shopId, itemId);
+    if (rt == 1 || (rt == 2 && weekly)) it = p.pl.shopBuyCount.erase(it);
+    else ++it;
+  }
+  p.pl.shopRefreshMs += days * DAY;
+}
+
+uint8_t World::entryRefreshType(uint32_t shopId, uint32_t itemId) const {
+  const ShopDef* shop = data_.shop(shopId);
+  if (shop) for (const auto& e : shop->entries) if (e.itemId == itemId) return e.refreshType;
+  return 0;
+}
+
+uint32_t World::calcSellPrice(uint32_t shopId, uint32_t itemId) const {
+  const ShopDef* shop = data_.shop(shopId);
+  if (shop) for (const auto& e : shop->entries) if (e.itemId == itemId && e.sellPrice > 0) return e.sellPrice;
+  const ItemDef* def = data_.item(itemId);
+  if (!def) return 0;
+  return (uint32_t)(def->price * kShopSellRate);
+}
+
+// 出售回收：装备实例（仅背包装备，锁定/已穿戴不可卖）或堆叠物品。
+// 回收价：商店 sellPrice 优先，否则 ItemDef.price×默认回收率；装备再乘强化系数。
+// 返回获得金币（0=失败：未在商店/无此物/锁定/无回收价）。
+uint32_t World::sellItem(const std::string& playerId, bool isInstance, uint64_t instId, uint32_t itemId, uint16_t count) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return 0;
+  if (p->pl.openShopId == 0) return 0;  // 需在商店（与 buyItem 一致）
+  uint32_t gain = 0;
+  if (isInstance) {
+    // 装备实例：仅背包(equipBag)可出售，已穿戴需先卸下；锁定不可出售
+    ItemInstance* ins = nullptr;
+    for (auto& e : p->pl.equipBag) if (e.instId == instId) { ins = &e; break; }
+    if (!ins || ins->locked) return 0;
+    uint32_t base = calcSellPrice(p->pl.openShopId, ins->itemId);
+    if (base == 0) return 0;  // 无回收价，不可出售
+    double enhanceMul = 1.0 + ins->enhance * 0.5;  // 强化系数（阶段2接入 EnhanceConfig；enhance=0 时=1）
+    gain = (uint32_t)(base * enhanceMul);
+    for (size_t i = 0; i < p->pl.equipBag.size(); i++)
+      if (p->pl.equipBag[i].instId == instId) { p->pl.equipBag.erase(p->pl.equipBag.begin() + (ptrdiff_t)i); break; }
+  } else {
+    auto it = p->pl.inventory.find(itemId);
+    if (it == p->pl.inventory.end() || it->second == 0) return 0;
+    uint32_t unit = calcSellPrice(p->pl.openShopId, itemId);
+    if (unit == 0) return 0;
+    uint16_t n = count < 1 ? 1 : count;
+    if (it->second < n) n = (uint16_t)it->second;  // 持有不足则卖现有数量
+    gain = unit * n;
+    it->second -= n;
+    if (it->second == 0) p->pl.inventory.erase(it);
+  }
+  p->pl.gold += gain;
+  fprintf(stderr, "[shop] 出售回收：玩家 %s %s 获得 %u 金（余额 %u）\n",
+          playerId.c_str(), isInstance ? "装备" : "物品", gain, p->pl.gold);
+  return gain;
+}
 // 重算派生属性：基础属性 + 装备加成
 void World::recomputeStats(Entity& p) {
   double maxHp = p.pl.baseHp, maxMp = p.pl.baseMp, atk = p.pl.baseAttack, def = p.pl.baseDefense;
+  const EnhanceConfig& ec = economy_->enhance().config();   // 强化系数表
   for (int i = 0; i < kEquipSlots; i++) {
-    uint32_t id = p.pl.equip[i];
-    if (!id) continue;
-    const ItemDef* it = data_.item(id);
+    const ItemInstance& ins = p.pl.equip[i];
+    if (!ins.instId) continue;
+    const ItemDef* it = data_.item(ins.itemId);
     if (!it) continue;
-    maxHp += it->hpBonus;
+    // 强化加成（阶段2）：装备基础加成 ×(1 + enhance × 每级系数)；蓝量不参与强化
+    double e = (double)ins.enhance;
+    maxHp += it->hpBonus * (1.0 + e * ec.attrPerLevelHp);
     maxMp += it->mpBonus;
-    atk += it->attackBonus;
-    def += it->defenseBonus;
+    atk += it->attackBonus * (1.0 + e * ec.attrPerLevelAtk);
+    def += it->defenseBonus * (1.0 + e * ec.attrPerLevelDef);
   }
   // 属性类 Buff（攻/防加成 + 减防/减攻等负值）叠加
   for (const auto& b : p.buffs) {
@@ -941,6 +1247,178 @@ void World::recomputeStats(Entity& p) {
   p.defense = def;
   if (p.hp > p.maxHp) p.hp = p.maxHp;
   if (p.mp > p.maxMp) p.mp = p.maxMp;
+}
+// 附近是否存在带指定标签的 NPC（服务端权威距离校验，防客户端伪造交互）
+bool World::nearNpcWithTag(const Entity& p, uint32_t tag, double range) const {
+  for (const auto& kv : entities_) {
+    const Entity& e = kv.second;
+    if (e.kind != EntityKind::Npc) continue;
+    if ((e.npcTag & tag) == 0) continue;
+    if (p.pos.dist2D(e.pos) <= range) return true;
+  }
+  return false;
+}
+// 装备强化（阶段2）：铁匠邻近校验 → doEnhance（金币/强化石/保护符）→ 重算属性 + 标记脏
+EnhanceResult World::enhanceEquip(const std::string& playerId, uint64_t instId, bool useProtect) {
+  EnhanceResult r;
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) { r.failCode = 7; return r; }
+  r.goldLeft = p->pl.gold;
+  // 铁匠邻近校验（BLACKSMITH 标签 + 交互距离内；复用商店交互半径）
+  if (!nearNpcWithTag(*p, NPC_TAG_BLACKSMITH, cfg_.shopOpenRangeM)) { r.failCode = 6; return r; }
+  // 定位装备实例（穿戴中或背包）
+  ItemInstance* ins = findInstance(*p, instId);
+  if (!ins) { r.failCode = 7; return r; }
+  // 执行强化（testFlags_.enhanceForce 供测试确定性旁路：0 正常 / 1 强制成功 / 2 强制失败）
+  r = economy_->enhance().doEnhance(*ins, p->pl.gold, p->pl.inventory, rng_, useProtect, testFlags_.enhanceForce);
+  if (r.ok) {
+    recomputeStats(*p);          // 强化改变装备加成 → 重算派生属性
+    markStatsDirty(playerId);
+    markInvDirty(playerId);      // 金币/材料/装备 enhance 变化 → 补发背包与属性
+  }
+  return r;
+}
+// 装备分解（阶段3）：铁匠邻近校验 → 已穿戴/锁定拒绝 → doDecompose（材料/金币/强化石）→ 移除实例
+DecomposeOutput World::decomposeEquip(const std::string& playerId, uint64_t instId) {
+  DecomposeOutput out;
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) { out.failCode = 2; return out; }
+  // 铁匠邻近校验（BLACKSMITH 标签 + 交互距离内；复用商店交互半径）
+  if (!nearNpcWithTag(*p, NPC_TAG_BLACKSMITH, cfg_.shopOpenRangeM)) { out.failCode = 6; return out; }
+  // 已穿戴装备需先卸下（equip 槽位内命中即视为穿戴中）
+  for (const auto& ins : p->pl.equip)
+    if (ins.instId == instId) { out.failCode = 4; return out; }
+  // 定位背包中的装备实例
+  ItemInstance* ins = nullptr;
+  size_t bagIdx = 0;
+  for (size_t i = 0; i < p->pl.equipBag.size(); i++)
+    if (p->pl.equipBag[i].instId == instId) { ins = &p->pl.equipBag[i]; bagIdx = i; break; }
+  if (!ins) { out.failCode = 2; return out; }
+  // 查 ItemDef 取品质/基础价（rarity 决定分解档位，price 决定金币返还基数）
+  const ItemDef* def = data_.item(ins->itemId);
+  if (!def || def->type != ItemType::EQUIP) { out.failCode = 2; return out; }
+  // 执行分解（锁定拒绝在 doDecompose 内处理；产出材料/金币/强化石写入背包与金币）
+  out = economy_->enhance().doDecompose(*ins, def->rarity, def->price, p->pl.gold, p->pl.inventory, rng_);
+  if (out.ok) {
+    uint32_t decItemId = ins->itemId;   // erase 后 ins 失效，先快照日志字段
+    uint8_t decEnh = ins->enhance;
+    // 移除已分解的装备实例（bagIdx 仍有效：doDecompose 不改 equipBag）
+    p->pl.equipBag.erase(p->pl.equipBag.begin() + (ptrdiff_t)bagIdx);
+    markInvDirty(playerId);            // 金币/材料/装备移除 → 补发背包
+    fprintf(stderr, "[decompose] 玩家 %s 分解装备 inst=%llu(itemId=%u,enh=%u) → 金币+%u，产出 %zu 种\n",
+            playerId.c_str(), (unsigned long long)instId, decItemId, decEnh,
+            out.goldGain, out.items.size());
+  }
+  return out;
+}
+// 物品合成（阶段4）：查配方 → 合成 NPC 邻近校验（按配方 npcTag）→ doCraft（等级/材料/金币）→ 装备实例化 / 堆叠入包
+CraftOutput World::craftItem(const std::string& playerId, uint32_t recipeId, uint32_t count) {
+  CraftOutput out;
+  out.recipeId = recipeId;
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) { out.failCode = 6; return out; }
+  // 查配方（不存在直接拒绝）
+  const CraftRecipe* r = economy_->craft().recipe(recipeId);
+  if (!r) { out.failCode = 1; return out; }
+  // 合成 NPC 邻近校验（按配方要求的标签 + 交互距离；复用商店交互半径）
+  if (!nearNpcWithTag(*p, r->npcTag, cfg_.shopOpenRangeM)) { out.failCode = 6; return out; }
+  // 查产物 ItemDef 判定是否装备（装备→实例产出；其余→堆叠入背包）
+  const ItemDef* def = data_.item(r->resultItemId);
+  if (!def) { out.failCode = 1; return out; }
+  bool resultIsEquip = (def->type == ItemType::EQUIP);
+  // 执行合成（等级/材料/金币校验 + 扣除在 doCraft 内；堆叠产出直接写 inv）
+  out = economy_->craft().doCraft(*r, p->level, resultIsEquip, p->pl.gold, p->pl.inventory, count);
+  if (out.ok) {
+    if (out.isInstance) out.instId = giveEquipInstance(*p, out.resultItemId, 0);   // 装备产出：分配实例入背包
+    markInvDirty(playerId);       // 金币/材料/装备变化 → 补发背包
+    fprintf(stderr, "[craft] 玩家 %s 合成配方 %u → itemId=%u ×%u%s（金币-%u）\n",
+            playerId.c_str(), recipeId, out.resultItemId, out.resultCount,
+            out.isInstance ? "（装备实例）" : "", out.goldCost);
+  }
+  return out;
+}
+// 合成配方列表（阶段4）：按 npcWid 对应 NPC 的标签 + 玩家等级过滤，返回可用 recipeId 列表
+std::vector<uint32_t> World::craftList(const std::string& playerId, uint32_t npcWid) {
+  std::vector<uint32_t> ids;
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return ids;
+  Entity* npc = findByWid(npcWid);
+  uint32_t tagMask = 0;
+  if (npc && npc->kind == EntityKind::Npc) {
+    if (p->pos.dist2D(npc->pos) > cfg_.shopOpenRangeM) return ids;   // 超距：空列表
+    tagMask = npc->npcTag;
+  } else {
+    // npcWid 无效时的防御回退：要求邻近有 CRAFT NPC
+    if (!nearNpcWithTag(*p, NPC_TAG_CRAFT, cfg_.shopOpenRangeM)) return ids;
+    tagMask = NPC_TAG_CRAFT;
+  }
+  if ((tagMask & NPC_TAG_CRAFT) == 0) return ids;   // 该 NPC 无合成能力
+  for (const CraftRecipe* r : economy_->craft().availableRecipes(tagMask, p->level))
+    ids.push_back(r->recipeId);
+  return ids;
+}
+// 打开仓库（阶段5）：银行 NPC 邻近校验（BANK 标签）→ ensureInit → 返回仓库数据（nullptr=失败）
+const WarehouseData* World::openWarehouse(const std::string& playerId, uint32_t npcWid) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return nullptr;
+  bool near = false;
+  Entity* npc = findByWid(npcWid);
+  if (npc && npc->kind == EntityKind::Npc)
+    near = (p->pos.dist2D(npc->pos) <= cfg_.shopOpenRangeM) && ((npc->npcTag & NPC_TAG_BANK) != 0);
+  else
+    near = nearNpcWithTag(*p, NPC_TAG_BANK, cfg_.shopOpenRangeM);
+  if (!near) return nullptr;
+  warehouse_->ensureInit(p->pl.warehouse);
+  return &p->pl.warehouse;
+}
+// 获取玩家仓库数据（存取/扩展后下发用；无 NPC 校验，ensureInit 保证已初始化）
+const WarehouseData* World::warehouseData(const std::string& playerId) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return nullptr;
+  warehouse_->ensureInit(p->pl.warehouse);
+  return &p->pl.warehouse;
+}
+// 存入物品（阶段5）：银行邻近校验 → deposit（金币/装备实例/堆叠合并）→ 标记脏
+uint8_t World::depositItem(const std::string& playerId, bool isInstance, uint64_t instId, uint32_t itemId, uint32_t count) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return WH_NO_NPC;
+  if (!nearNpcWithTag(*p, NPC_TAG_BANK, cfg_.shopOpenRangeM)) return WH_NO_NPC;
+  uint8_t code = warehouse_->deposit(p->pl.warehouse, p->pl.gold, isInstance, instId, itemId, count,
+                                     p->pl.equipBag, p->pl.inventory);
+  if (code == WH_OK) {
+    markInvDirty(playerId);   // 背包/金币变化 → 补发 S2C_INVENTORY
+    fprintf(stderr, "[warehouse] 玩家 %s 存入%s（inst=%llu itemId=%u count=%u）\n", playerId.c_str(),
+            isInstance ? "装备" : (itemId == 0 ? "金币" : "物品"),
+            (unsigned long long)instId, itemId, count);
+  }
+  return code;
+}
+// 取出物品（阶段5）：银行邻近校验 → withdraw（装备保留强化/堆叠回背包）→ 标记脏
+uint8_t World::withdrawItem(const std::string& playerId, bool isInstance, uint64_t instId, uint32_t itemId, uint32_t count) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return WH_NO_NPC;
+  if (!nearNpcWithTag(*p, NPC_TAG_BANK, cfg_.shopOpenRangeM)) return WH_NO_NPC;
+  uint8_t code = warehouse_->withdraw(p->pl.warehouse, p->pl.gold, isInstance, instId, itemId, count,
+                                      p->pl.equipBag, p->pl.inventory);
+  if (code == WH_OK) {
+    markInvDirty(playerId);
+    fprintf(stderr, "[warehouse] 玩家 %s 取出%s（inst=%llu itemId=%u count=%u）\n", playerId.c_str(),
+            isInstance ? "装备" : (itemId == 0 ? "金币" : "物品"),
+            (unsigned long long)instId, itemId, count);
+  }
+  return code;
+}
+// 扩展仓库（阶段5）：银行邻近校验 → expand（扣金币，解锁一页）→ 标记脏
+uint8_t World::expandWarehouse(const std::string& playerId) {
+  Entity* p = findEntity(playerId);
+  if (!p || p->kind != EntityKind::Player) return WH_NO_NPC;
+  if (!nearNpcWithTag(*p, NPC_TAG_BANK, cfg_.shopOpenRangeM)) return WH_NO_NPC;
+  uint8_t code = warehouse_->expand(p->pl.warehouse, p->pl.gold);
+  if (code == WH_OK) {
+    markInvDirty(playerId);   // 金币变化
+    fprintf(stderr, "[warehouse] 玩家 %s 扩展仓库 → %u 格\n", playerId.c_str(), p->pl.warehouse.unlocked);
+  }
+  return code;
 }
 void World::markStatsDirty(const std::string& playerId) {
   statsDirty_.insert(playerId);
@@ -980,41 +1458,19 @@ std::vector<const Entity*> World::bosses() const {
 // ---------------- 系统实现 ----------------
 static void inputSystem(World& w, double dt) {
   const auto& cfg = w.config();
-  uint64_t nowMs = w.tickCount() * (uint64_t)cfg.tickMs;
+  uint64_t nowMs = w.logicNowMs();
   for (const auto& pid : w.players()) {
     Entity* p = w.findEntity(pid);
     if (!p) continue;
-    // 死亡：不移动/不跳跃/不脱战回血（等待复活系统处理）
+    // 死亡：不移动/不脱战回血（等待复活系统处理）
     if (p->dead) {
       p->input.targetVX = p->input.targetVZ = 0;
-      p->input.moveX = p->input.moveZ = 0;
       continue;
     }
-    // 眩晕：无法移动/跳跃（控制状态；霸体可免疫 STUN 挂载）
-    const bool stunned = p->hasBuff((uint8_t)BuffType::STUN);
-    // 加速 Buff：比例加成（SPEED>0），与减速叠加
-    double spdMul = 1.0;
-    for (const auto& b : p->buffs) {
-      if (b.type == (uint8_t)BuffType::SPEED) spdMul += b.value;
-      else if (b.type == (uint8_t)BuffType::MOVE_SLOW) spdMul -= b.value;
-    }
-    if (spdMul < 0.05) spdMul = 0.05;
-    double speed = cfg.maxMoveSpeed * spdMul;
-    double mx = stunned ? 0 : p->input.moveX;
-    double mz = stunned ? 0 : p->input.moveZ;
-    double len = std::hypot(mx, mz);
-    double tx = 0, tz = 0;
-    if (len > 1e-4) {
-      tx = (mx / len) * speed;
-      tz = (mz / len) * speed;
-    }
-    p->input.targetVX = tx;
-    p->input.targetVZ = tz;
-    if (p->input.jump && !stunned) {
-      p->input.jump = false;
-      w.physics().tryJump(*p);
-    } else if (p->input.jump) {
-      p->input.jump = false;
+    // 位置上报模式：玩家 targetVX/VZ 由 handleInput 从位置差分估算，此处不再计算
+    // 眩晕：强制归零速度（handleInput 已拒绝位置变化，此处确保广播速度为 0）
+    if (p->hasBuff((uint8_t)BuffType::STUN)) {
+      p->input.targetVX = p->input.targetVZ = 0;
     }
     // 脱战回血/回蓝（5s 未受击）；整数值变化才标记脏（避免每 tick 刷 STATS 帧）
     bool statsChanged = false;
@@ -1042,8 +1498,7 @@ static void moveEntityCollide(World& w, Entity& e, double tx, double tz, double 
     w.collision().slideMove(e, ox, oz, e.pos.x, e.pos.z);
   }
   // 贴地重算（滑动后地表可能变化）
-  double gy = terrainHeight(e.pos.x, e.pos.z);
-  double foot = gy + e.radius;
+  double foot = groundFootY(e.pos.x, e.pos.z, e.radius);
   if (e.pos.y < foot) {
     e.pos.y = foot;
     e.vel.y = 0;
@@ -1051,13 +1506,7 @@ static void moveEntityCollide(World& w, Entity& e, double tx, double tz, double 
   }
 }
 static void moveSystem(World& w, double dt) {
-  for (const auto& pid : w.players()) {
-    Entity* p = w.findEntity(pid);
-    if (!p || p->dead) continue;  // 死亡玩家静止（等待复活）
-    moveEntityCollide(w, *p, p->input.targetVX, p->input.targetVZ, dt);
-    // 任务钩子：移动后检测到达目标
-    w.quests().onPlayerMove(*p);
-  }
+  // 玩家位置由 handleInput 采纳驱动，不再经过 moveEntityCollide
   const bool paused = w.testFlags().monstersPaused;  // 测试：冻结怪物移动（仍受重力贴地，不漂移）
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
@@ -1067,45 +1516,16 @@ static void moveSystem(World& w, double dt) {
     const double tvz = paused ? 0.0 : e.ai.targetVZ;
     const bool wantsMove = (tvx != 0.0 || tvz != 0.0);
     moveEntityCollide(w, e, tvx, tvz, dt);
-    // 卡住检测：有移动意图但实际位移≈0（被空洞/深水/悬崖/实体墙挡住）→ 累积；否则恢复
+    // 卡住检测：有移动意图但实际位移≈０（被空洞/深水/悬崖/实体墙挡住）→ 累积；否则恢复
     if (wantsMove && std::hypot(e.pos.x - px, e.pos.z - pz) < 0.05) e.ai.stuckT += dt;
     else e.ai.stuckT = std::max(0.0, e.ai.stuckT - dt);
   }
-  // 实体-实体碰撞（2.5D 圆形分离）：动态实体（玩家/怪物/Boss/NPC）不可互相穿透，
-  // 重叠时沿连线各推开一半；推开后若落入障碍则回退（避免把实体挤进水里/悬崖）。
-  std::vector<std::string> dyn;
-  for (auto& [id, e] : w.entitiesMut()) {
-    (void)id;
-    if (e.kind == EntityKind::Item || !e.active || e.dead) continue;
-    dyn.push_back(id);
-  }
-  for (const auto& id : dyn) {
-    Entity* a = w.findEntity(id);
-    if (!a) continue;
-    auto near = w.aoi().inRange(a->pos.x, a->pos.z, 4.0);
-    for (uint32_t wid : near) {
-      if (wid == a->wid) continue;
-      Entity* b = w.findByWid(wid);
-      if (!b || b->kind == EntityKind::Item || !b->active || b->dead) continue;
-      if (b->wid < a->wid) continue;  // 每对只处理一次
-      const double ax = a->pos.x, az = a->pos.z, bx = b->pos.x, bz = b->pos.z;
-      const bool aPlayer = a->kind == EntityKind::Player;
-      const bool bPlayer = b->kind == EntityKind::Player;
-      if (Collision::separate(*a, *b)) {
-        // 玩家永不被实体推挤（怪物/Boss/NPC 让行）：玩家轨迹仅由地形碰撞决定，
-        // 客户端预测可完全复刻，不被动态阻挡破坏预测一致性。
-        if (aPlayer) { a->pos.x = ax; a->pos.z = az; }
-        if (bPlayer) { b->pos.x = bx; b->pos.z = bz; }
-        if (!aPlayer && w.collision().circleBlocked(a->pos.x, a->pos.z, a->radius)) { a->pos.x = ax; a->pos.z = az; }
-        if (!bPlayer && w.collision().circleBlocked(b->pos.x, b->pos.z, b->radius)) { b->pos.x = bx; b->pos.z = bz; }
-      }
-    }
-  }
+  // 玩家碰撞分离已移除：玩家位置完全由 handleInput 采纳驱动，碰撞推挤仅在客户端渲染层生效
 }
 // 施放系统：推进前摇。前摇到期 → 结算；前摇期间移动意图 → 打断（大型网游标配）
 static void castSystem(World& w, double dt) {
   (void)dt;
-  uint64_t nowMs = w.tickCount() * (uint64_t)w.config().tickMs;
+  uint64_t nowMs = w.logicNowMs();
   const bool paused = w.testFlags().monstersPaused;  // 测试：冻结怪物/Boss 前摇推进
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
@@ -1184,7 +1604,7 @@ static void aiSystem(World& w, double dt) {
 }
 // 地面掉落物生命周期：超时消失（主动清理，向视野玩家发 LEAVE）
 static void dropSystem(World& w, double) {
-  uint64_t nowMs = w.tickCount() * (uint64_t)w.config().tickMs;
+  uint64_t nowMs = w.logicNowMs();
   std::vector<std::string> expire;
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
@@ -1205,8 +1625,7 @@ static void bossSystem(World& w, double dt) {
 }
 // 普通怪物死亡复活
 static void respawnSystem(World& w, double) {
-  const auto& cfg = w.config();
-  uint64_t nowMs = w.tickCount() * (uint64_t)cfg.tickMs;
+  uint64_t nowMs = w.logicNowMs();
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (e.kind == EntityKind::Player || e.isBoss) continue;
@@ -1215,7 +1634,7 @@ static void respawnSystem(World& w, double) {
       e.active = true;
       e.pos.x = e.ai.homeX;
       e.pos.z = e.ai.homeZ;
-      e.pos.y = terrainHeight(e.pos.x, e.pos.z) + e.radius + 0.3;
+      e.pos.y = groundFootY(e.pos.x, e.pos.z, e.radius);
       e.vel = {0, 0, 0};
       e.aggro.clear();
       w.pushEvent(proto::EVT_RESPAWN, e.wid, 0, 0, 0);
@@ -1226,7 +1645,7 @@ static void respawnSystem(World& w, double) {
 // 复活位置走服务器权威（World 记录待校正玩家，由网络层补发 correction+强制快照）。
 static void playerRespawnSystem(World& w, double) {
   const auto& cfg = w.config();
-  uint64_t nowMs = w.tickCount() * (uint64_t)cfg.tickMs;
+  uint64_t nowMs = w.logicNowMs();
   for (const auto& pid : w.players()) {
     Entity* p = w.findEntity(pid);
     if (!p || !p->dead || p->respawnAtMs == 0) continue;
@@ -1250,11 +1669,10 @@ static void playerRespawnSystem(World& w, double) {
     if (!found) { sx = 0; sz = 0; }
     p->pos.x = sx;
     p->pos.z = sz;
-    p->pos.y = terrainHeight(sx, sz) + p->radius + 0.3;
+    p->pos.y = groundFootY(sx, sz, p->radius);
     p->vel = {0, 0, 0};
     p->grounded = true;
     p->input.targetVX = p->input.targetVZ = 0;
-    p->input.moveX = p->input.moveZ = 0;
     // 清仇恨：其他怪物不再锁定复活后的玩家旧位置
     for (auto& [id, e] : w.entitiesMut()) {
       (void)id;
@@ -1295,7 +1713,7 @@ Json World::buildSnapshot(const Entity& player) {
   Json j = Json::object();
   j["type"] = "snapshot";
   j["tick"] = (int64_t)tick_;
-  j["t"] = (int64_t)(tick_ * cfg_.tickMs);
+  j["t"] = (int64_t)logicNowMs();
   j["viewRange"] = cfg_.viewRangeM;
   j["count"] = (int64_t)entities.size();
   j["entities"] = entities;

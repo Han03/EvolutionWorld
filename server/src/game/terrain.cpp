@@ -1,10 +1,8 @@
 // terrain.cpp - 确定性噪声 + 高度场地形实现（与 JS terrain.js 逐位一致）
 // 地形要素：
 //  1) 基础丘陵高度场（原 fbm）
-//  2) 河流下切：两条蜿蜒主河（东西向 + 南北向），河床压到水面以下 → 形成河流/湖泊
-//  3) 山脊抬升：ridged noise 生成陡峭山脊 → 悬崖（局部坡度 > 阈值即不可通行）
-//  4) 路径地图空洞：可到达区域收缩为「主干道走廊 + 分支 + 随机空地」，其余为空洞
-//  5) 地形编辑器编辑层：稀疏格子覆盖（绝对高度 h / 可通行性 v），优先于程序化
+//  2) 路径地图空洞：可到达区域收缩为「主干道走廊 + 分支 + 随机空地」，其余为空洞
+//  3) 地形编辑器编辑层：稀疏格子覆盖（绝对高度 h / 可通行性 v），优先于程序化
 #include "terrain.h"
 #include "../util/random.h"
 #include "../util/json.h"
@@ -14,14 +12,19 @@
 #include <unordered_map>
 #include <cstdio>
 namespace ew {
+// ---- 地形种子偏移：使噪声地形随 seed 变化 ----
+static int32_t g_seedOff = 0;
+void setTerrainSeed(int32_t offset) { g_seedOff = offset; }
 // ---- 整数坐标哈希（Math.imul 语义：32 位有符号乘法溢出） ----
 static inline uint32_t imul32(uint32_t a, uint32_t b) {
   // 用 64 位乘法取低 32 位
   return (uint32_t)((uint64_t)a * b);
 }
 double hash2i(int64_t x, int64_t z) {
-  uint32_t hx = imul32((uint32_t)(x ^ 0x9e3779b9LL), 0x85ebca6b);
-  uint32_t hz = imul32((uint32_t)(z ^ 0xc2b2ae3dLL), 0x27d4eb2f);
+  // 引入种子偏移：不同 seed 产生完全不同的地形高度场
+  uint32_t sx = (uint32_t)(g_seedOff ^ 0xa5a5a5a5);
+  uint32_t hx = imul32((uint32_t)((x + sx) ^ 0x9e3779b9LL), 0x85ebca6b);
+  uint32_t hz = imul32((uint32_t)((z + sx) ^ 0xc2b2ae3dLL), 0x27d4eb2f);
   uint32_t h = hx ^ hz;
   h = imul32(h ^ (h >> 16), 0x45d9f3b);
   h = imul32(h ^ (h >> 16), 0x45d9f3b);
@@ -55,37 +58,6 @@ double fbm2(double x, double z, int octaves) {
   }
   return sum / norm;
 }
-// 平滑阶跃（与 JS sstep 一致）：0→1 平滑过渡
-static inline double sstep(double t, double a, double b) {
-  if (t <= a) return 0.0;
-  if (t >= b) return 1.0;
-  double x = (t - a) / (b - a);
-  return x * x * (3 - 2 * x);
-}
-// 平滑阶跃（与 JS sstep 一致）：0→1 平滑过渡
-static inline double sstep01(double t) {
-  if (t <= 0.0) return 0.0;
-  if (t >= 1.0) return 1.0;
-  return t * t * (3 - 2 * t);
-}
-// 中央高原抬升（城镇/安全区/出生点）：中心半径 ~24m，最高 +16，平滑衰减。
-// 保证世界中心为干地高地（新手出生与商店所在），四周为湖泊/河流。
-double centralPlateau(double x, double z) {
-  double d = std::hypot(x, z);
-  double u = d / 24.0;
-  if (u >= 1.0) return 0.0;
-  return 16.0 * (1.0 - sstep01(u));
-}
-// 河流通道值 [0,1]：两条蜿蜒主河（东西向沿 z≈-28、南北向沿 x≈32），取较大者
-double riverBand(double x, double z) {
-  // 东西向河：中心 z 随 x 蜿蜒（地图南部）
-  double zc = -28.0 + 60.0 * (fbm2(x * 0.0025 + 13.7, 0.0, 3) - 0.5);
-  double b1 = 1.0 - std::abs(z - zc) / kRiverHalfWidth;
-  // 南北向河：中心 x 随 z 蜿蜒（地图东部）
-  double xc = 32.0 + 55.0 * (fbm2(0.0, z * 0.0025 + 7.9, 3) - 0.5);
-  double b2 = 1.0 - std::abs(x - xc) / kRiverHalfWidth;
-  return std::max(0.0, std::max(b1, b2));
-}
 // ==================== 可通行 mask（数据驱动：世界初始化执行器生成 / 数据库加载） ====================
 // 可到达区域 = 主城 + 主干道路网（BFS 裁剪保证全图连通），每格 1=可通行 / 0=空洞。
 // 代码不再程序化生成布局：mask 由 WorldInitializer 生成后 terrainSetWalkMask 安装，或从数据库加载。
@@ -103,10 +75,9 @@ bool terrainWalkMaskReady() { return g_walkReady; }
 int  terrainWalkMaskN() { return g_walkN; }
 int  terrainWalkMaskOff() { return g_walkOff; }
 const std::vector<uint8_t>& terrainWalkMask() { return g_walk; }
-// 自然地形阻挡：仅深水 / 悬崖（不含空洞 mask）。世界初始化生长可通行区域时判定“天然干地”。
-bool terrainNaturalBlocked(double x, double z) {
-  if (terrainHeight(x, z) < kWaterLevel) return true;   // 深水（湖泊/河流床）
-  if (terrainSlope(x, z) > kCliffSlope) return true;     // 悬崖/陡坡
+// 自然地形阻挡：已移除水深/坡度判定，可通行性完全由 mask 决定。
+// 保留函数签名供兼容调用，始终返回 false（无编辑层时等价于 terrainVoid 的补集为空）。
+bool terrainNaturalBlocked(double /*x*/, double /*z*/) {
   return false;
 }
 bool terrainVoid(double x, double z) {
@@ -179,15 +150,6 @@ double terrainHeight(double x, double z) {
   double base = fbm2(x * 0.006, z * 0.006, 5);
   double detail = fbm2(x * 0.03 + 100.0, z * 0.03 + 100.0, 4) * 0.5;
   double h = (base - 0.5) * 46.0 + (detail - 0.25) * 10.0;
-  // 山脊抬升：山脉区域 + 山脊噪声 → 陡峭山脊（悬崖）
-  double mountain = sstep(fbm2(x * 0.004 + 31.7, z * 0.004 + 8.2, 3), 0.58, 0.78);
-  double ridged = 1.0 - std::abs(2.0 * fbm2(x * 0.012 + 5.1, z * 0.012 + 9.3, 4) - 1.0);
-  h += mountain * ridged * 26.0;
-  // 中央高原抬升（城镇/安全区干地）
-  h += centralPlateau(x, z);
-  // 河流下切：河床压到水面以下 → 形成河流/湖泊（水不可通行）
-  double rv = riverBand(x, z);
-  if (rv > 0.0) h = std::min(h, kWaterLevel - 2.5 * rv);
   return std::max(-12.0, std::min(34.0, h));
 }
 double terrainSlope(double x, double z) {
@@ -206,13 +168,8 @@ bool terrainBlocked(double x, double z) {
     auto it = g_edit.find(editKey((int64_t)std::floor(x), (int64_t)std::floor(z)));
     if (it != g_edit.end() && it->second.hasV) return it->second.v == 1;
   }
-  // 路径地图空洞：可到达区域外的白色空洞（不可通行、不渲染）
-  if (terrainVoid(x, z)) return true;
-  // 深水（湖泊/河流床）：水面以下不可通行
-  if (terrainHeight(x, z) < kWaterLevel) return true;
-  // 悬崖/陡坡：局部坡度超过阈值不可通行
-  if (terrainSlope(x, z) > kCliffSlope) return true;
-  return false;
+  // 路径地图空洞：mask 是唯一阻挡源，不再叠加水深/坡度判定
+  return terrainVoid(x, z);
 }
 void randomSpawn(Mulberry32& rng, double& x, double& y, double& z,
                  double minR, double maxR) {

@@ -4,27 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EvolutionWorld · 世界编辑器</title>
+  <link rel="stylesheet" href="./css/login.css" />
   <link rel="stylesheet" href="./css/style.css" />
   <link rel="stylesheet" href="./css/editor.css" />
 </head>
-<body>
-  <div id="editor-login" class="editor-login">
-    <div class="login-card">
-      <h2>EVOLUTIONWORLD · 世界编辑器</h2>
-      <div class="subtitle">地形画刷 + 生物出生点（剧本）编辑</div>
-      <form id="editor-login-form">
-        <input id="editor-user" type="text" placeholder="2-16 位字母/数字/中文" maxlength="16" />
-        <input id="editor-pass" type="password" placeholder="6-64 位" maxlength="64" />
-        <div id="editor-login-msg" class="msg"></div>
-        <div class="btn-row">
-          <button type="submit" id="editor-login-btn" class="btn btn-primary">登 录</button>
-          <button type="button" id="editor-register" class="btn btn-ghost">注册</button>
-        </div>
-      </form>
-      <div class="hint">浅灰=可通行 · 白色=空洞(不可通行)<br/>地图为「路径地图」：主干道走廊 + 分支 + 随机空地</div>
-    </div>
-  </div>
-
+<body class="ew-loading">
   <div id="editor-app" class="hidden">
     <div class="editor-topbar">
       <div class="editor-title">EVOLUTIONWORLD · 世界编辑器</div>
@@ -43,6 +27,12 @@
             <label><input type="radio" name="mode" value="spawn" /><span>👾 出生点</span></label>
             <label><input type="radio" name="mode" value="item" /><span>🎒 物品</span></label>
             <label><input type="radio" name="mode" value="creature" /><span>🐺 生物</span></label>
+            <label><input type="radio" name="mode" value="npc" /><span>🧑 NPC</span></label>
+            <label><input type="radio" name="mode" value="quest" /><span>📜 任务</span></label>
+            <label><input type="radio" name="mode" value="enhance" /><span>⚒ 强化</span></label>
+            <label><input type="radio" name="mode" value="decompose" /><span>♻ 分解</span></label>
+            <label><input type="radio" name="mode" value="craft" /><span>⚗ 合成</span></label>
+            <label><input type="radio" name="mode" value="shop" /><span>🛒 商店</span></label>
           </div>
           <div class="tool-row tool-tip" id="mode-tip">画刷编辑地形：浅灰=可通行 / 白=空洞</div>
         </div>
@@ -210,6 +200,14 @@
                 <div class="cfg-field"><label>金max</label><input type="number" id="cr-goldMax" min="0" step="1" /></div>
               </div>
               <div class="cfg-field"><label>技能IDs</label><input type="text" id="cr-skillIds" placeholder="2001,2002（逗号分隔）" /></div>
+              <div class="cfg-field"><label>Boss</label><input type="checkbox" id="cr-isBoss" /><span style="font-size:11px;color:#888">勾选后显示 Boss 专属参数</span></div>
+              <div id="cr-boss-fields" class="hidden">
+                <div class="cfg-row2">
+                  <div class="cfg-field"><label>仇恨范围</label><input type="number" id="cr-aggroRange" min="1" step="0.5" /><span style="font-size:11px;color:#888">m</span></div>
+                  <div class="cfg-field"><label>追击速度</label><input type="number" id="cr-chaseSpeed" min="0" step="0.1" /><span style="font-size:11px;color:#888">m/s</span></div>
+                </div>
+                <div class="cfg-field"><label>攻击范围</label><input type="number" id="cr-bossAttackRange" min="0.5" step="0.1" /><span style="font-size:11px;color:#888">m</span></div>
+              </div>
             </div>
           </div>
           <div class="tool-group">
@@ -219,6 +217,220 @@
               <button id="btn-drop-add" class="btn btn-ghost">＋ 添加掉落</button>
             </div>
             <div class="tool-row tool-tip">爆率按每次击杀独立判定（0–100%）</div>
+          </div>
+        </div>
+
+        <!-- NPC 配置面板 -->
+        <div id="panel-npc" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">NPC 类型列表 (<span id="npc-count-label">0</span>)</div>
+            <div id="npc-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-npc-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-npc-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">NPC 属性</div>
+            <div id="npc-form" class="cfg-form">
+              <div class="cfg-field"><label>ID(npcId)</label><input type="text" id="npc-id" placeholder="merchant_001" /></div>
+              <div class="cfg-field"><label>名称</label><input type="text" id="npc-name" /></div>
+              <div class="cfg-field"><label>描述</label><textarea id="npc-desc"></textarea></div>
+              <div class="cfg-field"><label>模型</label><input type="text" id="npc-model" placeholder="npc_merchant" /></div>
+              <div class="cfg-field"><label>标签</label>
+                <select id="npc-tag" multiple size="8">
+                  <option value="1" selected>基础（对话/闲聊）</option>
+                  <option value="2">任务（接取/提交）</option>
+                  <option value="4">商店（商品列表）</option>
+                  <option value="8">铁匠（装备强化/分解）</option>
+                  <option value="16">传送（城市间传送）</option>
+                  <option value="32">日常（每日可接任务）</option>
+                  <option value="64">合成（物品合成）</option>
+                  <option value="128">仓库（物品存储）</option>
+                </select>
+              </div>
+              <div class="cfg-field"><label>商店ID</label><input type="number" id="npc-shopId" min="0" step="1" /><span style="font-size:11px;color:#888">0=无</span></div>
+              <div class="cfg-field"><label>等级</label><input type="number" id="npc-level" min="1" step="1" value="1" /></div>
+              <div class="cfg-field"><label>游走半径</label><input type="number" id="npc-wander" min="0" step="0.5" value="0" /><span style="font-size:11px;color:#888">0=不游走</span></div>
+              <div class="cfg-field"><label>对话文本</label><textarea id="npc-dialogue"></textarea></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 任务配置面板 -->
+        <div id="panel-quest" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">任务列表 (<span id="quest-count-label">0</span>)</div>
+            <div id="quest-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-quest-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-quest-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">任务属性</div>
+            <div id="quest-form" class="cfg-form">
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>ID</label><input type="number" id="q-id" min="1" step="1" /></div>
+                <div class="cfg-field"><label>分类</label>
+                  <select id="q-category">
+                    <option value="main">主线</option>
+                    <option value="side" selected>支线</option>
+                    <option value="daily">日常</option>
+                    <option value="repeatable">可重复</option>
+                  </select>
+                </div>
+              </div>
+              <div class="cfg-field"><label>名称</label><input type="text" id="q-name" /></div>
+              <div class="cfg-field"><label>描述</label><textarea id="q-desc"></textarea></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>等级需</label><input type="number" id="q-levelReq" min="1" step="1" /></div>
+                <div class="cfg-field"><label>发布NPC</label><input type="number" id="q-giverNpc" min="0" step="1" /><span style="font-size:11px;color:#888">wid</span></div>
+              </div>
+              <div class="cfg-field"><label>前置任务</label><input type="text" id="q-prereq" placeholder="逗号分隔 ID，如 1001,1002" /></div>
+              <div class="cfg-field"><label>后续任务</label><input type="text" id="q-nextQuests" placeholder="逗号分隔 ID" /></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>奖励金</label><input type="number" id="q-gold" min="0" step="1" /></div>
+                <div class="cfg-field"><label>奖励经验</label><input type="number" id="q-exp" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-field"><label>日常CD</label><input type="number" id="q-dailyCd" min="0" step="1" /><span style="font-size:11px;color:#888">秒</span></div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">奖励物品</div>
+            <div id="q-reward-items" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-q-reward-add" class="btn btn-ghost">＋ 添加奖励物品</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">目标列表 (<span id="q-obj-count">0</span>)</div>
+            <div id="q-objectives" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-q-obj-add" class="btn btn-ghost">＋ 添加目标</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 强化配置面板（阶段7：单配置 + 等级表） -->
+        <div id="panel-enhance" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">强化全局配置</div>
+            <div class="cfg-form">
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>最高级</label><input type="number" id="en-maxLevel" min="1" step="1" /></div>
+                <div class="cfg-field"><label>强化石</label><input type="number" id="en-stoneItemId" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>保护符</label><input type="number" id="en-protectStoneItemId" min="0" step="1" /></div>
+                <div class="cfg-field"><label>攻/级</label><input type="number" id="en-attrPerLevelAtk" step="0.01" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>防/级</label><input type="number" id="en-attrPerLevelDef" step="0.01" /></div>
+                <div class="cfg-field"><label>血/级</label><input type="number" id="en-attrPerLevelHp" step="0.01" /></div>
+              </div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">等级表 (<span id="en-level-count">0</span>)</div>
+            <div id="en-levels" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-en-addlevel" class="btn btn-ghost">＋ 添加等级</button>
+            </div>
+            <div class="tool-row tool-tip">成功率 0–1 · 失败降级(0不降/-1掉级) · 保护符防降</div>
+          </div>
+        </div>
+
+        <!-- 分解配置面板（阶段7：按品质档规则） -->
+        <div id="panel-decompose" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">分解全局</div>
+            <div class="cfg-form">
+              <div class="cfg-field"><label>强化石ID</label><input type="number" id="de-stoneItemId" min="0" step="1" /></div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">品质规则 (<span id="de-rule-count">0</span>)</div>
+            <div id="de-rules" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-de-addrule" class="btn btn-ghost">＋ 添加品质档</button>
+            </div>
+            <div class="tool-row tool-tip">品质 0普通 1优秀 2稀有 3史诗 4传说 · 金币/强化石按系数返还</div>
+          </div>
+        </div>
+
+        <!-- 合成配置面板（阶段7：配方列表 + 材料子表） -->
+        <div id="panel-craft" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">配方列表 (<span id="craft-count-label">0</span>)</div>
+            <div id="craft-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-craft-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-craft-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">配方属性</div>
+            <div id="craft-form" class="cfg-form">
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>ID</label><input type="number" id="cf-recipeId" min="1" step="1" /></div>
+                <div class="cfg-field"><label>等级需</label><input type="number" id="cf-levelReq" min="1" step="1" /></div>
+              </div>
+              <div class="cfg-field"><label>名称</label><input type="text" id="cf-name" /></div>
+              <div class="cfg-field"><label>NPC标签</label><input type="number" id="cf-npcTag" min="0" step="1" /><span style="font-size:11px;color:#888">64=合成</span></div>
+              <div class="cfg-field"><label>产物</label><select id="cf-resultItemId"></select></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>产量</label><input type="number" id="cf-resultCount" min="1" step="1" /></div>
+                <div class="cfg-field"><label>金币</label><input type="number" id="cf-goldCost" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-field"><label>隐藏</label><input type="checkbox" id="cf-hidden" /></div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">材料需求 (<span id="cf-mat-count">0</span>)</div>
+            <div id="cf-materials" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-cf-mat-add" class="btn btn-ghost">＋ 添加材料</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 商店配置面板（阶段7：商店列表 + 条目子表） -->
+        <div id="panel-shop" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">商店列表 (<span id="shop-count-label">0</span>)</div>
+            <div id="shop-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-shop-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-shop-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">商店属性</div>
+            <div id="shop-form" class="cfg-form">
+              <div class="cfg-field"><label>ID</label><input type="number" id="sh-shopId" min="1" step="1" /></div>
+              <div class="cfg-field"><label>名称</label><input type="text" id="sh-name" /></div>
+              <div class="cfg-field"><label>描述</label><textarea id="sh-desc"></textarea></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>类型</label>
+                  <select id="sh-shopType">
+                    <option value="0">普通</option>
+                    <option value="1">限时</option>
+                    <option value="2">声望</option>
+                    <option value="3">货币兑换</option>
+                  </select>
+                </div>
+                <div class="cfg-field"><label>货币</label><input type="number" id="sh-currencyItemId" min="0" step="1" /></div>
+              </div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">商品条目 (<span id="sh-entry-count">0</span>)</div>
+            <div id="sh-entries" class="cfg-form"></div>
+            <div class="cfg-actions">
+              <button id="btn-sh-entry-add" class="btn btn-ghost">＋ 添加商品</button>
+            </div>
+            <div class="tool-row tool-tip">折扣价&gt;0 优先结算 · 限购 0=不限 · 库存 0=无限 · 回收价 0=按默认率</div>
           </div>
         </div>
 
@@ -237,8 +449,7 @@
         </div>
       </div>
 
-      <div class="editor-canvas-wrap">
-        <canvas id="editor-canvas"></canvas>
+      <div class="editor-canvas-wrap" id="editor-canvas-wrap">
         <div id="editor-coord" class="editor-coord">x:0 z:0 h:- void:-</div>
         <div id="editor-legend" class="editor-legend hidden"></div>
       </div>

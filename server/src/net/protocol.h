@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <utility>
 #include "game/entity.h"
 #include "config.h"
 namespace ew {
@@ -25,7 +26,7 @@ constexpr size_t kHeaderSize = 9;
 // ---------- 消息类型 ----------
 enum MsgType : uint8_t {
   // C2S
-  C2S_INPUT = 0x01,   // 移动输入 + 预测位置
+  C2S_INPUT = 0x01,   // 位置上报（纯物理位置）
   C2S_EVENT = 0x02,   // 通用事件（预留：聊天/技能/交互…）
   C2S_PONG  = 0x03,   // 心跳应答
   C2S_ATTACK= 0x04,   // 攻击世界实体（目标 wid + 技能槽）
@@ -37,10 +38,10 @@ enum MsgType : uint8_t {
   C2S_CAST_SKILL= 0x0A, // 施放技能（skillId + 目标 wid + 落点 x/z）
   C2S_CONSOLE   = 0x0B, // 控制台命令（utf-8 文本；EW_DEBUG 或常开门控）
   // ---- 任务系统 C2S ----
-  C2S_QUEST_ACCEPT  = 0x0C, // 接受任务 (u32: questId)
+  C2S_QUEST_ACCEPT  = 0x0C, // 接受任务 (u32: questId, u32: npcWid)
   C2S_QUEST_ABANDON = 0x0D, // 放弃任务 (u32: questId)
   C2S_QUEST_TURNIN  = 0x0E, // 提交任务 (u32: questId, u32: npcWid)
-  C2S_QUEST_LIST    = 0x0F, // 请求可接任务列表
+  C2S_QUEST_LIST    = 0x0F, // 请求可接任务列表 (u32: npcWid, 0=全部)
   C2S_QUEST_TRACK   = 0x17, // 请求任务进度详情
   C2S_TALK_NPC      = 0x18, // 与 NPC 对话（触发任务目标）(u32: npcWid)
   // ---- 社交系统 C2S ----
@@ -64,6 +65,16 @@ enum MsgType : uint8_t {
   C2S_GUILD_INFO     = 0x2A, // 请求公会信息
   C2S_GUILD_LIST     = 0x2B, // 请求公会列表（搜索）
   C2S_CHAT_SEND      = 0x30, // 发送聊天消息 (u8: channel, str: target, str: content)
+  // ---- 经济系统 C2S（0x40-0x4F）----
+  C2S_SHOP_SELL      = 0x40, // 出售回收 (u8 isInstance, u64 instId, u32 itemId, u16 count)
+  C2S_ENHANCE        = 0x41, // 装备强化 (u64 instId, u8 useProtect)
+  C2S_DECOMPOSE      = 0x42, // 装备分解 (u64 instId)
+  C2S_CRAFT_LIST     = 0x43, // 合成配方列表 (u32 npcWid，按 NPC 过滤)
+  C2S_CRAFT          = 0x44, // 物品合成 (u32 recipeId, u16 count)
+  C2S_WAREHOUSE_OPEN     = 0x45, // 打开仓库 (u32 npcWid)
+  C2S_WAREHOUSE_DEPOSIT  = 0x46, // 存入 (u8 isInstance, u64 instId / u32 itemId, u16 count)
+  C2S_WAREHOUSE_WITHDRAW = 0x47, // 取出 (u8 isInstance, u64 instId / u32 itemId, u16 count)
+  C2S_WAREHOUSE_EXPAND   = 0x48, // 扩展仓库 (无 payload)
   // S2C
   S2C_HELLO   = 0x81, // 握手（world 参数 + 自身完整状态）
   S2C_SNAPSHOT= 0x82, // 校准快照（周期全量，自愈）
@@ -84,6 +95,12 @@ enum MsgType : uint8_t {
   S2C_SKILL_CAST = 0x91, // 技能施放反馈（success + skillId + 目标 wid + 落点）
   S2C_BUFFS    = 0x92, // 自身 Buff 列表（skillId/type/value/remain）
   S2C_CONSOLE  = 0x93, // 控制台命令结果（utf-8 文本，逐行）
+  // 地形数据已变更（编辑层保存 / 世界重新初始化）：零 payload，仅作「请重拉」信号。
+  // 客户端收到后重拉 /api/terrain/mask 与 /api/terrain/edit。不随帧携带全量数据的原因：
+  // 帧头 len 为 u16（上限 65535B），而 256×256 mask 原始 65536B、base64 后 87384B，
+  // 单帧装不下；且地形编辑属低频运维操作，重拉成本可接受。
+  // 向后兼容：旧客户端 parseS2C 的 default 分支返回 {type}，收到此帧会被安全忽略。
+  S2C_TERRAIN_DIRTY = 0x94,
   // ---- 社交系统 S2C ----
   S2C_FRIEND_REQUEST = 0xA0, // 收到好友请求 (str: from, str: message)
   S2C_FRIEND_LIST    = 0xA1, // 好友列表 (u16: count, [str: name, u8: online, str: remark]...)
@@ -98,11 +115,20 @@ enum MsgType : uint8_t {
   S2C_CHAT_HISTORY   = 0xC1, // 历史消息批量 (u16: count, [ChatMessage...])
   S2C_CHAT_RESULT    = 0xC2, // 发送结果 (u8: code, str: errorMsg)
   // ---- 任务系统 S2C ----
-  S2C_QUEST_LIST     = 0xD0, // 可接任务列表
+  S2C_QUEST_LIST     = 0xD0, // 可接任务列表（含 giverNpcWid + nextQuestIds）
   S2C_QUEST_PROGRESS = 0xD1, // 活跃任务进度
   S2C_QUEST_RESULT   = 0xD2, // 操作结果（接受/放弃/提交）
   S2C_QUEST_COMPLETE = 0xD3, // 任务完成通知（目标全部达成）
   S2C_QUEST_NOTIFY   = 0xD4, // 任务目标进度更新推送
+  S2C_QUEST_CHAIN    = 0xD5, // 链式任务解锁通知（完成当前任务后解锁的后续任务 ID 列表）
+  // ---- 经济系统 S2C（0xE0-0xEF）----
+  S2C_ENHANCE        = 0xE0, // 强化结果 (u8 ok, u8 failCode, u64 instId, u8 newLevel, u8 success, u32 goldLeft)
+  S2C_DECOMPOSE      = 0xE1, // 分解结果 (u8 ok, u8 failCode, u16 count, [u32 itemId, u16 count]..., u32 goldGain)
+  S2C_CRAFT_LIST     = 0xE2, // 合成配方列表 (u16 count, [u32 recipeId]...)
+  S2C_CRAFT          = 0xE3, // 合成结果 (u8 ok, u8 failCode, u32 recipeId, u32 resultItemId, u16 resultCount, u8 isInstance, u64 instId)
+  S2C_WAREHOUSE       = 0xE4, // 仓库全量 (u32 gold, u32 unlocked, u16 slotCount, [u8 isInstance, u64 instId, u32 itemId, u8 enhance, u8 locked, u32 count]...)
+  S2C_WAREHOUSE_RESULT= 0xE5, // 仓库操作结果 (u8 op, u8 code)
+  S2C_SELL_RESULT    = 0xE6, // 出售回收结果 (u8 ok, u32 goldGain)
 };
 // ---------- 共享事件类型（S2C_EVENT payload 首字节） ----------
 enum EvtType : uint8_t {
@@ -161,6 +187,7 @@ public:
   void u8(uint8_t v);
   void u16(uint16_t v);
   void u32(uint32_t v);
+  void u64(uint64_t v);
   void i16(int16_t v);
   void i32(int32_t v);
   void f32(float v);
@@ -179,6 +206,7 @@ public:
   bool u8(uint8_t& v);
   bool u16(uint16_t& v);
   bool u32(uint32_t& v);
+  bool u64(uint64_t& v);
   bool i16(int16_t& v);
   bool i32(int32_t& v);
   bool f32(float& v);
@@ -246,20 +274,41 @@ std::string bossState(const Entity& boss);
 std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z);
 
 // 世界共享状态编码：S2C_SHOP / S2C_INVENTORY / S2C_STATS / S2C_LOOT
-std::string shopFrame(const struct ShopDef& shop);
+// shopFrame：buyer 非空时按玩家 shopBuyCount 附带每个限购条目的已购数量（限购进度）
+std::string shopFrame(const struct ShopDef& shop, const Entity* buyer = nullptr);
 std::string inventoryFrame(const Entity& p);
 std::string statsFrame(const Entity& p);
 std::string lootFrame(bool ok, uint32_t itemId, uint16_t count, uint32_t gold);
+// 出售回收结果（阶段1）：S2C_SELL_RESULT
+std::string sellResultFrame(bool ok, uint32_t goldGain);
+// 装备强化结果（阶段2）：S2C_ENHANCE
+// payload: u8 ok, u8 failCode, u64 instId, u8 newLevel, u8 success, u32 goldLeft
+std::string enhanceFrame(bool ok, uint8_t failCode, uint64_t instId, uint8_t newLevel, bool success, uint32_t goldLeft);
+// 装备分解结果（阶段3）：S2C_DECOMPOSE
+// payload: u8 ok, u8 failCode, u16 itemCount, [u32 itemId, u16 count]..., u32 goldGain
+std::string decomposeFrame(bool ok, uint8_t failCode, const std::vector<std::pair<uint32_t, uint32_t>>& items, uint32_t goldGain);
+// 合成配方列表（阶段4）：S2C_CRAFT_LIST
+// payload: u16 count, [u32 recipeId]...
+std::string craftListFrame(const std::vector<uint32_t>& recipeIds);
+// 合成结果（阶段4）：S2C_CRAFT
+// payload: u8 ok, u8 failCode, u32 recipeId, u32 resultItemId, u16 resultCount, u8 isInstance, u64 instId
+std::string craftFrame(bool ok, uint8_t failCode, uint32_t recipeId, uint32_t resultItemId, uint16_t resultCount, bool isInstance, uint64_t instId);
+// 仓库全量（阶段5）：S2C_WAREHOUSE
+// payload: u32 gold, u32 unlocked, u16 slotCount, [u8 isInstance, u64 instId, u32 itemId, u8 enhance, u8 locked, u32 count]...
+std::string warehouseFrame(const WarehouseData& wh);
+// 仓库操作结果（阶段5）：S2C_WAREHOUSE_RESULT
+// payload: u8 op, u8 code
+std::string warehouseResultFrame(uint8_t op, uint8_t code);
 
 // 技能/控制台：S2C_SKILLS / S2C_SKILL_CAST / S2C_CONSOLE
 std::string skillCastFrame(bool ok, uint32_t skillId, uint32_t targetWid, int32_t x, int32_t z, uint16_t castTimeMs);
 std::string consoleFrame(const std::string& text);
+// 地形变更通知：S2C_TERRAIN_DIRTY（零 payload）
+std::string terrainDirtyFrame();
 
 // ---------- C2S 解码 ----------
 struct InputMsg {
   uint32_t seq = 0;
-  double moveX = 0, moveZ = 0;
-  bool jump = false;
   double px = 0, py = 0, pz = 0;
 };
 struct AttackMsg {
@@ -268,14 +317,28 @@ struct AttackMsg {
 };
 struct ShopOpenMsg { uint32_t npcWid = 0; };
 struct ShopBuyMsg { uint32_t itemId = 0; uint16_t count = 0; };
+struct ShopSellMsg { bool isInstance = false; uint64_t instId = 0; uint32_t itemId = 0; uint16_t count = 0; }; // 出售：装备实例或堆叠物品
+struct EnhanceMsg { uint64_t instId = 0; bool useProtect = false; }; // 装备强化：目标实例 + 是否用保护符
+struct DecomposeMsg { uint64_t instId = 0; }; // 装备分解：目标实例
+struct CraftListMsg { uint32_t npcWid = 0; }; // 合成配方列表：按 NPC 过滤
+struct CraftMsg { uint32_t recipeId = 0; uint16_t count = 1; }; // 物品合成：配方 + 批量数
+struct WarehouseOpenMsg { uint32_t npcWid = 0; }; // 打开仓库：银行 NPC wid
+struct WarehouseMoveMsg { bool isInstance = false; uint64_t instId = 0; uint32_t itemId = 0; uint16_t count = 0; }; // 存入/取出：装备实例 或 堆叠物品/金币(itemId=0)
 struct PickupMsg { uint32_t dropWid = 0; };
-struct EquipMsg { uint8_t slot = 0; uint32_t itemId = 0; };
+struct EquipMsg { uint8_t slot = 0; uint64_t instId = 0; };  // instId=0 表示卸下（装备实例化）
 struct UseItemMsg { uint32_t itemId = 0; uint16_t count = 0; };
 struct CastSkillMsg { uint32_t skillId = 0; uint32_t targetWid = 0; double tx = 0, tz = 0; };
 bool decodeInput(const std::string& payload, InputMsg& out);
 bool decodeAttack(const std::string& payload, AttackMsg& out);
 bool decodeShopOpen(const std::string& payload, ShopOpenMsg& out);
 bool decodeShopBuy(const std::string& payload, ShopBuyMsg& out);
+bool decodeShopSell(const std::string& payload, ShopSellMsg& out);
+bool decodeEnhance(const std::string& payload, EnhanceMsg& out);
+bool decodeDecompose(const std::string& payload, DecomposeMsg& out);
+bool decodeCraftList(const std::string& payload, CraftListMsg& out);
+bool decodeCraft(const std::string& payload, CraftMsg& out);
+bool decodeWarehouseOpen(const std::string& payload, WarehouseOpenMsg& out);
+bool decodeWarehouseMove(const std::string& payload, WarehouseMoveMsg& out); // DEPOSIT/WITHDRAW 共用
 bool decodePickup(const std::string& payload, PickupMsg& out);
 bool decodeEquip(const std::string& payload, EquipMsg& out);
 bool decodeUseItem(const std::string& payload, UseItemMsg& out);
@@ -302,9 +365,10 @@ struct GuildListMsg { std::string keyword; };
 struct ChatSendMsg { uint8_t channel = 0; std::string target; std::string content; };
 
 // ---------- 任务系统 C2S 消息结构 ----------
-struct QuestAcceptMsg { uint32_t questId = 0; };
+struct QuestAcceptMsg { uint32_t questId = 0; uint32_t npcWid = 0; };
 struct QuestAbandonMsg { uint32_t questId = 0; };
 struct QuestTurnInMsg { uint32_t questId = 0; uint32_t npcWid = 0; };
+struct QuestListMsg { uint32_t npcWid = 0; }; // 请求可接任务列表（npcWid>0 时按 NPC 过滤）
 struct TalkNpcMsg { uint32_t npcWid = 0; };
 
 // 公会信息数据（供 S2C_GUILD_INFO 编码）
@@ -368,6 +432,7 @@ bool decodeChatSend(const std::string& payload, ChatSendMsg& out);
 bool decodeQuestAccept(const std::string& payload, QuestAcceptMsg& out);
 bool decodeQuestAbandon(const std::string& payload, QuestAbandonMsg& out);
 bool decodeQuestTurnIn(const std::string& payload, QuestTurnInMsg& out);
+bool decodeQuestList(const std::string& payload, QuestListMsg& out);
 bool decodeTalkNpc(const std::string& payload, TalkNpcMsg& out);
 
 // ---------- 社交系统 S2C 编码 ----------

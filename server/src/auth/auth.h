@@ -1,5 +1,6 @@
 // auth.h - 账号鉴权（注册/登录/会话令牌）
 // 存储层：账号内存权威 + MySQL 持久化同步；会话内存 + Redis(EXPIRE) 缓存
+// 文件持久化已移除：内存模式启动即空白，数据库模式由 MySQL 灌入账号。
 #pragma once
 #include <string>
 #include <unordered_map>
@@ -25,8 +26,6 @@ public:
   void logout(const std::string& token);
 
 private:
-  void load();
-  void save();
   std::string hashPassword(const std::string& password, const std::string& salt) const;
 
   const Config& cfg_;

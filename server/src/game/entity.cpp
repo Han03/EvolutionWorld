@@ -25,6 +25,10 @@ Json Entity::serialize() const {
   else if (kind == EntityKind::Item) {
     j["itemId"] = (int64_t)dropItemId;
     j["gold"] = (int64_t)dropGold;
+    if (dropInst.instId) {
+      j["instId"] = (int64_t)dropInst.instId;
+      j["enhance"] = (int64_t)dropInst.enhance;
+    }
   }
   if (kind == EntityKind::Player) {
     j["hp"] = r2(hp);
@@ -84,7 +88,7 @@ Entity makeNpc(const std::string& id) {
 }
 
 Entity makeDrop(const std::string& id, double x, double y, double z,
-                uint32_t itemId, uint32_t gold) {
+                uint32_t itemId, uint32_t gold, const ItemInstance& inst) {
   Entity e;
   e.id = id;
   e.kind = EntityKind::Item;
@@ -92,6 +96,7 @@ Entity makeDrop(const std::string& id, double x, double y, double z,
   e.pos = {x, y, z};
   e.dropItemId = itemId;
   e.dropGold = gold;
+  e.dropInst = inst;   // 装备实例掉落（instId!=0）：拾取后保留强化等级
   return e;
 }
 

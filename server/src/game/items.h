@@ -3,7 +3,7 @@
 //  - 物品：装备（6 槽位）/ 消耗品 / 任务道具，按 ID 管理（名称/描述/缩略图/穿戴属性/价格）
 //  - 属性：血量/蓝量/攻击力/防御力；装备影响基础属性（服务端权威计算）
 //  - 商店：商店 NPC 出售物品（价格/库存），金币购买
-//  - 配置：内置默认数据 + 可选 JSON 文件覆盖（data/items.json / monsters.json / shop.json）
+//  - 配置：内置默认数据 + 商店 JSON 覆盖；物品/生物由编辑器热替换，数据库模式持久化
 #pragma once
 #include <cstdint>
 #include <string>
@@ -32,9 +32,19 @@ inline uint32_t playerExpToNext(int level) {
 
 // ---------- 物品类型 ----------
 enum class ItemType : uint8_t {
-  EQUIP = 1,      // 装备
-  CONSUMABLE = 2, // 消耗品
-  QUEST = 3,      // 任务道具
+  EQUIP = 1,      // 装备（实例化：每件独立，携带强化等级）
+  CONSUMABLE = 2, // 消耗品（可堆叠）
+  QUEST = 3,      // 任务道具（可堆叠）
+  MATERIAL = 4,   // 材料（可堆叠，强化/分解/合成用）
+};
+
+// ---------- 装备实例（大型网游：每件装备独立存在，携带强化等级/锁定） ----------
+// 仅 ItemType::EQUIP 走实例化；消耗品/材料/任务道具仍按 itemId 堆叠。
+struct ItemInstance {
+  uint64_t instId = 0;    // 全局唯一实例 ID（服务端单调递增分配，0=空/无效）
+  uint32_t itemId = 0;    // 物品定义 ID（引用 ItemDef）
+  uint8_t  enhance = 0;   // 强化等级 0..15（阶段 2 启用，初期恒为 0）
+  bool     locked = false;// 锁定（仓库/背包防误操作）
 };
 
 // ---------- 装备槽位（上衣/裤子/手套/鞋子/头盔/武器） ----------
@@ -80,13 +90,33 @@ struct MonsterDef {
   std::vector<DropEntry> drops;        // 掉落物品概率表
   double dropRadius = 1.6;             // 掉落物散布半径
   std::vector<uint32_t> skillIds;      // 该怪物类型可用的技能 ID
+  // ---- Boss 扩展（isBoss=true 时使用以下字段覆盖 Config 全局默认值）----
+  bool isBoss = false;                 // Boss 标志
+  double aggroRange = 18.0;            // Boss 仇恨侦测范围（米）
+  double chaseSpeed = 3.0;             // Boss 追击速度（m/s）
+  double attackRange = 2.5;            // Boss 攻击范围（米，覆盖怪物默认值）
 };
 
-// ---------- 商店配置 ----------
-struct ShopEntry { uint32_t itemId = 0; uint32_t price = 0; uint32_t stock = 0; }; // stock=0 无限
+// ---------- NPC 定义已移至 npc.h（NPC 插件模块） ----------
+// NpcDef 和 NpcTag 现在由 NpcManager 统一管理（见 npc.h）
+
+// ---------- 商店配置（阶段1扩展：折扣/限购/分类/刷新/回收） ----------
+struct ShopEntry {
+  uint32_t itemId = 0;
+  uint32_t price = 0;          // 原价
+  uint32_t discountPrice = 0;  // 折扣价（0=无折扣，>0 时优先结算）
+  uint32_t stock = 0;          // 库存（0=无限）
+  uint32_t buyLimit = 0;       // 限购（0=不限；按玩家累计，refreshType 周期重置）
+  uint8_t  category = 0;       // 0自动(按物品类型) 1装备 2消耗品 3材料 4特殊
+  uint8_t  refreshType = 0;    // 0不刷新 1每日 2每周（周期重置 buyLimit 计数）
+  uint32_t sellPrice = 0;      // 回收价（0=按 ItemDef.price×默认回收率）
+};
 struct ShopDef {
   uint32_t shopId = 0;
   std::string name;
+  std::string desc;             // 商店描述
+  uint8_t shopType = 0;         // 0普通 1限时 2声望 3货币兑换
+  uint32_t currencyItemId = 0;  // 兑换货币 itemId（0=金币）
   std::vector<ShopEntry> entries;
 };
 
@@ -100,6 +130,7 @@ public:
   const std::unordered_map<uint32_t, ItemDef>& items() const { return items_; }
   const MonsterDef* monster(const std::string& type) const;
   const std::unordered_map<std::string, MonsterDef>& monsters() const { return monsters_; }
+  // NPC 查询已委托给 NpcManager（见 World::npcs()）
   const ShopDef* shop(uint32_t shopId) const;
   const std::unordered_map<uint32_t, ShopDef>& shops() const { return shops_; }
   // 商店条目（用于 S2C_SHOP 编码）
@@ -125,10 +156,11 @@ public:
   // ---- 序列化 / 热替换（世界编辑器物品·生物配置用） ----
   std::string itemsToJson() const;    // ItemDef 数组（字段与 loadFromJson 对齐）
   std::string monstersToJson() const; // MonsterDef 对象（键=type）
+  std::string shopsToJson() const;    // ShopDef 对象（键=shopId，含扩展字段，与 shop.json 对齐）
+  // NPC 序列化已委托给 NpcManager（见 World::npcs()）
   bool replaceItems(const Json& arr);    // 清空并用完整数组重填 items_
   bool replaceMonsters(const Json& obj); // 清空并用完整对象重填 monsters_
-  bool saveItemsFile(const std::string& path);   // 写 itemsToJson() 到文件
-  bool saveMonstersFile(const std::string& path);// 写 monstersToJson() 到文件
+  bool replaceShops(const Json& obj);    // 清空并用完整对象重填 shops_（键=shopId，字段与 shop.json 对齐）
 
 private:
   void addDefaultItem(uint32_t id, const char* name, const char* desc, const char* icon,
@@ -144,6 +176,7 @@ private:
                        double knockback = 0, bool superArmor = false);
   std::unordered_map<uint32_t, ItemDef> items_;
   std::unordered_map<std::string, MonsterDef> monsters_;
+  // NPC 数据已委托给 NpcManager（见 npc.h）
   std::unordered_map<uint32_t, ShopDef> shops_;
   std::unordered_map<uint32_t, SkillDef> skills_;
   std::vector<uint32_t> starterSkills_;

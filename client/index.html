@@ -4,44 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EvolutionWorld · 无缝世界</title>
+  <link rel="stylesheet" href="./css/login.css" />
   <link rel="stylesheet" href="./css/style.css" />
 </head>
-<body>
-  <!-- 3D 渲染容器 -->
+<body class="ew-loading">
+  <!-- 2D 渲染容器 -->
   <div id="app"></div>
-
-  <!-- ═══════════ 登录界面 ═══════════ -->
-  <div id="login-overlay" class="overlay">
-    <div class="login-bg-particles"></div>
-    <div class="login-card">
-      <div class="login-crest">
-        <div class="crest-glow"></div>
-        <div class="crest-icon">⚔</div>
-      </div>
-      <h1 class="title">EVOLUTION<span>WORLD</span></h1>
-      <div class="title-divider"><span class="divider-gem">◆</span></div>
-      <p class="subtitle">无缝世界 · 固定俯视角大型MMO · 空壳网络游戏服务端</p>
-      <form id="login-form" autocomplete="off">
-        <label>账号</label>
-        <input id="username" type="text" placeholder="2-16 位字母/数字/中文" maxlength="16" />
-        <label>密码</label>
-        <input id="password" type="password" placeholder="6-64 位" maxlength="64" />
-        <div id="login-msg" class="msg"></div>
-        <div class="btn-row">
-          <button type="button" id="btn-register" class="btn btn-ghost">注 册</button>
-          <button type="submit" id="btn-login" class="btn btn-primary">登 录</button>
-        </div>
-      </form>
-      <div class="hint">登录后将以 <b>橙色球体</b> 进入无缝世界（固定俯视角）<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC<br/><a href="./editor.html" target="_blank" class="editor-link">🛠 地形编辑器（画刷调整地图）</a></div>
-      <div class="login-footer">v1.0 · EvolutionWorld</div>
-    </div>
-  </div>
-
-  <!-- ═══════════ 加载遮罩 ═══════════ -->
-  <div id="loading" class="loading hidden">
-    <div class="loading-ring"><div class="loading-ring-inner"></div></div>
-    <span id="loading-text">连接世界中…</span>
-  </div>
 
   <!-- ═══════════ HUD ═══════════ -->
   <div id="hud" class="hidden">
@@ -50,12 +18,13 @@
     <div class="hud-top-bar">
       <div class="hud-top-left">
         <div class="hud-logo">EVOLUTIONWORLD</div>
+        <div id="hud-version" style="font-size:10px;color:rgba(255,255,255,0.4);margin-left:6px;">v-</div>
         <div id="hud-conn" class="hud-status-chip">…</div>
       </div>
       <div class="hud-top-right">
         <div id="hud-info" class="hud-info-block">
           <div><b id="hud-user">-</b></div>
-          <div id="hud-pos">x:0 y:0 z:0</div>
+          <div id="hud-pos">x:0 z:0</div>
           <div id="hud-fps">fps:0</div>
         </div>
       </div>
@@ -99,12 +68,43 @@
       </div>
     </div>
 
-    <!-- ── 右下角：操作提示 ── -->
-    <div class="hud-controls">
-      <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑←↓→</kbd> 移动</div>
-      <div><kbd>Space</kbd> 跳跃 · <kbd>J</kbd> 攻击 · <kbd>B</kbd> 商店 · <kbd>E</kbd> 拾取</div>
-      <div><kbd>I</kbd> 背包/装备 · <kbd>L</kbd> 任务日志 · <kbd>1-8</kbd> 技能</div>
-      <div><kbd>Enter</kbd> 聊天 · <kbd>F</kbd> 好友 · <kbd>G</kbd> 公会</div>
+    <!-- ── 右下角：游戏菜单 + 操作提示 ── -->
+    <div class="hud-bottom-right">
+      <div class="hud-controls">
+        <div>左键长按跟随 · 右键点击移动</div>
+        <div><kbd>J</kbd> 攻击 · <kbd>G</kbd> 交互 · <kbd>E</kbd> 拾取</div>
+        <div><kbd>1-8</kbd> 技能 · <kbd>Enter</kbd> 聊天</div>
+      </div>
+      <div class="game-menu" id="game-menu">
+        <button class="gm-btn" data-action="inventory" title="背包/装备 (I)">
+          <span class="gm-icon">🎒</span><span class="gm-label">背包</span><span class="gm-key">I</span>
+        </button>
+        <button class="gm-btn" data-action="quest" title="任务日志 (L)">
+          <span class="gm-icon">📜</span><span class="gm-label">任务</span><span class="gm-key">L</span>
+        </button>
+        <button class="gm-btn" data-action="friend" title="好友 (F)">
+          <span class="gm-icon">👥</span><span class="gm-label">好友</span><span class="gm-key">F</span>
+        </button>
+        <button class="gm-btn" data-action="guild" title="公会">
+          <span class="gm-icon">🏰</span><span class="gm-label">公会</span>
+        </button>
+        <div class="gm-sep"></div>
+        <button class="gm-btn gm-disabled" data-action="skills" title="技能树 (暂未开放)">
+          <span class="gm-icon">⚔</span><span class="gm-label">技能</span>
+        </button>
+        <button class="gm-btn gm-disabled" data-action="map" title="世界地图 (暂未开放)">
+          <span class="gm-icon">🗺</span><span class="gm-label">地图</span>
+        </button>
+        <button class="gm-btn gm-disabled" data-action="settings" title="设置 (暂未开放)">
+          <span class="gm-icon">⚙</span><span class="gm-label">设置</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── 右上角：小地图罗盘 ── -->
+    <div id="minimap" class="minimap-container">
+      <canvas class="minimap-canvas"></canvas>
+      <button class="minimap-toggle" title="收起/展开">▼</button>
     </div>
 
     <!-- ── 右侧：任务追踪 HUD ── -->
@@ -113,9 +113,29 @@
       <div id="quest-tracker-list" class="quest-tracker-list"></div>
     </div>
 
-    <!-- ── 左下角：协议监控 ── -->
-    <div id="proto-panel">
+    <!-- ── 左侧：调试数据打印（默认收起） ── -->
+    <div id="debug-panel" class="collapsed">
+      <div class="debug-head">
+        <span class="debug-toggle" id="debug-toggle">▶</span>
+        <span class="debug-icon">🔧</span> 调试数据
+      </div>
+      <div id="debug-body" class="debug-body">
+        <div class="debug-row">
+          <select id="debug-type" class="debug-select">
+            <option value="terrain">地形数据 (10m内)</option>
+            <option value="self">自身实体球数据</option>
+            <option value="npc">可见NPC数据</option>
+            <option value="monster">可见怪物数据</option>
+          </select>
+          <button id="debug-print" class="debug-print-btn">打印</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 左侧：协议监控（默认收起） ── -->
+    <div id="proto-panel" class="collapsed">
       <div class="proto-head">
+        <span class="proto-toggle" id="proto-toggle">▶</span>
         <span class="proto-icon">📡</span> 协议监控 <span id="proto-bps">-</span>
       </div>
       <div id="proto-log"></div>
@@ -158,6 +178,7 @@
       <span id="shop-title">商店</span>
       <button id="shop-close" class="panel-close">✕</button>
     </div>
+    <div id="shop-tabs" class="shop-tabs"></div>
     <div id="shop-list" class="shop-list"></div>
   </div>
 
@@ -208,6 +229,75 @@
       <button class="guild-tab" data-tab="create">创建公会</button>
     </div>
     <div id="guild-content" class="social-content"></div>
+  </div>
+
+  <!-- ═══════════ NPC 对话面板 ═══════════ -->
+  <div id="npc-dialog" class="npc-dialog hidden">
+    <div class="npc-dialog-head">
+      <span class="npc-dialog-icon">💬</span>
+      <span id="npc-dialog-name">NPC</span>
+      <button id="npc-dialog-close" class="panel-close">✕</button>
+    </div>
+    <div class="npc-dialog-body">
+      <div id="npc-dialog-text" class="npc-dialog-text"></div>
+      <div id="npc-dialog-options" class="npc-dialog-options"></div>
+    </div>
+  </div>
+
+  <!-- 铁匠面板（阶段2 强化 + 阶段3 分解；页签切换） -->
+  <div id="enhance-panel" class="panel enhance-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">⚒️</span>
+      <span>铁匠铺</span>
+      <button id="enhance-close" class="panel-close">✕</button>
+    </div>
+    <div class="smith-tabs">
+      <button id="smith-tab-enhance" class="smith-tab active">强化</button>
+      <button id="smith-tab-decompose" class="smith-tab">分解</button>
+    </div>
+    <div id="enhance-body" class="enhance-body">
+      <div id="enhance-list" class="enhance-list"></div>
+      <div id="enhance-detail" class="enhance-detail"></div>
+    </div>
+    <div id="decompose-body" class="enhance-body hidden">
+      <div id="decompose-list" class="enhance-list"></div>
+      <div id="decompose-detail" class="enhance-detail"></div>
+    </div>
+  </div>
+
+  <!-- 合成面板（阶段4：配方驱动合成；炼金术士/铠甲匠人） -->
+  <div id="craft-panel" class="panel enhance-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">⚗️</span>
+      <span>物品合成</span>
+      <button id="craft-close" class="panel-close">✕</button>
+    </div>
+    <div id="craft-body" class="enhance-body">
+      <div id="craft-list" class="enhance-list"></div>
+      <div id="craft-detail" class="enhance-detail"></div>
+    </div>
+  </div>
+
+  <!-- 仓库面板（阶段5：多页存储/扩展/锁定/存金；银行职员） -->
+  <div id="warehouse-panel" class="panel warehouse-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">🏦</span>
+      <span>银行仓库</span>
+      <button id="warehouse-close" class="panel-close">✕</button>
+    </div>
+    <div id="warehouse-goldbar" class="warehouse-goldbar"></div>
+    <div id="warehouse-pages" class="warehouse-pages"></div>
+    <div class="warehouse-body">
+      <div class="warehouse-col">
+        <div class="warehouse-col-title">背包 <span class="wh-col-hint">点击存入</span></div>
+        <div id="warehouse-bag" class="warehouse-grid"></div>
+      </div>
+      <div class="warehouse-col">
+        <div class="warehouse-col-title">仓库 <span class="wh-col-hint">点击取出</span></div>
+        <div id="warehouse-slots" class="warehouse-grid"></div>
+      </div>
+    </div>
+    <div id="warehouse-footer" class="warehouse-footer"></div>
   </div>
 
   <!-- ═══════════ 提示浮层 ═══════════ -->

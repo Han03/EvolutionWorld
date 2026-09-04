@@ -34,11 +34,10 @@ void Netcode::requestResync(const std::string& playerId) {
 }
 const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
   out_.clear();
-  // 世界共享状态（全区广播，每 tick 一次）：共享事件 + Boss 状态帧（变化去重）
+  // 世界共享状态：提取本 tick 事件 + Boss 状态帧（变化去重）
   auto sharedEvents = w_.takeSharedEvents();
-  std::string sharedSuffix;
-  for (const auto& ev : sharedEvents) sharedSuffix += proto::eventFrame(ev.type, ev.wid, ev.b, ev.x, ev.z);
-  sharedSuffix += w_.bossFrame(false);
+  // Boss 全局共享状态帧（所有玩家都收到，不论距离——世界 Boss 是全区公共信息）
+  std::string bossSuffix = w_.bossFrame(false);
   for (const auto& pid : w_.players()) {
     const Entity* player = w_.findEntity(pid);
     if (!player) continue;
@@ -54,6 +53,15 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       if (dist2D(e->pos, player->pos) > cfg_.viewRangeM) continue;
       vis.push_back(e);
       visSet.insert(wid);
+    }
+    // ---- 1b. 可视范围事件过滤（Fog of War）----
+    // 共享事件按玩家视野过滤：只下发主体实体在视野内的事件，
+    // 防止脚本通过全区事件流获取视野外的怪物位置/战斗/掉落等信息。
+    std::string evtBuf;
+    for (const auto& ev : sharedEvents) {
+      if (visSet.count(ev.wid)) {
+        evtBuf += proto::eventFrame(ev.type, ev.wid, ev.b, ev.x, ev.z);
+      }
     }
     // ---- 2. ENTER / LEAVE ----
     std::vector<const Entity*> enters;
@@ -117,7 +125,8 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       v.lastSnapTick = tick;
       v.forceSnap = false;
     }
-    buf += sharedSuffix; // 全区共享状态（事件 + Boss 血量/状态）
+    // 视野内事件 + Boss 全局状态（Boss 是全区公共信息，不受距离限制）
+    buf += evtBuf + bossSuffix;
     // 玩家自身属性/资源变化（战斗掉血/回血/回蓝）：补发 S2C_STATS
     if (w_.statsDirty().count(player->id)) buf += proto::statsFrame(*player);
     // 背包/金币变化（控制台/调试发放）：补发 S2C_INVENTORY

@@ -15,6 +15,9 @@ void Writer::u16(uint16_t v) {
 void Writer::u32(uint32_t v) {
   for (int i = 0; i < 4; i++) buf_.push_back((char)((v >> (8 * i)) & 0xFF));
 }
+void Writer::u64(uint64_t v) {
+  for (int i = 0; i < 8; i++) buf_.push_back((char)((v >> (8 * i)) & 0xFF));
+}
 void Writer::i16(int16_t v) { u16((uint16_t)v); }
 void Writer::i32(int32_t v) { u32((uint32_t)v); }
 void Writer::f32(float v) {
@@ -46,6 +49,13 @@ bool Reader::u32(uint32_t& v) {
   v = 0;
   for (int i = 0; i < 4; i++) v |= ((uint32_t)p_[i]) << (8 * i);
   p_ += 4;
+  return true;
+}
+bool Reader::u64(uint64_t& v) {
+  if (!remaining(8)) return false;
+  v = 0;
+  for (int i = 0; i < 8; i++) v |= ((uint64_t)(uint8_t)p_[i]) << (8 * i);
+  p_ += 8;
   return true;
 }
 bool Reader::i16(int16_t& v) {
@@ -126,9 +136,11 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
   w.i16(qVel(e.vel.x));
   w.i16(qVel(e.vel.z));
   if (e.kind == EntityKind::Item) {
-    // 掉落物：itemId(0=纯金币) + gold 数量
+    // 掉落物：itemId(0=纯金币) + gold 数量 + 装备实例（instId!=0 为装备，携带强化）
     w.u32(e.dropItemId);
     w.u32(e.dropGold);
+    w.u64(e.dropInst.instId);
+    w.u8(e.dropInst.enhance);
   } else if (e.kind == EntityKind::Player) {
     w.str(e.username);
   } else {
@@ -140,10 +152,20 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
     w.i16(qVel(e.ai.targetVX));
     w.i16(qVel(e.ai.targetVZ));
     w.u8((uint8_t)std::lround(e.moveScale() * 100.0)); // 0-100%
+    // NPC 插件：NPC 实体额外广播 npcId + npcTag（客户端据此渲染交互菜单）
+    if (e.kind == EntityKind::Npc) {
+      w.str(e.npcId);
+      w.u32(e.npcTag);
+    }
   }
 }
+// 实体列表 + 服务端参考坐标（客户端用此 ref 解码相对坐标，消除一 tick 预测偏差）
 static std::string entityListToPayload(const std::vector<const Entity*>& ents, const Vec3& ref) {
   Writer w;
+  // 服务端参考坐标：客户端据此解码相对坐标，而非使用客户端预测位置（两者差 1 tick）
+  w.i32(qAbs(ref.x));
+  w.i16(qAbs(ref.y));
+  w.i32(qAbs(ref.z));
   w.u16((uint16_t)ents.size());
   for (const Entity* e : ents) writeEntityFull(w, *e, ref);
   return w.data();
@@ -164,6 +186,10 @@ std::string hello(const Config& cfg, const Entity& self) {
 std::string snapshot(uint32_t tick, const std::vector<const Entity*>& ents, const Vec3& ref) {
   Writer w;
   w.u32(tick);
+  // 服务端参考坐标（与 ENTER/UPDATE 一致）
+  w.i32(qAbs(ref.x));
+  w.i16(qAbs(ref.y));
+  w.i32(qAbs(ref.z));
   w.u16((uint16_t)ents.size());
   for (const Entity* e : ents) writeEntityFull(w, *e, ref);
   return frame(S2C_SNAPSHOT, w.data());
@@ -182,6 +208,10 @@ std::string update(const std::vector<uint32_t>& wids,
                    const std::vector<const Entity*>& ents,
                    const Vec3& ref) {
   Writer w;
+  // 服务端参考坐标：客户端据此解码相对坐标，消除一 tick 预测偏差
+  w.i32(qAbs(ref.x));
+  w.i16(qAbs(ref.y));
+  w.i32(qAbs(ref.z));
   w.u16((uint16_t)wids.size());
   for (size_t i = 0; i < wids.size(); i++) {
     w.u32(wids[i]);
@@ -232,28 +262,131 @@ std::string error(uint8_t code, const std::string& msg) {
   return frame(S2C_ERROR, w.data());
 }
 // ---------- 物品/属性/商店 编码 ----------
-// 商店列表帧：shopId + 名称 + 商品条目（itemId/price/stock）
-std::string shopFrame(const ::ew::ShopDef& shop) {
+// 商店列表帧（阶段1扩展）：shopId + 名称/描述 + 类型/货币 + 商品条目（含折扣/限购/分类/刷新/回收）
+std::string shopFrame(const ::ew::ShopDef& shop, const Entity* buyer) {
   Writer w;
   w.u32(shop.shopId);
   w.str(shop.name);
+  w.str(shop.desc);
+  w.u8(shop.shopType);
+  w.u32(shop.currencyItemId);
   w.u16((uint16_t)shop.entries.size());
   for (const auto& e : shop.entries) {
     w.u32(e.itemId);
     w.u32(e.price);
+    w.u32(e.discountPrice);
     w.u16((uint16_t)e.stock);
+    w.u32(e.buyLimit);
+    w.u8(e.category);
+    w.u8(e.refreshType);
+    w.u32(e.sellPrice);
+    // 已购数量（限购进度）：仅 buyLimit>0 且 buyer 非空时查表，key=(shopId<<32|itemId)
+    uint32_t bought = 0;
+    if (buyer && e.buyLimit > 0) {
+      uint64_t key = ((uint64_t)shop.shopId << 32) | (uint64_t)e.itemId;
+      auto it = buyer->pl.shopBuyCount.find(key);
+      if (it != buyer->pl.shopBuyCount.end()) bought = it->second;
+    }
+    w.u32(bought);
   }
   return frame(S2C_SHOP, w.data());
 }
+// 出售回收结果帧（阶段1）：ok + 获得金币
+std::string sellResultFrame(bool ok, uint32_t goldGain) {
+  Writer w;
+  w.u8(ok ? 1 : 0);
+  w.u32(goldGain);
+  return frame(S2C_SELL_RESULT, w.data());
+}
+// 装备强化结果帧（阶段2）：ok + failCode + 实例 + 新等级 + 成功标志 + 剩余金币
+std::string enhanceFrame(bool ok, uint8_t failCode, uint64_t instId, uint8_t newLevel, bool success, uint32_t goldLeft) {
+  Writer w;
+  w.u8(ok ? 1 : 0);
+  w.u8(failCode);
+  w.u64(instId);
+  w.u8(newLevel);
+  w.u8(success ? 1 : 0);
+  w.u32(goldLeft);
+  return frame(S2C_ENHANCE, w.data());
+}
+// 装备分解结果帧（阶段3）：ok + failCode + 产出清单(itemId,count) + 返还金币
+std::string decomposeFrame(bool ok, uint8_t failCode, const std::vector<std::pair<uint32_t, uint32_t>>& items, uint32_t goldGain) {
+  Writer w;
+  w.u8(ok ? 1 : 0);
+  w.u8(failCode);
+  w.u16((uint16_t)items.size());
+  for (const auto& it : items) {
+    w.u32(it.first);
+    w.u16((uint16_t)it.second);
+  }
+  w.u32(goldGain);
+  return frame(S2C_DECOMPOSE, w.data());
+}
+// 合成配方列表帧（阶段4）：u16 count, [u32 recipeId]...
+std::string craftListFrame(const std::vector<uint32_t>& recipeIds) {
+  Writer w;
+  w.u16((uint16_t)recipeIds.size());
+  for (uint32_t id : recipeIds) w.u32(id);
+  return frame(S2C_CRAFT_LIST, w.data());
+}
+// 合成结果帧（阶段4）：u8 ok, u8 failCode, u32 recipeId, u32 resultItemId, u16 resultCount, u8 isInstance, u64 instId
+std::string craftFrame(bool ok, uint8_t failCode, uint32_t recipeId, uint32_t resultItemId, uint16_t resultCount, bool isInstance, uint64_t instId) {
+  Writer w;
+  w.u8(ok ? 1 : 0);
+  w.u8(failCode);
+  w.u32(recipeId);
+  w.u32(resultItemId);
+  w.u16(resultCount);
+  w.u8(isInstance ? 1 : 0);
+  w.u64(instId);
+  return frame(S2C_CRAFT, w.data());
+}
+// 仓库全量帧（阶段5）：u32 gold, u32 unlocked, u16 slotCount, [u8 isInstance, u64 instId, u32 itemId, u8 enhance, u8 locked, u32 count]...
+std::string warehouseFrame(const WarehouseData& wh) {
+  Writer w;
+  w.u32(wh.gold);
+  w.u32(wh.unlocked);
+  w.u16((uint16_t)wh.slots.size());
+  for (const auto& s : wh.slots) {
+    w.u8(s.isInstance ? 1 : 0);
+    w.u64(s.instId);
+    w.u32(s.itemId);
+    w.u8(s.enhance);
+    w.u8(s.locked ? 1 : 0);
+    w.u32(s.count);
+  }
+  return frame(S2C_WAREHOUSE, w.data());
+}
+// 仓库操作结果帧（阶段5）：u8 op, u8 code
+std::string warehouseResultFrame(uint8_t op, uint8_t code) {
+  Writer w;
+  w.u8(op);
+  w.u8(code);
+  return frame(S2C_WAREHOUSE_RESULT, w.data());
+}
 // 背包/装备/金币全量帧（服务端权威，客户端据此重建）
+// 装备实例化格式：gold + 已穿戴实例 + 背包装备实例 + 堆叠物品
 std::string inventoryFrame(const Entity& p) {
   Writer w;
   w.u32(p.pl.gold);
+  // 已穿戴装备（实例）：slot + instId + itemId + enhance
   w.u8((uint8_t)p.pl.equip.size());
   for (int i = 0; i < (int)p.pl.equip.size(); i++) {
+    const ItemInstance& ins = p.pl.equip[i];
     w.u8((uint8_t)(::ew::GameData::indexSlot(i))); // 槽位值 1..6
-    w.u32(p.pl.equip[i]);
+    w.u64(ins.instId);
+    w.u32(ins.itemId);
+    w.u8(ins.enhance);
   }
+  // 背包装备实例：instId + itemId + enhance + locked
+  w.u16((uint16_t)p.pl.equipBag.size());
+  for (const auto& ins : p.pl.equipBag) {
+    w.u64(ins.instId);
+    w.u32(ins.itemId);
+    w.u8(ins.enhance);
+    w.u8(ins.locked ? 1 : 0);
+  }
+  // 堆叠物品：itemId + count
   w.u16((uint16_t)p.pl.inventory.size());
   for (const auto& [id, cnt] : p.pl.inventory) {
     w.u32(id);
@@ -301,6 +434,11 @@ std::string consoleFrame(const std::string& text) {
   w.str(text);
   return frame(S2C_CONSOLE, w.data());
 }
+// 地形变更通知帧（零 payload）：仅告知在线客户端「地形数据已变，请重拉」。
+// 客户端收到后重走 /api/terrain/mask + /api/terrain/edit，并自行做地形缓存/网格/小地图失效。
+std::string terrainDirtyFrame() {
+  return frame(S2C_TERRAIN_DIRTY, std::string());
+}
 
 // ---------- C2S 解码 ----------
 // 世界 Boss 全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
@@ -331,16 +469,10 @@ std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int
 bool decodeInput(const std::string& payload, InputMsg& out) {
   Reader r(payload);
   uint32_t seq;
-  int16_t mx, mz;
-  uint8_t jump;
   int32_t px, pz;
   int16_t py;
-  if (!r.u32(seq) || !r.i16(mx) || !r.i16(mz) || !r.u8(jump) ||
-      !r.i32(px) || !r.i16(py) || !r.i32(pz)) return false;
+  if (!r.u32(seq) || !r.i32(px) || !r.i16(py) || !r.i32(pz)) return false;
   out.seq = seq;
-  out.moveX = (double)mx / kMoveScale;
-  out.moveZ = (double)mz / kMoveScale;
-  out.jump = jump != 0;
   out.px = dqAbs(px);
   out.py = dqAbs(py);
   out.pz = dqAbs(pz);
@@ -354,13 +486,58 @@ bool decodeShopBuy(const std::string& payload, ShopBuyMsg& out) {
   Reader r(payload);
   return r.u32(out.itemId) && r.u16(out.count);
 }
+bool decodeShopSell(const std::string& payload, ShopSellMsg& out) {
+  Reader r(payload);
+  uint8_t isInst = 0;
+  if (!r.u8(isInst)) return false;
+  out.isInstance = isInst != 0;
+  return r.u64(out.instId) && r.u32(out.itemId) && r.u16(out.count);
+}
+bool decodeEnhance(const std::string& payload, EnhanceMsg& out) {
+  Reader r(payload);
+  uint8_t useProtect = 0;
+  if (!r.u64(out.instId)) return false;
+  if (!r.u8(useProtect)) return false;
+  out.useProtect = useProtect != 0;
+  return true;
+}
+bool decodeDecompose(const std::string& payload, DecomposeMsg& out) {
+  Reader r(payload);
+  if (!r.u64(out.instId)) return false;
+  return out.instId != 0;
+}
+bool decodeCraftList(const std::string& payload, CraftListMsg& out) {
+  Reader r(payload);
+  if (!r.u32(out.npcWid)) return false;
+  return true;
+}
+bool decodeCraft(const std::string& payload, CraftMsg& out) {
+  Reader r(payload);
+  if (!r.u32(out.recipeId)) return false;
+  if (!r.u16(out.count)) return false;
+  if (out.count == 0) out.count = 1;
+  return out.recipeId != 0;
+}
+bool decodeWarehouseOpen(const std::string& payload, WarehouseOpenMsg& out) {
+  Reader r(payload);
+  if (!r.u32(out.npcWid)) return false;
+  return true;
+}
+// DEPOSIT/WITHDRAW 共用：u8 isInstance, u64 instId, u32 itemId, u16 count（对齐 decodeShopSell 固定布局）
+bool decodeWarehouseMove(const std::string& payload, WarehouseMoveMsg& out) {
+  Reader r(payload);
+  uint8_t isInst = 0;
+  if (!r.u8(isInst)) return false;
+  out.isInstance = isInst != 0;
+  return r.u64(out.instId) && r.u32(out.itemId) && r.u16(out.count);
+}
 bool decodePickup(const std::string& payload, PickupMsg& out) {
   Reader r(payload);
   return r.u32(out.dropWid);
 }
 bool decodeEquip(const std::string& payload, EquipMsg& out) {
   Reader r(payload);
-  return r.u8(out.slot) && r.u32(out.itemId);
+  return r.u8(out.slot) && r.u64(out.instId);
 }
 bool decodeUseItem(const std::string& payload, UseItemMsg& out) {
   Reader r(payload);
@@ -567,7 +744,7 @@ std::string chatResultFrame(uint8_t code, const std::string& errorMsg) {
 // ---------- 任务系统 C2S 解码 ----------
 bool decodeQuestAccept(const std::string& payload, QuestAcceptMsg& out) {
   Reader r(payload);
-  return r.u32(out.questId);
+  return r.u32(out.questId) && r.u32(out.npcWid);
 }
 bool decodeQuestAbandon(const std::string& payload, QuestAbandonMsg& out) {
   Reader r(payload);
@@ -576,6 +753,10 @@ bool decodeQuestAbandon(const std::string& payload, QuestAbandonMsg& out) {
 bool decodeQuestTurnIn(const std::string& payload, QuestTurnInMsg& out) {
   Reader r(payload);
   return r.u32(out.questId) && r.u32(out.npcWid);
+}
+bool decodeQuestList(const std::string& payload, QuestListMsg& out) {
+  Reader r(payload);
+  return r.u32(out.npcWid);
 }
 bool decodeTalkNpc(const std::string& payload, TalkNpcMsg& out) {
   Reader r(payload);

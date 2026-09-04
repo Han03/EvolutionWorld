@@ -1,4 +1,4 @@
-// physics.cpp - 物理实现（与旧 JS 服务端逻辑完全一致，保证客户端预测可复现）
+// physics.cpp - 物理实现（重力/摩擦/加速度/地表碰撞，无跳跃）
 #include "physics.h"
 #include "terrain.h"
 #include <cmath>
@@ -29,9 +29,8 @@ void Physics::step(Entity& e, double dt) {
   p.y += v.y * dt;
   p.z += v.z * dt;
 
-  // 4) 地表碰撞
-  double groundY = terrainHeight(p.x, p.z);
-  double footY = groundY + e.radius;
+  // 4) 地表碰撞（footY = 权威贴地高度，与 handleInput 采纳/击退/传送/复活 同一语义）
+  double footY = groundFootY(p.x, p.z, e.radius);
   if (p.y <= footY) {
     p.y = footY;
     v.y = 0;
@@ -54,15 +53,6 @@ void Physics::setHorizontalVelocity(Entity& e, double targetX, double targetZ, d
     v.x = curX + (targetX - curX) * k;
     v.z = curZ + (targetZ - curZ) * k;
   }
-}
-
-bool Physics::tryJump(Entity& e) {
-  if (e.grounded) {
-    e.vel.y = cfg_.jumpVelocity;
-    e.grounded = false;
-    return true;
-  }
-  return false;
 }
 
 } // namespace ew

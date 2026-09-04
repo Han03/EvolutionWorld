@@ -1,198 +1,176 @@
 /**
- * 输入模块：鼠标点击地面移动 + 键盘（WASD/方向键 + 空格跳跃）
- * 固定俯视角 MMO：视角固定，移动直接映射到世界坐标（W=向屏幕上方=-z，与协议 moveZ 一致）
- * 移动优先级：WASD/方向键 > 鼠标点击目标（按键盘即取消点击移动）
+ * 输入模块：鼠标点击/长按移动 + A* 自动寻路
+ * 固定俯视角 MMO：视角固定，移动直接映射到世界坐标
+ * 移动方式：鼠标点击目标点（自动寻路）/ 长按拖拽跟随
+ * 按键系统：通过 KeybindManager 集中管理所有键盘输入
  */
+import { PathFinder } from './pathfind.js';
+import { KeybindManager } from './keybinds.js';
+
 export class InputState {
   constructor(domElement) {
     this.dom = domElement;
-    this.keys = new Set();
-    this.jumpQueued = false; // 边沿触发，发送后清除
-    this.attackQueued = false; // J：攻击世界实体（世界怪物/Boss）
-    this.shopQueued = false;   // B：附近商店 NPC 打开商店
-    this.invToggleQueued = false; // I：切换背包/装备面板
-    this.pickupQueued = false; // E：主动拾取
-    this.questToggleQueued = false; // L：切换任务日志面板
-    this.socialToggleQueued = 0;    // 1=好友(F) / 2=公会(G) / 3=聊天(Enter)
-    this.skillQueued = 0;      // 技能栏热键（1-8）：最近一次按下的技能 ID
-    // ---- 鼠标点击移动 ----
+    // ---- 按键绑定系统 ----
+    this.keybinds = new KeybindManager();
+    // ---- 鼠标点击移动 + 自动寻路 ----
     this.clickTarget = null;   // {x, z} 世界坐标目标点；null = 无
-    this.terrainRenderer = null; // 由 boot.js 设置，用于 s2w 屏幕→世界转换
+    this._mouseHeld = false;   // 鼠标左键是否按住（长按跟随）
+    this.pathfinder = new PathFinder();  // A* 寻路器
+    this.renderer = null; // 由 boot.js 设置，用于 s2w 屏幕→世界转换
+    this._lastMouseScreen = null; // {x, y} 最近鼠标屏幕坐标（长按跟随用）
+    this._lastCamForTarget = null; // {x, z} 设置 clickTarget 时的相机位置（相机移动补偿用）
+    this._lastMoveThrottle = 0; // 上次 mousemove 处理时间戳（10ms 节流用）
+    this._rippleInterval = null; // 长按波纹定时器 ID
     this._setupClickToMove();
-    window.addEventListener('keydown', (e) => {
-      // 当焦点在输入框时忽略游戏输入（聊天/好友添加/公会搜索等）
-      const ae = document.activeElement;
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
-      // WASD/方向键按下时取消点击移动目标
-      if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
-        this.clickTarget = null;
-      }
-      if (e.code === 'Space') {
-        this.jumpQueued = true;
-        e.preventDefault();
-      }
-      if (e.code === 'KeyJ') {
-        this.attackQueued = true;
-      }
-      if (e.code === 'KeyB') {
-        this.shopQueued = true;
-      }
-      if (e.code === 'KeyI') {
-        this.invToggleQueued = true;
-      }
-      if (e.code === 'KeyE') {
-        this.pickupQueued = true;
-      }
-      if (e.code === 'KeyL') {
-        this.questToggleQueued = true;
-      }
-      if (e.code === 'KeyF') {
-        this.socialToggleQueued = 1; // 好友面板
-      }
-      if (e.code === 'KeyG') {
-        this.socialToggleQueued = 2; // 公会面板
-      }
-      if (e.code === 'Enter') {
-        this.socialToggleQueued = 3; // 聊天面板
-        e.preventDefault();
-      }
-      // 技能栏热键：1-9 数字 → 槽 1-9；0/-/= → 槽 10/11/12；Q/R/T/Y → 槽 13-16
-      if (e.code.startsWith('Digit')) {
-        const n = parseInt(e.code.slice(5), 10);
-        if (n >= 1 && n <= 9) this.skillQueued = n;
-      } else if (e.code === 'Digit0') {
-        this.skillQueued = 10;
-      } else if (e.code === 'Minus') {
-        this.skillQueued = 11;
-      } else if (e.code === 'Equal') {
-        this.skillQueued = 12;
-      } else if (e.code === 'KeyQ') {
-        this.skillQueued = 13;
-      } else if (e.code === 'KeyR') {
-        this.skillQueued = 14;
-      } else if (e.code === 'KeyT') {
-        this.skillQueued = 15;
-      } else if (e.code === 'KeyY') {
-        this.skillQueued = 16;
-      }
-      this.keys.add(e.code);
-      // 阻止方向键滚动页面
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
-        e.preventDefault();
-      }
-    });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
   }
-  /** 设置地形渲染器引用（boot.js 初始化后调用） */
-  setTerrainRenderer(tr) {
-    this.terrainRenderer = tr;
+  /** 设置渲染器引用（boot.js 初始化后调用） */
+  setRenderer(r) {
+    this.renderer = r;
   }
-  /** 鼠标点击移动：canvas 右键/左键点击地面 → 世界坐标目标 */
+  /** 鼠标点击/长按移动：左键点击自动寻路，长按拖拽持续更新路径 */
   _setupClickToMove() {
-    this.dom.addEventListener('click', (e) => {
-      if (!this.terrainRenderer) return;
-      // 忽略 UI 元素上的点击
+    const toWorld = (e) => {
+      const rect = this.dom.getBoundingClientRect();
+      return this.renderer.s2w(e.clientX - rect.left, e.clientY - rect.top);
+    };
+    // 左键按下：开始跟踪 + 自动寻路到点击位置
+    // 注意：直接检查 e.button，不用 keybinds.poll()（canvas 监听器先于 window 触发，poll 会拿不到未写入的信号）
+    this.dom.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || !this.renderer) return;
       if (e.target !== this.dom) return;
-      const rect = this.dom.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      const world = this.terrainRenderer.s2w(px, py);
-      this.clickTarget = { x: world.x, z: world.z };
+      this._mouseHeld = true;
+      this._lastMouseScreen = { x: e.clientX, y: e.clientY };
+      const w = toWorld(e);
+      this.clickTarget = { x: w.x, z: w.z };
+      if (this.renderer) this.renderer.addClickRipple(w.x, w.z);
+      if (this.renderer) this._lastCamForTarget = { x: this.renderer.cam.cx, z: this.renderer.cam.cz };
+      // 启动长按波纹间隔（每 400ms 在当前位置绘制波纹）
+      this._rippleInterval = setInterval(() => {
+        if (this._mouseHeld && this.renderer && this.clickTarget) {
+          this.renderer.addClickRipple(this.clickTarget.x, this.clickTarget.z);
+        }
+      }, 400);
     });
-    // 右键也支持（兼容习惯）
-    this.dom.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      if (!this.terrainRenderer) return;
-      const rect = this.dom.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      const world = this.terrainRenderer.s2w(px, py);
-      this.clickTarget = { x: world.x, z: world.z };
+    // 鼠标移动：按住时持续更新目标（10ms 节流，降低操作频率）
+    window.addEventListener('mousemove', (e) => {
+      if (!this._mouseHeld || !this.renderer) return;
+      const now = performance.now();
+      if (now - this._lastMoveThrottle < 10) return;
+      this._lastMoveThrottle = now;
+      this._lastMouseScreen = { x: e.clientX, y: e.clientY };
+      const w = toWorld(e);
+      this.clickTarget = { x: w.x, z: w.z };
+      if (this.renderer) this._lastCamForTarget = { x: this.renderer.cam.cx, z: this.renderer.cam.cz };
+    });
+    // 鼠标释放：停止拖拽，但保留路径（角色继续走向终点）
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return;
+      if (this._mouseHeld) {
+        this._mouseHeld = false;
+        if (this._rippleInterval) { clearInterval(this._rippleInterval); this._rippleInterval = null; }
+      }
     });
   }
-  isDown(...codes) {
-    return codes.some((c) => this.keys.has(c));
+  /** @deprecated 相机补偿已移入 moveVector 内部，保留空方法兼容 */
+  updateTargetForCamera() {}
+  /**
+   * 内部：根据保存的屏幕坐标 + 当前相机位置重新计算 clickTarget
+   * 不依赖 renderer.s2w（其相机状态可能未更新），直接用正交投影反公式
+   */
+  _recalcTargetFromScreen(camX, camZ) {
+    if (!this._lastMouseScreen || !this.renderer) return;
+    const scale = this.renderer.cam.zoom * 10; // BASE_PX_PER_UNIT = 10，与 canvas-renderer 一致
+    const cw = this.dom.clientWidth;
+    const ch = this.dom.clientHeight;
+    const rect = this.dom.getBoundingClientRect();
+    const sx = this._lastMouseScreen.x - rect.left;
+    const sy = this._lastMouseScreen.y - rect.top;
+    this.clickTarget = {
+      x: (sx - cw / 2) / scale + camX,
+      z: (sy - ch / 2) / scale + camZ,
+    };
   }
   /**
-   * 计算世界坐标移动向量（固定俯视：屏幕上方 = -z，右侧 = +x）
-   * @param {Object} [selfPos] - 当前角色世界坐标 {x, z}（用于点击移动方向计算）
+   * 计算移动向量（A* 自动寻路 / 长按跟随）
+   * @param {Object} selfPos - 当前角色世界坐标 {x, y, z}
+   * @param {number} camX - 当前相机 X（用于长按时补偿相机移动）
+   * @param {number} camZ - 当前相机 Z
    * 返回 { x, z }，归一化到 [-1,1]
    */
-  moveVector(selfPos) {
-    // 键盘输入优先
-    let vert = 0;
-    let strafe = 0;
-    if (this.isDown('KeyW', 'ArrowUp')) vert += 1;
-    if (this.isDown('KeyS', 'ArrowDown')) vert -= 1;
-    if (this.isDown('KeyD', 'ArrowRight')) strafe += 1;
-    if (this.isDown('KeyA', 'ArrowLeft')) strafe -= 1;
-    if (vert !== 0 || strafe !== 0) {
-      let mx = strafe;   // 右 = +x
-      let mz = -vert;    // 上 = -z
-      const len = Math.hypot(mx, mz);
-      if (len > 1) { mx /= len; mz /= len; }
-      return { x: mx, z: mz };
-    }
-    // 鼠标点击移动：朝目标点方向
-    if (this.clickTarget && selfPos) {
-      const dx = this.clickTarget.x - selfPos.x;
-      const dz = this.clickTarget.z - selfPos.z;
-      const dist = Math.hypot(dx, dz);
-      // 到达阈值（0.3m）：停止移动，清除目标
-      if (dist < 0.3) {
-        this.clickTarget = null;
-        return { x: 0, z: 0 };
+  moveVector(selfPos, camX, camZ) {
+    if (!selfPos) return { x: 0, z: 0 };
+    // 长按跟随：相机移动后，用当前相机位置重新计算目标（在计算方向之前）
+    if (this._mouseHeld && this._lastMouseScreen && this._lastCamForTarget &&
+        camX !== undefined && camZ !== undefined) {
+      const dx = camX - this._lastCamForTarget.x;
+      const dz = camZ - this._lastCamForTarget.z;
+      if (Math.abs(dx) >= 0.01 || Math.abs(dz) >= 0.01) {
+        this._recalcTargetFromScreen(camX, camZ);
+        this._lastCamForTarget = { x: camX, z: camZ };
       }
-      return { x: dx / dist, z: dz / dist };
     }
-    return { x: 0, z: 0 };
+    // 有目标 → 根据距离决定策略
+    if (this.clickTarget) {
+      const dist = Math.hypot(
+        this.clickTarget.x - selfPos.x,
+        this.clickTarget.z - selfPos.z
+      );
+      
+      // 短距离（战斗/微操场景 < 8m）：直接直线移动，零延迟
+      if (dist < 8.0) {
+        this.pathfinder.clear(); // 清除旧路径，避免干扰
+        if (dist < 0.3) {
+          this.clickTarget = null;
+          return { x: 0, z: 0 };
+        }
+        const dx = this.clickTarget.x - selfPos.x;
+        const dz = this.clickTarget.z - selfPos.z;
+        return { x: dx / dist, z: dz / dist };
+      }
+      
+      // 长距离：使用 A* 寻路绕开障碍
+      const dest = this.pathfinder.getDestination();
+      if (!this.pathfinder.hasPath() ||
+          !dest || Math.hypot(dest.x - this.clickTarget.x, dest.z - this.clickTarget.z) > 5.0) {
+        this.pathfinder.moveTo(selfPos.x, selfPos.z, this.clickTarget.x, this.clickTarget.z);
+      }
+    }
+    // 沿路径跟随
+    const mv = this.pathfinder.getMoveVector(selfPos.x, selfPos.z);
+    // 路径走完了——仅在鼠标未按住时清除目标（按住时保留以实现持续跟随）
+    if (!this.pathfinder.hasPath() && !this._mouseHeld) {
+      this.clickTarget = null;
+    }
+    return mv;
   }
-  /** 消费跳跃边沿信号 */
-  takeJump() {
-    const j = this.jumpQueued;
-    this.jumpQueued = false;
-    return j;
-  }
-  /** 消费攻击边沿信号（J） */
-  takeAttack() {
-    const a = this.attackQueued;
-    this.attackQueued = false;
-    return a;
-  }
-  /** 消费打开商店信号（B） */
-  takeShop() {
-    const s = this.shopQueued;
-    this.shopQueued = false;
-    return s;
-  }
+
+  // ═══════════ 消费 API（转发到 KeybindManager） ═══════════
+
+  /** 消费攻击信号（J） */
+  takeAttack() { return this.keybinds.poll('ATTACK'); }
+  /** 消费 NPC 交互信号（G） */
+  takeInteract() { return this.keybinds.poll('INTERACT'); }
+  /** 消费打开商店信号（B，已废弃） */
+  takeShop() { return this.keybinds.poll('SHOP'); }
   /** 消费背包面板切换信号（I） */
-  takeInvToggle() {
-    const s = this.invToggleQueued;
-    this.invToggleQueued = false;
-    return s;
-  }
+  takeInvToggle() { return this.keybinds.poll('INVENTORY'); }
   /** 消费主动拾取信号（E） */
-  takePickup() {
-    const s = this.pickupQueued;
-    this.pickupQueued = false;
-    return s;
-  }
+  takePickup() { return this.keybinds.poll('PICKUP'); }
   /** 消费任务面板切换信号（L） */
-  takeQuestToggle() {
-    const s = this.questToggleQueued;
-    this.questToggleQueued = false;
-    return s;
-  }
-  /** 消费社交面板切换信号（F/G/Enter） */
+  takeQuestToggle() { return this.keybinds.poll('QUEST'); }
+  /** 消费 3D 参考网格切换信号（H） */
+  takeGridToggle() { return this.keybinds.poll('GRID'); }
+  /** 消费社交面板切换信号（F=1 / Enter=3） */
   takeSocialToggle() {
-    const n = this.socialToggleQueued;
-    this.socialToggleQueued = 0;
-    return n;
+    if (this.keybinds.poll('FRIENDS')) return 1;
+    if (this.keybinds.poll('CHAT')) return 3;
+    return 0;
   }
-  /** 消费技能栏热键信号（数字 1-8 → 技能槽位） */
+  /** 消费技能栏热键信号（1-16 槽位） */
   takeSkillSlot() {
-    const n = this.skillQueued;
-    this.skillQueued = 0;
-    return n;
+    for (let i = 1; i <= 16; i++) {
+      if (this.keybinds.poll('SKILL_' + i)) return i;
+    }
+    return 0;
   }
 }

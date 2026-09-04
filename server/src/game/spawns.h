@@ -4,7 +4,9 @@
 // 剧本编辑器可通过 GET/POST /api/spawns(/edit) 读写；服务端保存后热重载（reseed）。
 #include <string>
 #include <vector>
+#include <cstdint>
 #include "../config.h"
+#include "npc.h"   // NpcTag 枚举定义在 NPC 插件头文件
 
 namespace ew {
 
@@ -23,6 +25,11 @@ struct SpawnPoint {
   int shopId = 0;             // NPC 商店 id（0=无）
   double x = 0, z = 0;
   int count = 1;              // 该点刷怪数量（monster）
+  // NPC 扩展字段
+  std::string npcId;          // NPC 唯一 ID（引用 NpcManager 中的 NpcDef，空=旧模式按 name）
+  uint32_t npcTag = 0;        // NPC 标签位标志（NpcTag 组合，0=无标签）
+  int npcGroup = 0;           // NPC 组别号
+  int cityId = -1;            // 所属城市标号（-1=无绑定）
 };
 
 // 出生点配置表

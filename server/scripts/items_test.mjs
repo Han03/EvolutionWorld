@@ -5,8 +5,8 @@
  *  1) 注册登录 → 校验初始 INVENTORY(gold=0/背包空) + STATS(攻12/防3)
  *  2) 打怪 → 掉落 → 拾取（验证击杀/掉落/拾取链路）
  *  3) teleport 到商店 NPC(6,6) → SHOP_OPEN → 校验 SHOP 帧商品
- *  4) SHOP_BUY 铁剑(1502,40金) → 校验金币扣减 + 背包增加
- *  5) EQUIP 武器槽(6) → 校验 STATS 攻击提升（+5）
+ *  4) SHOP_BUY 铁剑(1502,40金) → 校验金币扣减 + 背包装备实例(equipBag)增加
+ *  5) EQUIP 武器槽(6) 按 instId 穿戴 → 校验 STATS 攻击提升（+5）
  *  6) 购买并使用小血瓶(2001) → 校验 HP 恢复
  *
  * 确定性保障（借助游戏内控制台测试命令，去除不可预测/耗时操作）：
@@ -18,8 +18,9 @@
  * 需要服务端 EW_DEBUG=1 运行（依赖 /api/debug/teleport 与 /api/console）
  */
 import { encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, parseS2C, MSG, KIND, EVT } from '../../client/js/protocol.js';
-const BASE = 'http://localhost:3000';
-const WS = 'ws://localhost:3000/ws';
+// 默认 localhost；可用 EW_TEST_BASE 覆盖（如 Windows→WSL2 localhost 转发失效时改用 WSL IP）。
+const BASE = process.env.EW_TEST_BASE || 'http://localhost:3000';
+const WS = process.env.EW_TEST_WS || (BASE.replace(/^http/, 'ws') + '/ws');
 const UN = 'itemtest' + Math.floor(Math.random() * 100000);
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') {
@@ -148,7 +149,7 @@ async function main() {
   await wait(() => gotHello && inventory && stats, 3000);
   check('初始 HELLO', gotHello);
   check('初始金币=0', inventory && inventory.gold === 0, `gold=${inventory && inventory.gold}`);
-  check('初始背包空', inventory && Object.keys(inventory.inventory).length === 0);
+  check('初始背包空', inventory && Object.keys(inventory.inventory).length === 0 && (inventory.equipBag || []).length === 0);
   check('初始攻击=12', stats && stats.attack === 12, `atk=${stats && stats.attack}`);
   check('初始防御=3', stats && stats.defense === 3, `def=${stats && stats.defense}`);
 
@@ -159,12 +160,16 @@ async function main() {
   check('击杀怪物产生掉落', killed && dropSeen > 0, `dropSeen=${dropSeen}`);
   check('拾取获得金币(≥1)', inventory && inventory.gold >= 1, `gold=${inventory && inventory.gold}`);
 
-  // 3) 商店：teleport 到商店 NPC (6,6)
+  // 3) 商店：teleport 到主城，按 SHOP 标签查找商店 NPC
+  //    （NPC 插件重构后商店 NPC 名为「杂货商人/药草商人」，不再含「商店」；用 npcTag 位判定更稳健）
   await tp(6, 6);
-  await wait(() => [...known.values()].some((e) => e.kind === KIND.NPC && e.name && e.name.indexOf('商店') !== -1), 1500);
-  const npc = [...known.values()].find((e) => e.kind === KIND.NPC && e.name && e.name.indexOf('商店') !== -1);
+  const NPC_TAG_SHOP = 4;
+  await wait(() => [...known.values()].some((e) => e.kind === KIND.NPC && (e.npcTag & NPC_TAG_SHOP)), 1500);
+  const npc = [...known.values()].find((e) => e.kind === KIND.NPC && (e.npcTag & NPC_TAG_SHOP));
   check('商店 NPC 可见', !!npc, npc ? npc.name : '');
   if (npc) {
+    await tp(npc.x, npc.z);   // 贴近 NPC（openShop 校验 4m 交互距离，(6,6) 距商人 >4m）
+    await sleep(120);
     send(encodeShopOpen(npc.wid));
     await wait(() => shop, 2000);
     check('收到 SHOP 帧', !!shop);
@@ -172,31 +177,35 @@ async function main() {
     check('商店含铁剑(1502)', shop && shop.entries.some((e) => e.itemId === 1502));
   }
 
-  // 4) 购买铁剑 1502（控制台直接发金币，替代耗时且 RNG 的刷怪攒钱循环）
+  // 4) 购买铁剑 1502（装备实例化：进入 equipBag，不再是 inventory 堆叠）
   await consoleCmd('gold 200');
   await wait(() => inventory && inventory.gold >= 40, 1500);
   check('发放金币≥40', inventory && inventory.gold >= 40, `gold=${inventory && inventory.gold}`);
   if (inventory && inventory.gold >= 40) {
     const goldBefore = inventory.gold;
+    const bagBefore = (inventory.equipBag || []).filter((it) => it.itemId === 1502).length;
     send(encodeShopBuy(1502, 1));
-    await wait(() => inventory && inventory.inventory[1502], 2000);
-    check('购买铁剑成功(金币扣减+背包)', !!(inventory && inventory.inventory[1502]),
-      `gold ${goldBefore} -> ${inventory && inventory.gold} inv1502=${inventory && inventory.inventory[1502]}`);
+    await wait(() => inventory && (inventory.equipBag || []).filter((it) => it.itemId === 1502).length > bagBefore, 2000);
+    const bagAfter = (inventory.equipBag || []).filter((it) => it.itemId === 1502).length;
+    check('购买铁剑成功(金币扣减+背包装备实例)',
+      bagAfter > bagBefore && inventory.gold === goldBefore - 40,
+      `gold ${goldBefore}->${inventory.gold} bag1502 ${bagBefore}->${bagAfter}`);
   } else {
-    check('购买铁剑成功(金币扣减+背包)', false, '金币不足');
+    check('购买铁剑成功(金币扣减+背包装备实例)', false, '金币不足');
   }
 
-  // 5) 穿戴铁剑 → 攻击 +5
+  // 5) 穿戴铁剑 → 攻击 +5（按实例 instId 穿戴）
   //    铁剑(1502) levelReq=3，初始 1 级不可装备；用 level 命令确定性提到 3 级（免刷怪升级）
   await consoleCmd('level 3');
   await wait(() => stats && stats.attack === 18, 2000); // baseAtk=12+(3-1)*3=18
-  if (inventory && inventory.inventory[1502]) {
+  const swordInst = inventory && (inventory.equipBag || []).find((it) => it.itemId === 1502);
+  if (swordInst) {
     const atkBefore = stats.attack;
-    send(encodeEquip(6, 1502));
+    send(encodeEquip(6, swordInst.instId));   // 实例化：按 instId 穿戴
     await wait(() => stats && stats.attack === atkBefore + 5, 2000);
     check('穿戴铁剑攻击+5', stats && stats.attack === atkBefore + 5, `atk ${atkBefore} -> ${stats && stats.attack}`);
   } else {
-    console.log('  [skip] 无铁剑，跳过 EQUIP 校验');
+    console.log('  [skip] 无铁剑实例，跳过 EQUIP 校验');
   }
 
   // 6) 购买并使用小血瓶 2001 → HP 恢复（sethp 确定性压低当前 HP；怪物冻结不干扰）

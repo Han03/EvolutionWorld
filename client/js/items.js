@@ -21,11 +21,17 @@ export const ICON_MAP = {
   weapon1: '⚔', weapon2: '🗡', weapon3: '🔥',
   hp1: '🧪', hp2: '🧪', mp1: '🔵', mp2: '🔵',
   fang: '🦷', badge: '🎖', bone: '🦴', core: '💎',
+  estone: '🔩', protect: '🧿',
+  iron: '🪨', steel: '⚙️', crystal: '🔮', scale: '🐉', starcore: '🌟',
 };
 
 /** 运行时游戏数据（启动时从 /api/gamedata 拉取，覆盖静态镜像 ITEM_DEFS） */
 export let RUNTIME_ITEMS = {};    // id -> itemDef（已转换 slot/icon）
 export let RUNTIME_MONSTERS = {}; // type -> monsterDef
+export let RUNTIME_ENHANCE = null; // 强化配置（maxLevel/stoneItemId/protectStoneItemId/attrPerLevel*/levels[]）
+export let RUNTIME_DECOMPOSE = null; // 分解配置（stoneItemId/rules[{rarity,goldReturnRate,enhanceStoneRate,results[]}]）
+export let RUNTIME_CRAFT = null;   // 合成配方表（recipes[{recipeId,name,npcTag,resultItemId,resultCount,goldCost,levelReq,hidden,materials[]}]）
+export let RUNTIME_WAREHOUSE = null; // 仓库配置（initialSlots/slotsPerPage/maxSlots/expandBaseCost/expandCostMul/maxGold）
 
 /** itemId -> { name, type, slot, icon, price, hpBonus, mpBonus, attackBonus, defenseBonus, restoreHp, restoreMp } */
 export let ITEM_DEFS = {
@@ -50,6 +56,13 @@ export let ITEM_DEFS = {
   3002: { name: '哥布林徽记', type: 'quest', icon: '🎖', price: 8 },
   3003: { name: '骷髅碎片', type: 'quest', icon: '🦴', price: 12 },
   3004: { name: '石像鬼之核', type: 'quest', icon: '💎', price: 25 },
+  4001: { name: '铁屑', type: 'material', icon: '🪨', price: 3 },
+  4002: { name: '精钢碎片', type: 'material', icon: '⚙️', price: 8 },
+  4003: { name: '魔晶', type: 'material', icon: '🔮', price: 20 },
+  4004: { name: '龙鳞', type: 'material', icon: '🐉', price: 50 },
+  4005: { name: '星辰核心', type: 'material', icon: '🌟', price: 120 },
+  4006: { name: '强化石', type: 'material', icon: '🔩', price: 50 },
+  4007: { name: '保护符', type: 'material', icon: '🧿', price: 200 },
 };
 
 /** icon 解析：字符串键 → emoji；未命中且本身非空则原样（兼容直接填 emoji） */
@@ -68,7 +81,7 @@ export function itemIcon(id) {
   return itemDef(id).icon;
 }
 export function typeName(t) {
-  return { equip: '装备', consumable: '消耗品', quest: '任务道具' }[t] || t;
+  return { equip: '装备', consumable: '消耗品', quest: '任务道具', material: '材料' }[t] || t;
 }
 /** 品质（按物品 rarity）：名称/颜色 */
 export function itemRarity(id) {
@@ -98,6 +111,54 @@ export function monsterDef(type) {
 }
 export function monsterName(type) {
   return monsterDef(type).name;
+}
+/** 强化配置（来自 /api/gamedata 的 enhance 字段；未加载时返回 null） */
+export function enhanceConfig() { return RUNTIME_ENHANCE; }
+/** 目标等级(当前+1)的强化定义；越界/未加载返回 null */
+export function enhanceLevelDef(targetLevel) {
+  if (!RUNTIME_ENHANCE || !Array.isArray(RUNTIME_ENHANCE.levels)) return null;
+  return RUNTIME_ENHANCE.levels[targetLevel - 1] || null;
+}
+/** 强化属性倍率：base ×(1 + enhance × 每级系数)；attr='atk'|'def'|'hp'（与服务端 recomputeStats 对齐） */
+export function enhanceMultiplier(enhance, attr) {
+  if (!RUNTIME_ENHANCE || !enhance) return 1;
+  const k = attr === 'atk' ? RUNTIME_ENHANCE.attrPerLevelAtk
+          : attr === 'def' ? RUNTIME_ENHANCE.attrPerLevelDef
+          : attr === 'hp' ? RUNTIME_ENHANCE.attrPerLevelHp : 0;
+  return 1 + enhance * (k || 0);
+}
+/** 分解配置（来自 /api/gamedata 的 decompose 字段；未加载返回 null） */
+export function decomposeConfig() { return RUNTIME_DECOMPOSE; }
+/** 品质 → 分解规则（越界钳制到有效档；未加载/无规则返回 null） */
+export function decomposeRule(rarity) {
+  if (!RUNTIME_DECOMPOSE || !Array.isArray(RUNTIME_DECOMPOSE.rules) || !RUNTIME_DECOMPOSE.rules.length) return null;
+  const rules = RUNTIME_DECOMPOSE.rules;
+  let r = rarity | 0;
+  if (r < 0) r = 0;
+  if (r >= rules.length) r = rules.length - 1;
+  return rules[r] || null;
+}
+/** 合成配方表（来自 /api/gamedata 的 craft 字段；未加载返回 null） */
+export function craftConfig() { return RUNTIME_CRAFT; }
+/** 全部配方数组（未加载返回空数组） */
+export function craftRecipes() {
+  return (RUNTIME_CRAFT && Array.isArray(RUNTIME_CRAFT.recipes)) ? RUNTIME_CRAFT.recipes : [];
+}
+/** recipeId → 配方（未加载/不存在返回 null） */
+export function craftRecipe(recipeId) {
+  return craftRecipes().find((r) => (r.recipeId | 0) === (recipeId | 0)) || null;
+}
+/** 仓库配置（来自 /api/gamedata 的 warehouse 字段；未加载返回 null） */
+export function warehouseConfig() { return RUNTIME_WAREHOUSE; }
+/** 扩展费用（1000×1.5^n，n=已扩展页数）；已满 maxSlots 返回 0（与服务端 expandCost 对齐） */
+export function warehouseExpandCost(unlocked) {
+  const c = RUNTIME_WAREHOUSE;
+  if (!c) return 0;
+  const maxSlots = c.maxSlots | 0, initial = c.initialSlots | 0, perPage = c.slotsPerPage | 0;
+  if (!initial || !perPage || unlocked >= maxSlots) return 0;
+  const u = unlocked > 0 ? unlocked : initial;
+  const n = u > initial ? Math.floor((u - initial) / perPage) : 0;
+  return Math.floor((c.expandBaseCost | 0) * Math.pow(c.expandCostMul || 1.5, n));
 }
 /**
  * 应用服务端游戏数据（启动时 fetch('/api/gamedata') 后调用）。
@@ -137,6 +198,22 @@ export function applyGameData(data) {
       nm[type] = Object.assign({ type }, data.monsters[type]);
     }
     RUNTIME_MONSTERS = nm;
+  }
+  // 强化配置（阶段2）：15 级消耗/成功率表 + 属性系数，供强化面板展示与本地属性预估
+  if (data.enhance && typeof data.enhance === 'object' && Array.isArray(data.enhance.levels)) {
+    RUNTIME_ENHANCE = data.enhance;
+  }
+  // 分解配置（阶段3）：按品质 5 档规则，供分解面板预览产出（材料/金币/强化石）
+  if (data.decompose && typeof data.decompose === 'object' && Array.isArray(data.decompose.rules)) {
+    RUNTIME_DECOMPOSE = data.decompose;
+  }
+  // 合成配方（阶段4）：配方表（材料/产出/等级/隐藏），供合成面板展示与材料需求预览
+  if (data.craft && typeof data.craft === 'object' && Array.isArray(data.craft.recipes)) {
+    RUNTIME_CRAFT = data.craft;
+  }
+  // 仓库配置（阶段5）：页数/格子/扩展费用/存金上限，供仓库面板展示扩展按钮与费用预估
+  if (data.warehouse && typeof data.warehouse === 'object' && (data.warehouse.initialSlots | 0) > 0) {
+    RUNTIME_WAREHOUSE = data.warehouse;
   }
 }
 /** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示） */

@@ -41,6 +41,31 @@ public:
   bool cacheGet(const std::string&, std::string&) override { return false; }
   bool cacheDel(const std::string&) override { return false; }
 
+  // ---- 社交系统：好友 ----
+  bool addFriend(const std::string& a, const std::string& b) override;
+  bool removeFriend(const std::string& a, const std::string& b) override;
+  std::vector<std::pair<std::string, uint64_t>> loadFriends(const std::string& username) override;
+  bool addBlock(const std::string& a, const std::string& b) override;
+  bool removeBlock(const std::string& a, const std::string& b) override;
+  std::vector<std::string> loadBlocks(const std::string& username) override;
+
+  // ---- 社交系统：公会 ----
+  bool saveGuild(const GuildSave& g) override;
+  bool loadGuild(uint32_t guildId, GuildSave& out) override;
+  bool deleteGuild(uint32_t guildId) override;
+  bool saveGuildMembers(uint32_t guildId, const std::string& membersJson) override;
+  std::string loadGuildMembers(uint32_t guildId) override;
+  std::vector<uint32_t> loadAllGuildIds() override;
+
+  // ---- 任务系统 ----
+  bool saveQuests(const std::string& username, const std::string& questsJson) override;
+  std::string loadQuests(const std::string& username) override;
+
+  // ---- 批量加载（启动时填充内存后端用）----
+  std::vector<std::tuple<std::string, std::string, uint64_t>> loadAllFriends();
+  std::vector<std::pair<std::string, std::string>> loadAllBlocks();
+  std::vector<std::pair<uint32_t, std::string>> loadAllGuildMembers();
+
 private:
   StoreConfig sc_;
   std::unique_ptr<MysqlImpl> impl_;

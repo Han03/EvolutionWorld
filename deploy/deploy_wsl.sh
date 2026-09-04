@@ -13,8 +13,8 @@
 #      UTF-8 输出会乱码，中文只出现在注释里。
 #   2. 进程管理完全绕开 systemd（systemctl 在 WSL2 多会话下会因 D-Bus 争用挂死），
 #      统一用 pkill -9 停止、nohup + disown 启动。
-#   3. 默认保留 /opt/evolutionworld/server/data 运行时数据（账号 users.json、
-#      地形编辑 terrain_edit.json、出生点 spawns.json），与 CI 的整目录 rm -rf 不同。
+#   3. 默认保留 /opt/evolutionworld/server/data 运行时配置（地形编辑 terrain_edit.json），
+#      与 CI 的整目录 rm -rf 不同。账号/出生点已改为内存模式，不再持久化到文件。
 # ============================================================================
 set -uo pipefail
 
@@ -111,7 +111,7 @@ SRC="${SRC%/}"
 DEST="${DEST%/}"
 
 # 运行时数据文件：部署时不得覆盖（由服务端在线编辑/落盘产生）
-RUNTIME_DATA_FILES="users.json terrain_edit.json spawns.json"
+RUNTIME_DATA_FILES="terrain_edit.json"
 # 纯配置文件：仓库里存在则同步过去（服务端有内置兜底，缺失不影响功能）
 CONFIG_DATA_FILES="items.json monsters.json shop.json skills.json"
 
@@ -216,6 +216,16 @@ stop_server() {
   warn "port $PORT still in use after 10s"
   ss -tlnp 2>/dev/null | grep ":$PORT " || true
   return 1
+}
+
+# ---- 构建客户端 ----
+build_client() {
+  step "Building client (Vite + Three.js)"
+  command -v npm >/dev/null 2>&1 || fail "npm not found (install Node.js >= 18)"
+  ( cd "$SRC" && npm install ) || fail "npm install failed"
+  ( cd "$SRC" && npm run build:client ) || fail "vite build failed"
+  [ -d "$SRC/client/dist" ] || fail "client/dist not produced"
+  ok "client build succeeded"
 }
 
 # ---- 构建 ----
@@ -414,7 +424,9 @@ if [ "$SKIP_BUILD" = "1" ]; then
   step "Skipping build (--skip-build)"
   [ -f "$SRC/server/build/evolution_server" ] || fail "no binary at $SRC/server/build/evolution_server - run once without --skip-build"
   ls -la "$SRC/server/build/evolution_server"
+  [ -d "$SRC/client/dist" ] || fail "no client/dist found - run once without --skip-build"
 else
+  build_client
   build_server
 fi
 

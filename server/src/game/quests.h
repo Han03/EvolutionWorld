@@ -79,6 +79,7 @@ enum QuestResult : uint8_t {
   QUEST_ERR_NPC_RANGE = 8,       // 不在 NPC 交互范围
   QUEST_ERR_COOLDOWN = 9,        // 日常冷却中
   QUEST_ERR_NOT_REPEATABLE = 10, // 不可重复
+  QUEST_ERR_NOT_GIVER = 11,      // 不在任务发布者 NPC 范围
 };
 
 // ---------- 任务模板（数据驱动，按 ID 管理） ----------
@@ -88,12 +89,14 @@ struct QuestDef {
   std::string desc;
   QuestCategory category = QuestCategory::SIDE;
   int levelReq = 1;                         // 接取等级要求
-  std::vector<uint32_t> prerequisites;      // 前置任务 ID
+  std::vector<uint32_t> prerequisites;      // 前置任务 ID（链式任务：全部完成才可接）
   std::vector<QuestObjective> objectives;
   QuestReward rewards;
   uint32_t dailyCooldownSec = 0;            // 日常任务重置冷却（秒）
   uint32_t repeatLimit = 0;                 // 可重复次数上限（0=无限）
-  uint32_t talkNpcWid = 0;                  // 接取/提交 NPC 的 wid（0=任意）
+  uint32_t talkNpcWid = 0;                  // 提交 NPC 的 wid（0=任意 NPC 可提交）
+  uint32_t giverNpcWid = 0;                 // 发布任务 NPC 的 wid（0=任意 NPC 可接取）
+  std::vector<uint32_t> nextQuestIds;       // 完成后自动解锁的后续任务 ID（链式任务）
   bool autoTrack = true;                    // 接受后自动追踪
   // 显示辅助
   static const char* categoryName(QuestCategory c);
@@ -120,8 +123,8 @@ public:
   const QuestDef* questDef(uint32_t id) const;
   const std::unordered_map<uint32_t, QuestDef>& quests() const { return quests_; }
 
-  // 玩家操作（服务端权威校验）
-  QuestResult acceptQuest(const std::string& playerId, uint32_t questId);
+  // 玩家操作（服务端权威校验，npcWid 用于 NPC 距离/绑定校验，0=跳过）
+  QuestResult acceptQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid = 0);
   QuestResult abandonQuest(const std::string& playerId, uint32_t questId);
   QuestResult turnInQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid);
 
@@ -135,15 +138,18 @@ public:
   void tick(double dt);
 
   // 网络帧（供 World/Netcode 调用）
-  std::string questListFrame(const Entity& p) const;
+  std::string questListFrame(const Entity& p, uint32_t npcWid = 0) const;
   std::string questProgressFrame(const Entity& p) const;
   std::string questResultFrame(uint8_t op, uint8_t code, uint32_t questId) const;
   std::string questNotifyFrame(uint32_t questId, uint8_t objIndex,
                                uint32_t current, uint32_t required, bool allComplete) const;
   std::string questCompleteFrame(uint32_t questId) const;
+  // 链式任务解锁通知帧（任务完成后自动解锁的后续任务 ID 列表）
+  std::string questChainFrame(uint32_t completedQuestId,
+                              const std::vector<uint32_t>& nextIds) const;
 
-  // 可接任务列表（基于前置/等级/冷却）
-  std::vector<const QuestDef*> availableQuests(const Entity& p) const;
+  // 可接任务列表（基于前置/等级/冷却；npcWid>0 时仅返回该 NPC 发布的任务）
+  std::vector<const QuestDef*> availableQuests(const Entity& p, uint32_t npcWid = 0) const;
 
   // 活跃任务中可提交的（目标全部完成）
   std::vector<const ActiveQuest*> completableQuests(const Entity& p) const;
@@ -160,6 +166,13 @@ public:
   void markQuestDirty(const std::string& playerId);
   const std::unordered_set<std::string>& questDirty() const { return questDirty_; }
   void clearQuestDirty() { questDirty_.clear(); }
+
+  // 链式任务：获取任务完成后解锁的后续任务 ID（供 server.cpp 在 turnIn 后调用）
+  std::vector<uint32_t> getNextQuestIds(uint32_t completedQuestId) const;
+
+  // 编辑器：序列化全部任务为 JSON 数组 / 热替换全部任务定义
+  std::string questsToJson() const;
+  bool replaceQuests(const Json& arr);
 
 private:
   World& world_;

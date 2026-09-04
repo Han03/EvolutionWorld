@@ -3,7 +3,7 @@
  * 数据传输方案：二进制帧 + 量化坐标 + AOI 进出 + 增量更新 + 校准快照
  * 扩展：输入上报携带预测位置 px/py/pz（防作弊校验），处理 SELF（回退）与 KICK。
  */
-import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, makeFrame, MSG, Writer } from './protocol.js';
+import { encodeInput, encodeAttack, encodeShopOpen, encodeShopBuy, encodeShopSell, encodeEnhance, encodeDecompose, encodeCraftList, encodeCraft, encodeWarehouseOpen, encodeWarehouseDeposit, encodeWarehouseWithdraw, encodeWarehouseExpand, encodePickup, encodeEquip, encodeUseItem, encodeCastSkill, encodeConsole, parseS2C, makeFrame, MSG, Writer, Reader } from './protocol.js';
 export class NetworkClient {
   constructor() {
     this.ws = null;
@@ -26,17 +26,26 @@ export class NetworkClient {
     this.onShop = null;      // 商店列表（S2C_SHOP）
     this.onInventory = null; // 背包/装备/金币（S2C_INVENTORY）
     this.onLoot = null;      // 拾取反馈（S2C_LOOT）
+    this.onSellResult = null; // 出售回收结果（S2C_SELL_RESULT）
+    this.onEnhance = null;    // 装备强化结果（S2C_ENHANCE）
+    this.onDecompose = null;  // 装备分解结果（S2C_DECOMPOSE）
+    this.onCraftList = null;  // 合成配方列表（S2C_CRAFT_LIST）
+    this.onCraft = null;      // 物品合成结果（S2C_CRAFT）
+    this.onWarehouse = null;  // 仓库全量数据（S2C_WAREHOUSE）
+    this.onWarehouseResult = null; // 仓库操作结果（S2C_WAREHOUSE_RESULT）
     this.onStats = null;     // 自身属性（S2C_STATS）
     this.onSkills = null;    // 已学技能 + 冷却（S2C_SKILLS）
     this.onSkillCast = null; // 技能施放反馈（S2C_SKILL_CAST）
     this.onBuffs = null;     // 自身 Buff（S2C_BUFFS）
     this.onConsole = null;   // 控制台结果（S2C_CONSOLE）
+    this.onTerrainDirty = null; // 地形数据已变更（S2C_TERRAIN_DIRTY）：需重拉 mask + 编辑层
     // 任务系统回调（S2C_QUEST_*，payload 为原始 Uint8Array，由 quests.js 解码）
     this.onQuestList = null;
     this.onQuestProgress = null;
     this.onQuestResult = null;
     this.onQuestComplete = null;
     this.onQuestNotify = null;
+    this.onQuestChain = null; // 链式任务解锁通知（S2C_QUEST_CHAIN）
     // 社交系统回调（S2C_FRIEND/GUILD/CHAT_*，已由 parseS2C 解码为对象）
     this.onFriendRequest = null;
     this.onFriendList = null;
@@ -112,6 +121,12 @@ export class NetworkClient {
     const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     this.bytesRx = (this.bytesRx || 0) + buf.length;
     if (this.onBytes) this.onBytes(buf.length);
+    // 两遍扫描：先处理 SELF（位置校正），再用校正后的 ref 解码实体位置。
+    // 原因：服务端实体位置以玩家权威位置为参考系做相对编码，客户端用 refX/refY/refZ
+    // （= 客户端预测位置）解码。当同一帧内同时包含 UPDATE + SELF 时，若按顺序处理，
+    // UPDATE 用旧 ref 解码 → 实体位置带系统性偏移 → 相机跟随校正后的玩家位置跳转 →
+    // 所有 NPC/怪物看起来整体位移。先处理 SELF 更新 ref 后，实体用正确参考系解码。
+    const msgs = [];
     let off = 0;
     while (off + 9 <= buf.length) {
       const m0 = buf[off], m1 = buf[off + 1];
@@ -121,8 +136,21 @@ export class NetworkClient {
       if (off + 9 + len > buf.length) break;
       const payload = buf.slice(off + 9, off + 9 + len);
       off += 9 + len;
-      this._dispatch(type, payload);
+      if (type === MSG.S2C_SELF) {
+        // 提前处理 SELF：解析权威位置并立即更新 ref，使后续实体解码用正确参考系
+        this._dispatch(type, payload);
+        try {
+          const r = new Reader(payload);
+          r.str(); // reason（跳过）
+          this.refX = r.i32() * 0.01;
+          this.refY = r.i16() * 0.01;
+          this.refZ = r.i32() * 0.01;
+        } catch (_) {}
+      } else {
+        msgs.push({ type, payload });
+      }
     }
+    for (const m of msgs) this._dispatch(m.type, m.payload);
   }
   _dispatch(type, payload) {
     try {
@@ -171,6 +199,27 @@ export class NetworkClient {
         case MSG.S2C_LOOT:
           if (this.onLoot) this.onLoot(msg);
           break;
+        case MSG.S2C_SELL_RESULT:
+          if (this.onSellResult) this.onSellResult(msg);
+          break;
+        case MSG.S2C_ENHANCE:
+          if (this.onEnhance) this.onEnhance(msg);
+          break;
+        case MSG.S2C_DECOMPOSE:
+          if (this.onDecompose) this.onDecompose(msg);
+          break;
+        case MSG.S2C_CRAFT_LIST:
+          if (this.onCraftList) this.onCraftList(msg);
+          break;
+        case MSG.S2C_CRAFT:
+          if (this.onCraft) this.onCraft(msg);
+          break;
+        case MSG.S2C_WAREHOUSE:
+          if (this.onWarehouse) this.onWarehouse(msg);
+          break;
+        case MSG.S2C_WAREHOUSE_RESULT:
+          if (this.onWarehouseResult) this.onWarehouseResult(msg);
+          break;
         case MSG.S2C_STATS:
           if (this.onStats) this.onStats(msg);
           break;
@@ -186,6 +235,9 @@ export class NetworkClient {
         case MSG.S2C_CONSOLE:
           if (this.onConsole) this.onConsole(msg);
           break;
+        case MSG.S2C_TERRAIN_DIRTY:
+          if (this.onTerrainDirty) this.onTerrainDirty(msg);
+          break;
         case MSG.S2C_QUEST_LIST:
           if (this.onQuestList) this.onQuestList(payload);
           break;
@@ -200,6 +252,9 @@ export class NetworkClient {
           break;
         case MSG.S2C_QUEST_NOTIFY:
           if (this.onQuestNotify) this.onQuestNotify(payload);
+          break;
+case MSG.S2C_QUEST_CHAIN:
+          if (this.onQuestChain) this.onQuestChain(payload);
           break;
         // ---- 社交系统 S2C 分发 ----
         case MSG.S2C_FRIEND_REQUEST:
@@ -247,14 +302,14 @@ export class NetworkClient {
     }
   }
   /**
-   * 发送输入（移动 + 跳跃 + 预测位置），二进制编码
+   * 发送位置上报（纯物理位置），二进制编码
    */
-  sendInput(moveX, moveZ, jump, pred) {
+  sendInput(pred) {
     if (!this.connected) return;
-    const frame = encodeInput(++this.seq, moveX, moveZ, jump, pred.x, pred.y, pred.z);
+    const frame = encodeInput(++this.seq, pred.x, pred.y, pred.z);
     if (!this._send(frame)) return;
     if (this.onProtocol) {
-      this.onProtocol('c2s', { type: 'INPUT', seq: this.seq, moveX, moveZ, jump, x: pred.x, y: pred.y, z: pred.z });
+      this.onProtocol('c2s', { type: 'INPUT', seq: this.seq, x: pred.x, y: pred.y, z: pred.z });
     }
   }
   /** 攻击世界实体（世界怪物/Boss） */
@@ -275,17 +330,72 @@ export class NetworkClient {
     this._send(encodeShopBuy(itemId, count));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'SHOP_BUY', itemId, count });
   }
+  /** 出售回收：isInstance=true 卖装备实例（instId），false 卖堆叠物品（itemId×count） */
+  sendShopSell(isInstance, instId, itemId, count = 1) {
+    if (!this.connected) return;
+    this._send(encodeShopSell(isInstance, instId, itemId, count));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'SHOP_SELL', isInstance, instId, itemId, count });
+  }
+  /** 装备强化：instId 目标装备实例，useProtect 是否消耗保护符防降级 */
+  sendEnhance(instId, useProtect = false) {
+    if (!this.connected) return;
+    this._send(encodeEnhance(instId, useProtect));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'ENHANCE', instId, useProtect });
+  }
+  /** 装备分解：instId 目标装备实例（需未穿戴、未锁定，且在铁匠附近） */
+  sendDecompose(instId) {
+    if (!this.connected) return;
+    this._send(encodeDecompose(instId));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'DECOMPOSE', instId });
+  }
+  /** 请求合成配方列表：npcWid 合成 NPC（服务端按标签+等级过滤） */
+  sendCraftList(npcWid) {
+    if (!this.connected) return;
+    this._send(encodeCraftList(npcWid));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'CRAFT_LIST', npcWid });
+  }
+  /** 物品合成：recipeId 配方 + count 批量数（装备恒为 1） */
+  sendCraft(recipeId, count = 1) {
+    if (!this.connected) return;
+    this._send(encodeCraft(recipeId, count));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'CRAFT', recipeId, count });
+  }
+  /** 打开仓库：npcWid 银行 NPC（需邻近且具 BANK 标签） */
+  sendWarehouseOpen(npcWid) {
+    if (!this.connected) return;
+    this._send(encodeWarehouseOpen(npcWid));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'WAREHOUSE_OPEN', npcWid });
+  }
+  /** 存金约定：itemId==0 视为金币（amount=count） */
+  /** 仓库存入：装备传 isInstance+instId；堆叠传 itemId+count；存金传 itemId=0+count */
+  sendWarehouseDeposit(isInstance, instId, itemId, count = 1) {
+    if (!this.connected) return;
+    this._send(encodeWarehouseDeposit(isInstance, instId, itemId, count));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'WAREHOUSE_DEPOSIT', isInstance, instId, itemId, count });
+  }
+  /** 仓库取出：与存入对称（装备 isInstance+instId；堆叠 itemId+count；取金 itemId=0+count） */
+  sendWarehouseWithdraw(isInstance, instId, itemId, count = 1) {
+    if (!this.connected) return;
+    this._send(encodeWarehouseWithdraw(isInstance, instId, itemId, count));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'WAREHOUSE_WITHDRAW', isInstance, instId, itemId, count });
+  }
+  /** 仓库扩展：无参数（服务端扣金并递增 unlocked） */
+  sendWarehouseExpand() {
+    if (!this.connected) return;
+    this._send(encodeWarehouseExpand());
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'WAREHOUSE_EXPAND' });
+  }
   /** 拾取地面掉落物 */
   sendPickup(dropWid) {
     if (!this.connected || !dropWid) return;
     this._send(encodePickup(dropWid));
     if (this.onProtocol) this.onProtocol('c2s', { type: 'PICKUP', dropWid });
   }
-  /** 穿戴/卸下装备 */
-  sendEquip(slot, itemId) {
+  /** 穿戴/卸下装备（instId=装备实例 ID，0=卸下） */
+  sendEquip(slot, instId) {
     if (!this.connected) return;
-    this._send(encodeEquip(slot, itemId));
-    if (this.onProtocol) this.onProtocol('c2s', { type: 'EQUIP', slot, itemId });
+    this._send(encodeEquip(slot, instId));
+    if (this.onProtocol) this.onProtocol('c2s', { type: 'EQUIP', slot, instId });
   }
   /** 使用消耗品 */
   sendUseItem(itemId, count = 1) {

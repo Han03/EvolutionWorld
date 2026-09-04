@@ -14,6 +14,41 @@ static uint64_t steadyMs() {
   return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+// ---- 公会成员序列化/反序列化（JSON）----
+static std::string guildMembersToJson(const std::vector<GuildMember>& members) {
+  Json arr = Json::array();
+  for (const auto& m : members) {
+    Json j = Json::object();
+    j["username"] = m.username;
+    j["role"] = (int64_t)m.role;
+    j["joinMs"] = (int64_t)m.joinMs;
+    j["lastActiveMs"] = (int64_t)m.lastActiveMs;
+    j["contributionPts"] = (int64_t)m.contributionPts;
+    j["title"] = m.title;
+    arr.push_back(j);
+  }
+  return arr.dump();
+}
+static std::vector<GuildMember> guildMembersFromJson(const std::string& json) {
+  std::vector<GuildMember> out;
+  if (json.empty()) return out;
+  try {
+    Json arr = Json::parse(json);
+    if (arr.type() != Json::Type::Array) return out;
+    for (const auto& j : arr.asArray()) {
+      GuildMember m;
+      if (j.has("username")) m.username = j.at("username").asString();
+      if (j.has("role")) m.role = (GuildRole)j.at("role").asInt();
+      if (j.has("joinMs")) m.joinMs = (uint64_t)j.at("joinMs").asInt();
+      if (j.has("lastActiveMs")) m.lastActiveMs = (uint64_t)j.at("lastActiveMs").asInt();
+      if (j.has("contributionPts")) m.contributionPts = (uint64_t)j.at("contributionPts").asInt();
+      if (j.has("title")) m.title = j.at("title").asString();
+      out.push_back(std::move(m));
+    }
+  } catch (...) {}
+  return out;
+}
+
 void GuildSystem::init() {
   // 从存储层加载公会数据
   auto ids = world_.store().loadAllGuildIds();
@@ -31,11 +66,19 @@ void GuildSystem::init() {
       g.level = gs.level;
       g.exp = gs.exp;
       g.logo = gs.logo;
+      // 加载公会成员
+      std::string mj = world_.store().loadGuildMembers(id);
+      g.members = guildMembersFromJson(mj);
+      // 重建成员索引
+      for (const auto& m : g.members) {
+        memberIndex_[m.username] = id;
+      }
       guilds_[id] = g;
       nameIndex_[g.name] = id;
       if (id >= nextGuildId_) nextGuildId_ = id + 1;
     }
   }
+  fprintf(stderr, "[guild] 从存储层加载完成：%zu 个公会\n", guilds_.size());
 }
 
 GuildResult GuildSystem::createGuild(const std::string& creator, const std::string& name) {
@@ -83,6 +126,7 @@ GuildResult GuildSystem::createGuild(const std::string& creator, const std::stri
   gs.maxMembers = g.maxMembers;
   gs.createdMs = g.createdMs;
   world_.store().saveGuild(gs);
+  world_.store().saveGuildMembers(guildId, guildMembersToJson(g.members));
 
   fprintf(stderr, "[guild] %s 创建公会 [%s] (id=%u)\n", creator.c_str(), name.c_str(), guildId);
   return GUILD_OK;
@@ -184,6 +228,7 @@ GuildResult GuildSystem::approveApplication(const std::string& officer, const st
   gs.exp = g.exp;
   gs.logo = g.logo;
   world_.store().saveGuild(gs);
+  world_.store().saveGuildMembers(guildId, guildMembersToJson(g.members));
 
   fprintf(stderr, "[guild] %s 加入公会 [%s]\n", applicant.c_str(), g.name.c_str());
   return GUILD_OK;
@@ -218,6 +263,7 @@ GuildResult GuildSystem::kickMember(const std::string& officer, const std::strin
   if (mit != g.members.end()) g.members.erase(mit);
   g.memberCount--;
   memberIndex_.erase(target);
+  world_.store().saveGuildMembers(guildId, guildMembersToJson(g.members));
 
   fprintf(stderr, "[guild] %s 被踢出公会 [%s]\n", target.c_str(), g.name.c_str());
   return GUILD_OK;
@@ -282,6 +328,7 @@ GuildResult GuildSystem::leaveGuild(const std::string& member) {
   if (mit != g.members.end()) g.members.erase(mit);
   g.memberCount--;
   memberIndex_.erase(member);
+  world_.store().saveGuildMembers(guildId, guildMembersToJson(g.members));
 
   fprintf(stderr, "[guild] %s 退出公会 [%s]\n", member.c_str(), g.name.c_str());
   return GUILD_OK;

@@ -71,6 +71,7 @@ void QuestSystem::addDefaultQuest(uint32_t id, const char* name, const char* des
 
 void QuestSystem::loadDefaults() {
   // 1. 主线：初入世界 - 与任意NPC对话 → 击杀5只狼 → 与任意NPC对话报告
+  //    链式：完成后解锁 1002「荒原威胁」
   {
     addDefaultQuest(1001, "初入世界", "你来到了这片陌生的大陆。先与当地人交谈，了解这片世界的情况，然后消灭附近的狼群威胁。",
                     QuestCategory::MAIN, 1);
@@ -86,6 +87,7 @@ void QuestSystem::loadDefaults() {
     q.objectives.push_back(o3);
     q.rewards.gold = 50;
     q.rewards.items.push_back({1501, 1}); // 铁剑
+    q.nextQuestIds.push_back(1002);       // 链式：解锁「荒原威胁」
   }
   // 2. 支线：采集药草 - 收集3个草药
   {
@@ -137,7 +139,7 @@ void QuestSystem::loadDefaults() {
     q.rewards.gold = 40;
     q.rewards.items.push_back({2002, 2}); // 中血瓶 x2
   }
-  // 6. 主线：荒原威胁 - 击杀Boss
+  // 6. 主线：荒原威胁 - 前置：1001 → 击杀Boss → 链式：解锁 2004「勇者试炼」
   {
     addDefaultQuest(1002, "荒原威胁", "荒原深处的巨兽开始频繁出没，威胁到城镇安全。前往消灭它！",
                     QuestCategory::MAIN, 5);
@@ -148,6 +150,7 @@ void QuestSystem::loadDefaults() {
     q.objectives.push_back(o);
     q.rewards.gold = 200;
     q.rewards.skills.push_back(1003); // 解锁技能
+    q.nextQuestIds.push_back(2004);   // 链式：解锁「勇者试炼」
   }
   // 7. 日常：矿材收集 - 收集5个矿石
   {
@@ -230,6 +233,11 @@ bool QuestSystem::loadFromJson(const std::string& dir) {
       q.dailyCooldownSec = (uint32_t)(j.has("dailyCd") ? j.at("dailyCd").asInt() : 0);
       q.repeatLimit = (uint32_t)(j.has("repeatLimit") ? j.at("repeatLimit").asInt() : 0);
       q.talkNpcWid = (uint32_t)(j.has("npcWid") ? j.at("npcWid").asInt() : 0);
+      q.giverNpcWid = (uint32_t)(j.has("giverNpc") ? j.at("giverNpc").asInt() : 0);
+      if (j.has("nextQuests") && j.at("nextQuests").type() == Json::Type::Array) {
+        for (const auto& nq : j.at("nextQuests").asArray())
+          q.nextQuestIds.push_back((uint32_t)nq.asInt());
+      }
       quests_[q.id] = q;
     }
     fprintf(stderr, "[quests] 加载 quests.json: %zu 个任务\n", quests_.size());
@@ -238,6 +246,145 @@ bool QuestSystem::loadFromJson(const std::string& dir) {
     fprintf(stderr, "[quests] quests.json 解析失败（用默认）: %s\n", e.what());
     return false;
   }
+}
+
+// ---------- 编辑器：序列化 / 热替换 ----------
+static const char* categoryToStr(QuestCategory c) {
+  switch (c) {
+    case QuestCategory::MAIN: return "main";
+    case QuestCategory::SIDE: return "side";
+    case QuestCategory::DAILY: return "daily";
+    case QuestCategory::REPEATABLE: return "repeatable";
+    default: return "side";
+  }
+}
+static const char* objTypeToStr(QuestObjType t) {
+  switch (t) {
+    case QuestObjType::KILL_MONSTER: return "kill";
+    case QuestObjType::COLLECT_ITEM: return "collect";
+    case QuestObjType::REACH_LOCATION: return "reach";
+    case QuestObjType::TALK_NPC: return "talk";
+    case QuestObjType::ESCORT: return "escort";
+    default: return "kill";
+  }
+}
+
+std::string QuestSystem::questsToJson() const {
+  Json arr = Json::array();
+  for (const auto& [id, q] : quests_) {
+    Json j = Json::object();
+    j["id"] = (int64_t)q.id;
+    j["name"] = q.name;
+    j["desc"] = q.desc;
+    j["category"] = categoryToStr(q.category);
+    j["levelReq"] = (int64_t)q.levelReq;
+    // 前置任务
+    Json prereq = Json::array();
+    for (uint32_t p : q.prerequisites) prereq.push_back((int64_t)p);
+    j["prereq"] = prereq;
+    // 目标
+    Json objs = Json::array();
+    for (const auto& o : q.objectives) {
+      Json oj = Json::object();
+      oj["type"] = objTypeToStr(o.type);
+      oj["targetKey"] = o.targetKey;
+      oj["targetId"] = (int64_t)o.targetId;
+      oj["x"] = o.targetX;
+      oj["z"] = o.targetZ;
+      oj["radius"] = o.radius;
+      oj["required"] = (int64_t)o.required;
+      oj["desc"] = o.desc;
+      objs.push_back(oj);
+    }
+    j["objectives"] = objs;
+    // 奖励
+    Json rw = Json::object();
+    rw["gold"] = (int64_t)q.rewards.gold;
+    rw["exp"] = (int64_t)q.rewards.exp;
+    Json items = Json::array();
+    for (const auto& [itemId, cnt] : q.rewards.items) {
+      Json ij = Json::object();
+      ij["id"] = (int64_t)itemId;
+      ij["count"] = (int64_t)cnt;
+      items.push_back(ij);
+    }
+    rw["items"] = items;
+    Json skills = Json::array();
+    for (uint32_t s : q.rewards.skills) skills.push_back((int64_t)s);
+    rw["skills"] = skills;
+    j["rewards"] = rw;
+    j["dailyCd"] = (int64_t)q.dailyCooldownSec;
+    j["repeatLimit"] = (int64_t)q.repeatLimit;
+    j["npcWid"] = (int64_t)q.talkNpcWid;
+    j["giverNpc"] = (int64_t)q.giverNpcWid;
+    Json next = Json::array();
+    for (uint32_t nq : q.nextQuestIds) next.push_back((int64_t)nq);
+    j["nextQuests"] = next;
+    arr.push_back(j);
+  }
+  return arr.dump();
+}
+
+bool QuestSystem::replaceQuests(const Json& arr) {
+  if (arr.type() != Json::Type::Array) return false;
+  std::unordered_map<uint32_t, QuestDef> newQuests;
+  for (const auto& j : arr.asArray()) {
+    QuestDef q;
+    q.id = (uint32_t)j.at("id").asInt();
+    if (q.id == 0) continue;
+    q.name = j.at("name").asString();
+    q.desc = j.at("desc").asString();
+    q.category = QuestDef::categoryFromStr(j.at("category").asString());
+    q.levelReq = (int)j.at("levelReq").asInt();
+    if (j.has("prereq") && j.at("prereq").type() == Json::Type::Array) {
+      for (const auto& p : j.at("prereq").asArray())
+        q.prerequisites.push_back((uint32_t)p.asInt());
+    }
+    if (j.has("objectives") && j.at("objectives").type() == Json::Type::Array) {
+      uint8_t idx = 0;
+      for (const auto& oj : j.at("objectives").asArray()) {
+        QuestObjective o;
+        o.index = idx++;
+        o.type = QuestDef::objTypeFromStr(oj.at("type").asString());
+        o.targetKey = oj.has("targetKey") ? oj.at("targetKey").asString() : "";
+        o.targetId = (uint32_t)(oj.has("targetId") ? oj.at("targetId").asInt() : 0);
+        o.targetX = oj.has("x") ? oj.at("x").asNumber() : 0;
+        o.targetZ = oj.has("z") ? oj.at("z").asNumber() : 0;
+        o.radius = oj.has("radius") ? oj.at("radius").asNumber() : 0;
+        o.required = (uint32_t)(oj.has("required") ? oj.at("required").asInt() : 1);
+        o.desc = oj.has("desc") ? oj.at("desc").asString() : "";
+        q.objectives.push_back(o);
+      }
+    }
+    if (j.has("rewards")) {
+      auto& rj = j.at("rewards");
+      q.rewards.gold = (uint32_t)(rj.has("gold") ? rj.at("gold").asInt() : 0);
+      q.rewards.exp = (uint32_t)(rj.has("exp") ? rj.at("exp").asInt() : 0);
+      if (rj.has("items") && rj.at("items").type() == Json::Type::Array) {
+        for (const auto& ij : rj.at("items").asArray()) {
+          uint32_t itemId = (uint32_t)ij.at("id").asInt();
+          uint16_t cnt = (uint16_t)(ij.has("count") ? ij.at("count").asInt() : 1);
+          if (itemId) q.rewards.items.push_back({itemId, cnt});
+        }
+      }
+      if (rj.has("skills") && rj.at("skills").type() == Json::Type::Array) {
+        for (const auto& sj : rj.at("skills").asArray())
+          q.rewards.skills.push_back((uint32_t)sj.asInt());
+      }
+    }
+    q.dailyCooldownSec = (uint32_t)(j.has("dailyCd") ? j.at("dailyCd").asInt() : 0);
+    q.repeatLimit = (uint32_t)(j.has("repeatLimit") ? j.at("repeatLimit").asInt() : 0);
+    q.talkNpcWid = (uint32_t)(j.has("npcWid") ? j.at("npcWid").asInt() : 0);
+    q.giverNpcWid = (uint32_t)(j.has("giverNpc") ? j.at("giverNpc").asInt() : 0);
+    if (j.has("nextQuests") && j.at("nextQuests").type() == Json::Type::Array) {
+      for (const auto& nq : j.at("nextQuests").asArray())
+        q.nextQuestIds.push_back((uint32_t)nq.asInt());
+    }
+    newQuests[q.id] = q;
+  }
+  quests_ = std::move(newQuests);
+  fprintf(stderr, "[quests] 热替换任务配置：%zu 个任务\n", quests_.size());
+  return true;
 }
 
 // ---------- 前置/冷却检测 ----------
@@ -257,7 +404,7 @@ bool QuestSystem::isOnCooldown(const Entity& p, const QuestDef& qd, uint64_t now
 }
 
 // ---------- 玩家操作 ----------
-QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t questId) {
+QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid) {
   Entity* p = world_.findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return QUEST_ERR_NOT_FOUND;
   const QuestDef* qd = questDef(questId);
@@ -266,17 +413,28 @@ QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t quest
   if (findActiveQuest(*p, questId)) return QUEST_ERR_ALREADY_ACTIVE;
   // 等级
   if (p->level < qd->levelReq) return QUEST_ERR_LEVEL;
-  // 前置
+  // 前置任务链
   if (!checkPrerequisites(*p, *qd)) return QUEST_ERR_PREREQ;
   // 活跃上限
   if (p->activeQuests.size() >= world_.config().maxActiveQuests) return QUEST_ERR_FULL;
   // 日常/可重复冷却
-  uint64_t nowMs = world_.tickCount() * (uint64_t)world_.config().tickMs;
+  uint64_t nowMs = world_.logicNowMs();
   if (isOnCooldown(*p, *qd, nowMs)) return QUEST_ERR_COOLDOWN;
   // 一次性任务已完成且不可重复
   if (isCompleted(*p, questId) && qd->category == QuestCategory::MAIN) return QUEST_ERR_NOT_REPEATABLE;
   if (isCompleted(*p, questId) && qd->category == QuestCategory::SIDE && qd->repeatLimit == 0)
     return QUEST_ERR_NOT_REPEATABLE;
+  // NPC 绑定校验：giverNpcWid > 0 时，必须在发布者 NPC 附近接取
+  if (qd->giverNpcWid > 0) {
+    Entity* npc = world_.findByWid(qd->giverNpcWid);
+    if (!npc || npc->kind != EntityKind::Npc) return QUEST_ERR_NOT_GIVER;
+    if (p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NOT_GIVER;
+  } else if (npcWid > 0) {
+    // giverNpcWid=0 时，如果客户端传入了 npcWid，做通用距离校验
+    Entity* npc = world_.findByWid(npcWid);
+    if (!npc || npc->kind != EntityKind::Npc) return QUEST_ERR_NPC_RANGE;
+    if (p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NPC_RANGE;
+  }
   // 接受
   ActiveQuest aq;
   aq.questId = questId;
@@ -285,7 +443,8 @@ QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t quest
   aq.status = 0;
   p->activeQuests.push_back(aq);
   markQuestDirty(playerId);
-  fprintf(stderr, "[quest] %s 接受任务 %u (%s)\n", p->username.c_str(), questId, qd->name.c_str());
+  fprintf(stderr, "[quest] %s 接受任务 %u (%s) [giverNpc=%u]\n", p->username.c_str(),
+          questId, qd->name.c_str(), qd->giverNpcWid);
   return QUEST_OK;
 }
 
@@ -328,7 +487,7 @@ QuestResult QuestSystem::turnInQuest(const std::string& playerId, uint32_t quest
   if (it != p->activeQuests.end()) p->activeQuests.erase(it);
   // 日常/可重复：设置冷却
   if (qd->category == QuestCategory::DAILY && qd->dailyCooldownSec > 0) {
-    uint64_t nowMs = world_.tickCount() * (uint64_t)world_.config().tickMs;
+    uint64_t nowMs = world_.logicNowMs();
     p->questCooldown[questId] = nowMs + (uint64_t)qd->dailyCooldownSec * 1000;
   }
   markQuestDirty(playerId);
@@ -457,7 +616,7 @@ void QuestSystem::grantRewards(Entity& p, const QuestReward& rw) {
     p.pl.gold += rw.gold;
   }
   for (const auto& [itemId, count] : rw.items) {
-    p.pl.inventory[itemId] += count;
+    world_.giveItemSmart(p, itemId, (uint16_t)count);  // 装备→实例；其余→堆叠
   }
   for (uint32_t skillId : rw.skills) {
     p.learnedSkills.insert(skillId);
@@ -475,9 +634,9 @@ bool QuestSystem::isCompleted(const Entity& p, uint32_t questId) const {
   return p.completedQuests.count(questId) > 0;
 }
 
-std::vector<const QuestDef*> QuestSystem::availableQuests(const Entity& p) const {
+std::vector<const QuestDef*> QuestSystem::availableQuests(const Entity& p, uint32_t npcWid) const {
   std::vector<const QuestDef*> out;
-  uint64_t nowMs = world_.tickCount() * (uint64_t)world_.config().tickMs;
+  uint64_t nowMs = world_.logicNowMs();
   for (const auto& [id, qd] : quests_) {
     if (p.level < qd.levelReq) continue;
     if (findActiveQuest(p, id)) continue; // 已在进行中
@@ -488,6 +647,8 @@ std::vector<const QuestDef*> QuestSystem::availableQuests(const Entity& p) const
       if (isOnCooldown(p, qd, nowMs)) continue;
     }
     if (!checkPrerequisites(p, qd)) continue;
+    // NPC 过滤：npcWid > 0 时仅返回该 NPC 发布的任务
+    if (npcWid > 0 && qd.giverNpcWid != 0 && qd.giverNpcWid != npcWid) continue;
     out.push_back(&qd);
   }
   // 按分类+ID 排序（主线优先）
@@ -506,8 +667,8 @@ std::vector<const ActiveQuest*> QuestSystem::completableQuests(const Entity& p) 
 }
 
 // ---------- 网络帧 ----------
-std::string QuestSystem::questListFrame(const Entity& p) const {
-  auto avail = availableQuests(p);
+std::string QuestSystem::questListFrame(const Entity& p, uint32_t npcWid) const {
+  auto avail = availableQuests(p, npcWid);
   proto::Writer w;
   w.u16((uint16_t)avail.size());
   for (const QuestDef* qd : avail) {
@@ -516,6 +677,7 @@ std::string QuestSystem::questListFrame(const Entity& p) const {
     w.str(qd->name);
     w.str(qd->desc);
     w.i32((int32_t)qd->levelReq);
+    w.u32(qd->giverNpcWid); // 发布者 NPC wid（客户端用于显示 NPC 名称）
     w.u16((uint16_t)qd->objectives.size());
     for (const auto& obj : qd->objectives) {
       w.u8((uint8_t)obj.type);
@@ -531,6 +693,9 @@ std::string QuestSystem::questListFrame(const Entity& p) const {
     }
     w.u16((uint16_t)qd->rewards.skills.size());
     for (uint32_t sid : qd->rewards.skills) w.u32(sid);
+    // 链式后续任务 ID 列表
+    w.u16((uint16_t)qd->nextQuestIds.size());
+    for (uint32_t nqId : qd->nextQuestIds) w.u32(nqId);
   }
   return proto::frame(proto::S2C_QUEST_LIST, w.data());
 }
@@ -580,6 +745,15 @@ std::string QuestSystem::questCompleteFrame(uint32_t questId) const {
   return proto::frame(proto::S2C_QUEST_COMPLETE, w.data());
 }
 
+std::string QuestSystem::questChainFrame(uint32_t completedQuestId,
+                                          const std::vector<uint32_t>& nextIds) const {
+  proto::Writer w;
+  w.u32(completedQuestId);
+  w.u16((uint16_t)nextIds.size());
+  for (uint32_t id : nextIds) w.u32(id);
+  return proto::frame(proto::S2C_QUEST_CHAIN, w.data());
+}
+
 // ---------- 持久化 ----------
 std::string QuestSystem::serializeQuests(const Entity& p) const {
   Json root = Json::object();
@@ -600,11 +774,20 @@ std::string QuestSystem::serializeQuests(const Entity& p) const {
   Json completed = Json::array();
   for (uint32_t id : p.completedQuests) completed.push_back((int64_t)id);
   root["completed"] = std::move(completed);
-  // 冷却
+  // 日常任务冷却：存「剩余毫秒」而非「到期时刻」，键名 cooldownRemain 同时充当格式标记。
+  // 原因：questCooldown 的值是逻辑时钟（原点=本进程启动）下的到期时刻，而逻辑钟重启
+  // 即归零；若直接落库，每次重启都会把「已流逝的真实时间」清零重算 —— 24h 日常冷却被
+  // 延长（延长量 = 重启前进程已运行时长），频繁重启可致日常任务长期锁死。
+  // 存剩余量则与时钟原点完全解耦，天然抗重启。
+  // 语义副作用（有意接受）：离线期间冷却不流逝，等价于「按在线时长计的日常」。
+  // 若需真实自然日语义，须改存 system_clock 的 Unix 毫秒并做回拨防护（独立议题）。
+  const uint64_t nowMs = world_.logicNowMs();
   Json cd = Json::object();
-  for (const auto& [id, ms] : p.questCooldown)
-    cd[std::to_string(id)] = (int64_t)ms;
-  root["cooldown"] = std::move(cd);
+  for (const auto& [id, readyAtMs] : p.questCooldown) {
+    if (readyAtMs <= nowMs) continue;   // 已到期：不落库，避免脏数据无限累积
+    cd[std::to_string(id)] = (int64_t)(readyAtMs - nowMs);
+  }
+  root["cooldownRemain"] = std::move(cd);
   return root.dump();
 }
 
@@ -632,10 +815,28 @@ bool QuestSystem::deserializeQuests(Entity& p, const std::string& json) const {
       for (const auto& v : root.at("completed").asArray())
         p.completedQuests.insert((uint32_t)v.asInt());
     }
-    if (root.has("cooldown") && root.at("cooldown").type() == Json::Type::Object) {
+    // 冷却：新格式 cooldownRemain 存剩余毫秒；旧格式 cooldown 存逻辑钟到期时刻。
+    const uint64_t nowMs = world_.logicNowMs();
+    if (root.has("cooldownRemain") && root.at("cooldownRemain").type() == Json::Type::Object) {
+      for (const auto& [k, v] : root.at("cooldownRemain").asObject()) {
+        uint32_t id = (uint32_t)atoi(k.c_str());
+        int64_t remain = v.asInt();
+        if (remain <= 0) continue;
+        p.questCooldown[id] = nowMs + (uint64_t)remain;
+      }
+    } else if (root.has("cooldown") && root.at("cooldown").type() == Json::Type::Object) {
+      // 旧档迁移（一次性）：旧值与当前逻辑钟分属不同进程的原点，相减本无意义，故只做
+      // 安全收敛 —— 以该任务的 dailyCooldownSec 为上界，clamp 后从「现在」重新起算。
+      // 效果：存量污染（已被重启延长过的冷却）被修正为最多一个完整周期，不会更糟。
       for (const auto& [k, v] : root.at("cooldown").asObject()) {
         uint32_t id = (uint32_t)atoi(k.c_str());
-        p.questCooldown[id] = (uint64_t)v.asInt();
+        int64_t stored = v.asInt();
+        if (stored <= 0) continue;
+        if ((uint64_t)stored <= nowMs) continue;   // 在当前钟下已过期 → 视为就绪
+        const QuestDef* qd = questDef(id);
+        if (!qd || qd->dailyCooldownSec == 0) continue;  // 无定义/无冷却配置 → 不锁玩家
+        const uint64_t cap = (uint64_t)qd->dailyCooldownSec * 1000;
+        p.questCooldown[id] = nowMs + std::min<uint64_t>((uint64_t)stored - nowMs, cap);
       }
     }
     return true;
@@ -646,6 +847,12 @@ bool QuestSystem::deserializeQuests(Entity& p, const std::string& json) const {
 
 void QuestSystem::markQuestDirty(const std::string& playerId) {
   questDirty_.insert(playerId);
+}
+
+std::vector<uint32_t> QuestSystem::getNextQuestIds(uint32_t completedQuestId) const {
+  const QuestDef* qd = questDef(completedQuestId);
+  if (!qd) return {};
+  return qd->nextQuestIds;
 }
 
 } // namespace ew

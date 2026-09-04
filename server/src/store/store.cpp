@@ -7,6 +7,7 @@
 #include <ctime>
 #include <unordered_map>
 #include <algorithm>
+#include <tuple>
 
 namespace ew {
 
@@ -276,6 +277,25 @@ void Store::init() {
   }
 }
 
+void Store::populateFriendsBlocks() {
+  if (!mysql_) return;
+  auto* ms = dynamic_cast<MysqlStore*>(mysql_.get());
+  if (!ms) return;
+  // 加载好友关系到内存后端
+  for (const auto& [u, f, t] : ms->loadAllFriends()) {
+    mem_->addFriend(u, f);
+  }
+  // 加载黑名单到内存后端
+  for (const auto& [u, b] : ms->loadAllBlocks()) {
+    mem_->addBlock(u, b);
+  }
+  // 加载公会成员到内存后端
+  for (const auto& [gid, mj] : ms->loadAllGuildMembers()) {
+    mem_->saveGuildMembers(gid, mj);
+  }
+  fprintf(stderr, "[store] 从 MySQL 填充内存：好友/黑名单/公会成员已加载\n");
+}
+
 // ---- 账号 ----
 void Store::upsertUser(const UserRecord& u) {
   memory_->upsertUser(u);      // 内存必写（读权威 + users.json 由 auth 负责）
@@ -366,6 +386,22 @@ std::vector<std::string> Store::loadBlocks(const std::string& username) {
   auto result = memory_->loadBlocks(username);
   if (!result.empty()) return result;
   if (mysql_) return mysql_->loadBlocks(username);
+  return {};
+}
+
+// ---- 全量加载（启动用）----
+std::vector<std::tuple<std::string, std::string, uint64_t>> Store::loadAllFriends() {
+  if (mysql_) {
+    auto* ms = dynamic_cast<MysqlStore*>(mysql_.get());
+    if (ms) return ms->loadAllFriends();
+  }
+  return {};
+}
+std::vector<std::pair<std::string, std::string>> Store::loadAllBlocks() {
+  if (mysql_) {
+    auto* ms = dynamic_cast<MysqlStore*>(mysql_.get());
+    if (ms) return ms->loadAllBlocks();
+  }
   return {};
 }
 

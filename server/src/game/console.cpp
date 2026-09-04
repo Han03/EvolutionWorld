@@ -49,6 +49,9 @@ std::string consoleHelpText() {
     "  monsterpause <on|off>        全局冻结怪物/Boss AI+移动+施放（站桩测试）\n"
     "  freecast <on|off>            技能/普攻无蓝耗无冷却（重复测试同一技能）\n"
     "  anticheat <on|off>           开关防作弊校验（off=输入直接接受，测位移/瞬移）\n"
+    "  enhanceforce <off|success|fail>  强化结果旁路（跳过 RNG，测升级/降级/保护符）\n"
+    "  lockitem <instId> <0|1>      锁定/解锁装备实例（测「锁定不可分解」）\n"
+    "  setenhance <instId> <lv>     直接设置装备强化等级（测「仓库存取保留强化」）\n"
     "  skill <skillId>              学习技能\n"
     "  skills                       查看已学技能与冷却\n"
     "  cast <skillId> [targetWid]   施放技能（无目标自动选最近怪物）\n"
@@ -163,6 +166,15 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     int64_t n = (int64_t)toNum(args[1], 0);
     bool ok = w.giveGold(ctx.playerId, n);
     out(ok ? ("发放金币 " + std::to_string(n)) : "失败：无此玩家");
+    return true;
+  }
+  // 强制刷新商店限购（阶段1测试用：模拟每日/每周刷新，重置当前玩家限购计数）
+  if (cmd == "shoprefresh") {
+    Entity* p = w.findEntity(ctx.playerId);
+    if (!p) { out("未找到目标玩家"); return true; }
+    p->pl.shopBuyCount.clear();
+    p->pl.shopRefreshMs = w.logicNowMs();
+    out("已重置商店限购计数");
     return true;
   }
   if (cmd == "item") {
@@ -289,6 +301,51 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     out(std::string("防作弊(anticheat)=") + (bypass ? "off(已关闭校验)" : "on(正常)"));
     return true;
   }
+  // 强化结果旁路（阶段2测试用：跳过 RNG，强制成功/失败，验证升级/降级/保护符逻辑）
+  if (cmd == "enhanceforce") {
+    int& ef = w.testFlags().enhanceForce;
+    if (args.size() >= 2) {
+      const std::string& a = args[1];
+      if (a == "off" || a == "0" || a == "normal") ef = 0;
+      else if (a == "success" || a == "1" || a == "win") ef = 1;
+      else if (a == "fail" || a == "2" || a == "lose") ef = 2;
+      else { out("用法: enhanceforce <off|success|fail>"); return true; }
+    }
+    out(std::string("强化旁路(enhanceForce)=") + std::to_string(ef) +
+        (ef == 0 ? "(正常RNG)" : ef == 1 ? "(强制成功)" : "(强制失败)"));
+    return true;
+  }
+  // 锁定/解锁装备实例（阶段3测试用：验证「锁定装备不可分解」）
+  if (cmd == "lockitem") {
+    if (args.size() < 3) { out("用法: lockitem <instId> <0|1>"); return true; }
+    Entity* p = w.findEntity(ctx.playerId);
+    if (!p) { out("未找到目标玩家"); return true; }
+    uint64_t instId = (uint64_t)toNum(args[1], 0);
+    bool lock = (toNum(args[2], 0) != 0);
+    ItemInstance* ins = w.findInstance(*p, instId);
+    if (!ins) { out("未找到装备实例: " + args[1]); return true; }
+    ins->locked = lock;
+    w.markInvDirty(ctx.playerId);
+    out(std::string("装备实例 ") + args[1] + (lock ? " 已锁定" : " 已解锁"));
+    return true;
+  }
+  // 直接设置装备实例强化等级（阶段5测试用：验证「存取出保留强化等级」，免去强化流程序）
+  if (cmd == "setenhance") {
+    if (args.size() < 3) { out("用法: setenhance <instId> <level>"); return true; }
+    Entity* p = w.findEntity(ctx.playerId);
+    if (!p) { out("未找到目标玩家"); return true; }
+    uint64_t instId = (uint64_t)toNum(args[1], 0);
+    int lv = (int)toNum(args[2], 0);
+    if (lv < 0) lv = 0;
+    if (lv > 15) lv = 15;
+    ItemInstance* ins = w.findInstance(*p, instId);
+    if (!ins) { out("未找到装备实例: " + args[1]); return true; }
+    ins->enhance = (uint8_t)lv;
+    w.markInvDirty(ctx.playerId);
+    w.markStatsDirty(ctx.playerId);
+    out("装备实例 " + args[1] + " 强化等级设为 +" + std::to_string(lv));
+    return true;
+  }
 
   // ---- 技能 ----
   if (cmd == "skill") {
@@ -303,7 +360,7 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
   if (cmd == "skills") {
     Entity* p = w.findEntity(ctx.playerId);
     if (!p) { out("未找到目标玩家"); return true; }
-    uint64_t nowMs = w.tickCount() * (uint64_t)w.config().tickMs;
+    uint64_t nowMs = w.logicNowMs();
     std::ostringstream os;
     os << "已学技能 " << p->learnedSkills.size() << " 个:";
     for (uint32_t id : p->learnedSkills) {

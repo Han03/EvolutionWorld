@@ -1,12 +1,14 @@
 {
   "name": "evolution-world",
   "version": "0.1.0",
-  "description": "EvolutionWorld - 无缝世界网络游戏服务端（空壳/骨架版）。HTTP 登录 + WebSocket 实时世界 + SDF 体积地形 + 基础物理，预留可扩展系统框架。",
+  "description": "EvolutionWorld - 无缝世界网络游戏（Canvas 2D 俯视角客户端 + C++ 服务端）。HTTP 登录 + WebSocket 实时世界 + 基础物理，预留可扩展系统框架。",
   "type": "module",
   "main": "server/src/index.js",
   "scripts": {
     "start": "node server/src/index.js",
     "dev": "node --watch server/src/index.js",
+    "build:client": "vite build",
+    "dev:client": "vite",
     "test:api": "node server/src/scripts/ws-smoke-test.mjs",
     "deploy:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy/deploy-local.ps1",
     "deploy:wsl:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy/deploy-local.ps1 -Clean",
@@ -20,13 +22,14 @@
     "game-server",
     "mmo",
     "websocket",
-    "sdf",
-    "volumetric",
-    "threejs"
+    "canvas-2d"
   ],
   "license": "MIT",
   "dependencies": {
     "express": "^4.19.2",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vite": "^8.2.2"
   }
 }

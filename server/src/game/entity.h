@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <cmath>
 #include "util/json.h"
+#include "game/items.h"
 #include "game/quests.h"
+#include "game/warehouse.h"   // 仓库系统（阶段5：WarehouseData）
 namespace ew {
 struct Vec3 {
   double x = 0, y = 0, z = 0;
@@ -50,13 +52,22 @@ struct Entity {
     double baseHp = 100, baseMp = 50, baseAttack = 12, baseDefense = 3;
     uint32_t gold = 0;                                  // 金币（也是物品）
     uint64_t exp = 0;                                   // 累计经验（升级系统；当前等级见 Entity.level）
-    std::array<uint32_t, 6> equip = {};                 // 已穿戴装备 itemId（槽位值-1 下标，0=空）
-    std::unordered_map<uint32_t, uint32_t> inventory;   // 背包：itemId -> 数量
+    // —— 装备实例化（每件独立，携带强化等级）——
+    std::array<ItemInstance, 6> equip = {};             // 已穿戴装备实例（槽位值-1 下标，instId=0 为空）
+    std::vector<ItemInstance> equipBag;                 // 背包中的装备实例（不可堆叠）
+    // —— 堆叠物品（消耗品/材料/任务道具）——
+    std::unordered_map<uint32_t, uint32_t> inventory;   // itemId -> 数量
     uint32_t openShopId = 0;                            // 当前打开的商店 ID（0=未打开）
+    // —— 商店限购追踪（阶段1：限购/每日每周刷新）——
+    std::unordered_map<uint64_t, uint32_t> shopBuyCount; // key=(shopId<<32|itemId) → 已购数
+    uint64_t shopRefreshMs = 0;                          // 上次限购刷新时刻（logicNowMs 基准）
+    // —— 仓库（阶段5：多页存储 + 存金，随存档持久化，见 warehouse.h）——
+    WarehouseData warehouse;                             // 玩家仓库数据（gold/unlocked/slots）
   } pl;
   // 掉落物专属（EntityKind::Item）：itemId=0 表示纯金币
   uint32_t dropItemId = 0;
   uint32_t dropGold = 0;
+  ItemInstance dropInst;             // 装备掉落实例（dropInst.instId!=0 时为装备，拾取后直接入背包保留强化）
   uint64_t dropExpireAtMs = 0;   // 掉落物消失时刻
   // 技能系统（大型网游规模，数据驱动）
   std::unordered_set<uint32_t> learnedSkills;        // 已学习技能 ID
@@ -86,6 +97,8 @@ struct Entity {
   std::unordered_map<uint32_t, uint64_t> questCooldown; // 日常任务冷却：questId -> nextAvailableMs
   // NPC 专属：所属商店 ID（0=普通 NPC）
   uint32_t shopId = 0;
+  std::string npcId;          // NPC 唯一 ID（引用 NpcManager 中的 NpcDef，空=非 NPC 实体）
+  uint32_t npcTag = 0;        // NPC 标签位标志（NpcTag 组合，客户端据此渲染交互菜单）
   bool isBoss = false;          // 是否为世界 Boss（全局共享实体）
   uint64_t lastAttackMs = 0;    // 攻击冷却（服务端单调时钟 ms）
   uint64_t lastDamageMs = 0;    // 最近受击时刻（脱战回血判定）
@@ -114,6 +127,10 @@ struct Entity {
     double wpPhase = 0;      // 环相位（出生点确定性哈希，同 seed 跨服一致）
     double wpR = 8.0;        // 环半径（米）
     bool wpInit = false;     // 是否已初始化 waypoint 环
+    // --- 恢复态（仇恨态→恢复态→游走态）---
+    double recoverWpX = 0, recoverWpZ = 0; // 进入仇恨态时记录的轨迹点位置
+    double chaseTime = 0;    // 仇恨态连续追击时间（秒），进入战斗态时重置
+    bool invincible = false; // 无敌标志（恢复态期间免疫所有伤害）
     // --- 大规模 AI 调度（时间片轮转 + 距离分级）---
     uint32_t tickStride = 1; // 每 N tick 更新一次（AI LOD，由调度器维护）
   } ai;
@@ -137,6 +154,7 @@ struct Entity {
   uint64_t lastAcceptMs = 0;
   int acceptedInputs = 0;
   int violations = 0;
+  int terrainRejects = 0;   // 地形软失败次数（双端判定分歧，不计入 violations、永不踢出）
   int rateDrops = 0;
   // 区块归属（ChunkManager 维护）
   std::string __chunkKey;
@@ -147,7 +165,7 @@ Entity makePlayer(const std::string& id, const std::string& username);
 // 按怪物类型（wolf/goblin/...）从 GameData 配置取属性；type 为空用默认
 Entity makeMonster(const std::string& id, const std::string& type);
 Entity makeNpc(const std::string& id);
-// 制造一个地面掉落物实体
+// 制造一个地面掉落物实体（inst.instId!=0 时为装备实例掉落，保留强化等级）
 Entity makeDrop(const std::string& id, double x, double y, double z,
-                uint32_t itemId, uint32_t gold);
+                uint32_t itemId, uint32_t gold, const ItemInstance& inst = ItemInstance{});
 } // namespace ew

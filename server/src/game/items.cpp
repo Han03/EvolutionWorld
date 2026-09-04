@@ -42,6 +42,7 @@ ItemType GameData::itemTypeFromJson(const Json& j, ItemType def) {
   if (t == "equip") return ItemType::EQUIP;
   if (t == "consumable") return ItemType::CONSUMABLE;
   if (t == "quest") return ItemType::QUEST;
+  if (t == "material") return ItemType::MATERIAL;
   return def;
 }
 EquipSlot GameData::slotFromJson(const Json& j, EquipSlot def) {
@@ -58,6 +59,7 @@ const char* GameData::itemTypeToString(ItemType t) {
   switch (t) {
     case ItemType::CONSUMABLE: return "consumable";
     case ItemType::QUEST: return "quest";
+    case ItemType::MATERIAL: return "material";
     default: return "equip";
   }
 }
@@ -161,6 +163,17 @@ void GameData::loadDefaults() {
   addDefaultItem(3003, "骷髅碎片", "骷髅兵的骨片，蕴含魔力", "bone", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 12, 50);
   addDefaultItem(3004, "石像鬼之核", "石像鬼的能量核心，稀有", "core", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 25, 50);
 
+  // ---- 材料（强化/分解/合成用；不可穿戴、可堆叠、可交易）----
+  // 分解产出材料（按品质分档 4001-4005；亦为阶段4合成原料）
+  addDefaultItem(4001, "铁屑", "分解普通装备得到的碎料", "iron", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 3, 99);
+  addDefaultItem(4002, "精钢碎片", "分解优秀装备得到的材料", "steel", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 8, 99);
+  addDefaultItem(4003, "魔晶", "分解稀有装备凝聚的魔力结晶", "crystal", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 20, 99);
+  addDefaultItem(4004, "龙鳞", "分解史诗装备获得的珍贵材料", "scale", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 50, 99);
+  addDefaultItem(4005, "星辰核心", "分解传说装备得到的稀世之物", "starcore", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 120, 99);
+  // 强化石：每次强化按等级消耗若干；保护符：强化失败时消耗 1 个可防止装备降级。
+  addDefaultItem(4006, "强化石", "装备强化的必需材料，等级越高消耗越多", "estone", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 50, 99);
+  addDefaultItem(4007, "保护符", "强化失败时防止装备降级（仅 +6 起可用）", "protect", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 200, 99);
+
   // ---- 品质/需求等级示例（其余默认 rarity=0 / levelReq=1） ----
   items_[1002].rarity = 1; items_[1002].levelReq = 2;  // 铁盔
   items_[1102].rarity = 1; items_[1102].levelReq = 2;  // 锁子甲
@@ -178,6 +191,9 @@ void GameData::loadDefaults() {
   monsters_["goblin"].expReward = 45; monsters_["goblin"].moveSpeed = 1.5;
   monsters_["goblin"].drops = {{3002, 0.30}, {2001, 0.15}, {1501, 0.05}, {1101, 0.03}};
   monsters_["goblin"].skillIds = {2002};
+
+  // NPC 默认数据已迁移到 NpcManager::loadDefaults()（见 npc.cpp）
+
   addDefaultMonster("skeleton", "骷髅兵", 3, 95, 30, 13, 5, 6, 14);
   monsters_["skeleton"].desc = "被亡灵法术复苏的枯骨士兵";
   monsters_["skeleton"].expReward = 70; monsters_["skeleton"].moveSpeed = 1.3;
@@ -190,14 +206,21 @@ void GameData::loadDefaults() {
   monsters_["gargoyle"].skillIds = {2004};
 
   // ---- 商店：一个商店 NPC 出售全部物品 ----
+  // ShopEntry 字段序：{itemId, price, discountPrice, stock, buyLimit, category, refreshType, sellPrice}
+  //   discountPrice>0 时优先结算（划线原价）；buyLimit>0 按玩家累计限购，refreshType 周期重置（1每日/2每周）；
+  //   category 0自动(按物品类型)/1装备/2消耗品/3材料/4特殊；sellPrice=0 时回收价按 ItemDef.price×默认回收率。
   ShopDef shop;
   shop.shopId = 1;
   shop.name = "全能杂货铺";
+  shop.desc = "主城杂货商人，出售装备/消耗品，含每日特惠与每周限购";
   shop.entries = {
     {1001, 8, 0}, {1002, 30, 0}, {1101, 10, 0}, {1102, 35, 0},
     {1201, 9, 0}, {1202, 28, 0}, {1301, 9, 0}, {1302, 28, 0},
-    {1401, 8, 0}, {1402, 26, 0}, {1501, 12, 0}, {1502, 40, 0}, {1503, 120, 0},
-    {2001, 5, 0}, {2002, 15, 0}, {2101, 5, 0}, {2102, 15, 0},
+    {1401, 8, 0}, {1402, 26, 0}, {1501, 12, 0},
+    {1502, 40, 0, 0, 2, 1, 2, 20},   // 铁剑：每周限购 2 件（装备分类），回收价 20
+    {1503, 120, 0},
+    {2001, 5, 3, 0, 5, 2, 1, 2},     // 小血瓶：每日特惠 3 金（原价 5），每日限购 5（消耗品），回收价 2
+    {2002, 15, 0}, {2101, 5, 0}, {2102, 15, 0},
   };
   shops_[1] = shop;
   // ---- 技能表（大型网游规模：单目标/AOE/治疗/Buff，数据驱动） ----
@@ -308,12 +331,6 @@ static std::string readFile(const std::string& path) {
   ss << f.rdbuf();
   return ss.str();
 }
-static bool writeFile(const std::string& path, const std::string& content) {
-  std::ofstream f(path, std::ios::binary);
-  if (!f) return false;
-  f << content;
-  return (bool)f;
-}
 // 物品 JSON → ItemDef（loadFromJson 与 replaceItems 共用；新字段均有 has() 守卫保证向后兼容）
 static ItemDef parseItemDef(const Json& j) {
   ItemDef d;
@@ -364,6 +381,11 @@ static MonsterDef parseMonsterDef(const std::string& type, const Json& j) {
       if (sid) d.skillIds.push_back(sid);
     }
   }
+  // Boss 扩展字段（has() 守卫，旧 JSON 无此字段时保持默认 false）
+  if (j.has("isBoss")) d.isBoss = j.at("isBoss").asBool();
+  if (j.has("aggroRange")) d.aggroRange = j.at("aggroRange").asNumber();
+  if (j.has("chaseSpeed")) d.chaseSpeed = j.at("chaseSpeed").asNumber();
+  if (j.has("attackRange")) d.attackRange = j.at("attackRange").asNumber();
   return d;
 }
 bool GameData::loadFromJson(const std::string& dir) {
@@ -419,11 +441,19 @@ bool GameData::loadFromJson(const std::string& dir) {
             ShopDef d;
             d.shopId = (uint32_t)atoi(sid.c_str());
             d.name = j.at("name").asString();
+            d.desc = j.has("desc") ? j.at("desc").asString() : "";
+            d.shopType = (uint8_t)(j.has("shopType") ? j.at("shopType").asInt() : 0);
+            d.currencyItemId = (uint32_t)(j.has("currencyItemId") ? j.at("currencyItemId").asInt() : 0);
             for (const auto& e : j.at("entries").asArray()) {
               ShopEntry se;
               se.itemId = (uint32_t)e.at("item").asInt();
               se.price = (uint32_t)(e.has("price") ? e.at("price").asInt() : 0);
+              se.discountPrice = (uint32_t)(e.has("discountPrice") ? e.at("discountPrice").asInt() : 0);
               se.stock = (uint32_t)(e.has("stock") ? e.at("stock").asInt() : 0);
+              se.buyLimit = (uint32_t)(e.has("buyLimit") ? e.at("buyLimit").asInt() : 0);
+              se.category = (uint8_t)(e.has("category") ? e.at("category").asInt() : 0);
+              se.refreshType = (uint8_t)(e.has("refreshType") ? e.at("refreshType").asInt() : 0);
+              se.sellPrice = (uint32_t)(e.has("sellPrice") ? e.at("sellPrice").asInt() : 0);
               if (se.itemId) d.entries.push_back(se);
             }
             shops_[d.shopId] = d;
@@ -537,7 +567,42 @@ std::string GameData::monstersToJson() const {
     Json sk = Json::array();
     for (uint32_t sid : d.skillIds) sk.push_back(Json((int64_t)sid));
     j["skillIds"] = sk;
+    // Boss 扩展字段（仅 isBoss=true 时输出，向后兼容）
+    if (d.isBoss) {
+      j["isBoss"] = true;
+      j["aggroRange"] = d.aggroRange;
+      j["chaseSpeed"] = d.chaseSpeed;
+      j["attackRange"] = d.attackRange;
+    }
     obj[type] = j;
+  }
+  return obj.dump();
+}
+// NPC 序列化已委托给 NpcManager（见 npc.cpp）
+// 商店序列化（阶段1扩展字段，键=shopId，与 loadFromJson 的 shop.json 对齐）
+std::string GameData::shopsToJson() const {
+  Json obj = Json::object();
+  for (const auto& [sid, d] : shops_) {
+    Json j = Json::object();
+    j["name"] = d.name;
+    j["desc"] = d.desc;
+    j["shopType"] = (int64_t)d.shopType;
+    j["currencyItemId"] = (int64_t)d.currencyItemId;
+    Json arr = Json::array();
+    for (const auto& e : d.entries) {
+      Json je = Json::object();
+      je["item"] = (int64_t)e.itemId;
+      je["price"] = (int64_t)e.price;
+      je["discountPrice"] = (int64_t)e.discountPrice;
+      je["stock"] = (int64_t)e.stock;
+      je["buyLimit"] = (int64_t)e.buyLimit;
+      je["category"] = (int64_t)e.category;
+      je["refreshType"] = (int64_t)e.refreshType;
+      je["sellPrice"] = (int64_t)e.sellPrice;
+      arr.push_back(je);
+    }
+    j["entries"] = arr;
+    obj[std::to_string(sid)] = j;
   }
   return obj.dump();
 }
@@ -564,7 +629,37 @@ bool GameData::replaceMonsters(const Json& obj) {
   monsters_ = std::move(next);
   return true;
 }
-bool GameData::saveItemsFile(const std::string& path) { return writeFile(path, itemsToJson()); }
-bool GameData::saveMonstersFile(const std::string& path) { return writeFile(path, monstersToJson()); }
+// NPC 热替换已委托给 NpcManager（见 npc.cpp）
+// 商店热替换（阶段7编辑器）：键=shopId，字段与 loadFromJson 的 shop.json 对齐
+bool GameData::replaceShops(const Json& obj) {
+  if (obj.type() != Json::Type::Object) return false;
+  std::unordered_map<uint32_t, ShopDef> next;
+  for (const auto& [sid, j] : obj.asObject()) {
+    ShopDef d;
+    d.shopId = (uint32_t)atoi(sid.c_str());
+    if (d.shopId == 0) continue;
+    d.name = j.has("name") ? j.at("name").asString() : "";
+    d.desc = j.has("desc") ? j.at("desc").asString() : "";
+    d.shopType = (uint8_t)(j.has("shopType") ? j.at("shopType").asInt() : 0);
+    d.currencyItemId = (uint32_t)(j.has("currencyItemId") ? j.at("currencyItemId").asInt() : 0);
+    if (j.has("entries")) {
+      for (const auto& e : j.at("entries").asArray()) {
+        ShopEntry se;
+        se.itemId = (uint32_t)e.at("item").asInt();
+        se.price = (uint32_t)(e.has("price") ? e.at("price").asInt() : 0);
+        se.discountPrice = (uint32_t)(e.has("discountPrice") ? e.at("discountPrice").asInt() : 0);
+        se.stock = (uint32_t)(e.has("stock") ? e.at("stock").asInt() : 0);
+        se.buyLimit = (uint32_t)(e.has("buyLimit") ? e.at("buyLimit").asInt() : 0);
+        se.category = (uint8_t)(e.has("category") ? e.at("category").asInt() : 0);
+        se.refreshType = (uint8_t)(e.has("refreshType") ? e.at("refreshType").asInt() : 0);
+        se.sellPrice = (uint32_t)(e.has("sellPrice") ? e.at("sellPrice").asInt() : 0);
+        if (se.itemId) d.entries.push_back(se);
+      }
+    }
+    next[d.shopId] = d;
+  }
+  shops_ = std::move(next);
+  return true;
+}
 
 } // namespace ew

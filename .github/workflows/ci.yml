@@ -32,6 +32,16 @@ jobs:
           $wsl = "/mnt/c" + ($ws -replace "\\", "/" -replace "^C:", "" -replace "^c:", "")
           Write-Output "Building in: $wsl/server"
           wsl -d Ubuntu -- bash -c "cd '$wsl/server' && rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
+      
+      - name: Build client (Vite + Three.js)
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          # npm install + vite build on Windows (Node.js must be available on the runner)
+          npm install
+          npm run build:client
+          if (-not (Test-Path "$ws\client\dist")) { throw "client/dist not produced after vite build" }
+          Write-Output "Client build succeeded"
+          Get-ChildItem -Recurse "$ws\client\dist" | Select-Object FullName
 
       - name: Deploy to stable path and start server
         run: |

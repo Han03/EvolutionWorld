@@ -286,13 +286,6 @@ static std::string readFile(const std::string& path) {
   std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   return s;
 }
-static bool writeFile(const std::string& path, const std::string& content) {
-  std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  if (!f.is_open()) return false;
-  f.write(content.data(), (std::streamsize)content.size());
-  f.close();
-  return true;
-}
 
 void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
   auto& path = req.path;
@@ -316,8 +309,15 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         Vec3 hint; bool hasSave = false;
         PlayerSave ps;
         if (store_.loadPlayer(username, ps)) {
-          hint = {ps.x, ps.y, ps.z};
-          hasSave = true;
+          // 死亡状态存档（hp<=0）：忽略旧位置，回主城复活
+          if (ps.hp <= 0) {
+            hasSave = false;
+            fprintf(stderr, "[save] %s 存档为死亡状态(hp=%.0f)，回主城复活\n",
+                    username.c_str(), ps.hp);
+          } else {
+            hint = {ps.x, ps.y, ps.z};
+            hasSave = true;
+          }
         }
         Entity* player = world_.spawnPlayer(username, hasSave ? &hint : nullptr);
         if (hasSave) {
@@ -489,7 +489,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         double z = in.at("z").asNumber();
         p->pos.x = x;
         p->pos.z = z;
-        p->pos.y = terrainHeight(x, z) + p->radius + 0.3;
+        p->pos.y = groundFootY(x, z, p->radius);
         p->vel = {0, 0, 0};
         p->grounded = true;
         // 防作弊重置：传送属调试工具，避免在途旧输入（传送前已发出）被轨迹校验
@@ -509,6 +509,37 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         }
         r["ok"] = true;
         r["x"] = p->pos.x; r["y"] = p->pos.y; r["z"] = p->pos.z;
+        code = 200;
+      } else { r["error"] = "no player"; code = 404; }
+    } catch (...) { r["error"] = "bad request"; code = 400; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // 调试：注入存档 JSON 并执行 applySaveItems（P8-d 旧档→装备实例迁移测试用；EW_DEBUG 限定）
+  // 清空当前物品后按传入 equipJson/inventoryJson/warehouseJson 重新加载，复现“登录读档”路径。
+  if (path == "/api/debug/loadlegacy" && req.method == "POST" && getenv("EW_DEBUG")) {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      Entity* p = username.empty() ? nullptr : world_.findPlayerByUsername(username);
+      if (p) {
+        for (auto& ins : p->pl.equip) ins = ItemInstance{};   // 清空已穿戴
+        p->pl.equipBag.clear();                               // 清空背包装备实例
+        p->pl.inventory.clear();                              // 清空堆叠背包
+        PlayerSave ps;
+        ps.username = p->username;
+        ps.equipJson = in.has("equipJson") ? in.at("equipJson").asString() : "";
+        ps.inventoryJson = in.has("inventoryJson") ? in.at("inventoryJson").asString() : "";
+        ps.warehouseJson = in.has("warehouseJson") ? in.at("warehouseJson").asString() : "";
+        applySaveItems(world_, *p, ps);   // 旧档迁移：无实例→自动分配 instId 转实例
+        world_.markInvDirty(p->id);
+        world_.markStatsDirty(p->id);
+        r["ok"] = true;
+        r["equipBag"] = (int64_t)p->pl.equipBag.size();
+        r["inventory"] = (int64_t)p->pl.inventory.size();
         code = 200;
       } else { r["error"] = "no player"; code = 404; }
     } catch (...) { r["error"] = "bad request"; code = 400; }
@@ -603,6 +634,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       r["n"] = (int64_t)terrainWalkMaskN();
       r["off"] = (int64_t)terrainWalkMaskOff();
       r["b64"] = base64Encode(m.data(), m.size());
+      r["seedOffset"] = (int64_t)cfg_.worldSeed;
     } else {
       r["ok"] = false;
     }
@@ -623,11 +655,15 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       else if (world_.runWorldInit()) {
         if (store_.worldDataPersistent()) world_.saveWorldToStore(store_);
         world_.reseedCreatures();   // 清空旧生物并按新出生点重建
+        // 通知所有在线客户端重拉地形：mask 已整张重建。不同步会让客户端的
+        // terrainBlockedExact 与服务端分歧 → 上报被判 terrain_blocked → 橡皮筋/反复校正。
+        broadcastWorld(proto::terrainDirtyFrame());
         const std::vector<uint8_t>& m = terrainWalkMask();
         r["ok"] = true;
         r["n"] = (int64_t)terrainWalkMaskN();
         r["off"] = (int64_t)terrainWalkMaskOff();
         r["b64"] = base64Encode(m.data(), m.size());
+        r["seedOffset"] = (int64_t)cfg_.worldSeed;
         r["count"] = (int64_t)world_.spawns().size();
         r["spawns"] = Json::parse(world_.spawns().toJson())["spawns"];
         code = 200;
@@ -657,7 +693,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     c.closeAfterFlush = true;
     return;
   }
-  // POST: 保存编辑层 {token, cells} -> 校验后应用内存 + 持久化 data/terrain_edit.json
+  // POST: 保存编辑层 {token, cells} -> 校验后应用内存 + 数据库模式落库
   if (path == "/api/terrain/edit" && req.method == "POST") {
     Json r = Json::object(); r["ok"] = false;
     int code = 400;
@@ -670,8 +706,11 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       } else {
         Json root = Json::object(); root["cells"] = in.at("cells");
         if (terrainEditFromJson(root.dump())) {
-          // 持久化（无 DB 不影响功能；data/terrain_edit.json）
-          writeFile(cfg_.dataDir + "/terrain_edit.json", terrainEditToJson());
+          // 数据库模式同步落库（内存模式重启即重置）
+          if (store_.worldDataPersistent()) store_.saveWorldData("terrain_edit", terrainEditToJson());
+          // 通知在线客户端重拉编辑层：否则客户端仍用旧的可通行/高度覆盖，在新挖空的
+          // 格子上继续放行上报 → 服务端拒绝 → 玩家卡在坑里反复校正。
+          broadcastWorld(proto::terrainDirtyFrame());
           r["ok"] = true;
           r["count"] = (int64_t)terrainEditSize();
           code = 200;
@@ -691,15 +730,27 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     try {
       r["items"] = Json::parse(world_.data().itemsToJson());
       r["monsters"] = Json::parse(world_.data().monstersToJson());
+      r["npcs"] = Json::parse(world_.npcs().npcsToJson());
+      r["enhance"] = Json::parse(world_.economy().enhance().configToJson());  // 强化配置（15 级表 + 系数）
+      r["decompose"] = Json::parse(world_.economy().enhance().decomposeConfigToJson());  // 分解配置（5 档品质规则）
+      r["craft"] = Json::parse(world_.economy().craft().configToJson());  // 合成配方表（材料/产出/等级/隐藏）
+      r["warehouse"] = Json::parse(world_.warehouse().configToJson());  // 仓库配置（页数/格子/扩展费用/存金上限）
+      r["shops"] = Json::parse(world_.data().shopsToJson());  // 商店配置（阶段7编辑器：分类/限购/折扣/回收）
     } catch (...) {
       r["items"] = Json::array();
       r["monsters"] = Json::object();
+      r["npcs"] = Json::object();
+      r["enhance"] = Json::object();
+      r["decompose"] = Json::object();
+      r["craft"] = Json::object();
+      r["warehouse"] = Json::object();
+      r["shops"] = Json::object();
     }
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
     c.closeAfterFlush = true;
     return;
   }
-  // POST: 保存物品配置 {token, items:[...]} -> 热替换内存 + 持久化 data/items.json
+  // POST: 保存物品配置 {token, items:[...]} -> 热替换内存 + 数据库模式落库
   if (path == "/api/items/edit" && req.method == "POST") {
     Json r = Json::object(); r["ok"] = false;
     int code = 400;
@@ -721,7 +772,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     c.closeAfterFlush = true;
     return;
   }
-  // POST: 保存生物配置 {token, monsters:{...}} -> 热替换内存 + 持久化 data/monsters.json + 热重载世界生物
+  // POST: 保存生物配置 {token, monsters:{...}} -> 热替换内存 + 数据库模式落库 + 热重载世界生物
   if (path == "/api/monsters/edit" && req.method == "POST") {
     Json r = Json::object(); r["ok"] = false;
     int code = 400;
@@ -737,6 +788,161 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
           r["count"] = (int64_t)world_.data().monsters().size();
           code = 200;
         } else { r["error"] = "bad monsters"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存 NPC 配置 {token, npcs:{...}} -> 热替换内存 + 数据库模式落库
+  if (path == "/api/npcs/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("npcs") || in.at("npcs").type() != Json::Type::Object) {
+        r["error"] = "npcs object required";
+      } else {
+        if (world_.applyNpcs(in.at("npcs").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.npcs().npcs().size();
+          code = 200;
+        } else { r["error"] = "bad npcs"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // ---- 任务配置接口（编辑器：读取/保存） ----
+  // GET: 返回当前任务列表 {ok, count, quests: [...]}
+  if (path == "/api/quests" && req.method == "GET") {
+    Json r = Json::object();
+    r["ok"] = true;
+    try {
+      r["quests"] = Json::parse(world_.quests().questsToJson());
+      r["count"] = (int64_t)world_.quests().quests().size();
+    } catch (...) {
+      r["quests"] = Json::array();
+      r["count"] = 0;
+    }
+    enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存任务配置 {token, quests:[...]} -> 热替换 + 持久化 data/quests.json
+  if (path == "/api/quests/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("quests") || in.at("quests").type() != Json::Type::Array) {
+        r["error"] = "quests array required";
+      } else {
+        if (world_.quests().replaceQuests(in.at("quests"))) {
+          // 持久化到 data/quests.json
+          std::string questsJson = in.at("quests").dump();
+          std::string questsPath = cfg_.dataDir + "/quests.json";
+          FILE* fp = fopen(questsPath.c_str(), "wb");
+          if (fp) { fwrite(questsJson.data(), 1, questsJson.size(), fp); fclose(fp); }
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.quests().quests().size();
+          code = 200;
+        } else { r["error"] = "bad quests"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+
+  // ---- 经济配置接口（阶段7编辑器：强化/分解/合成/商店 热重载）----
+  // POST: 保存强化配置 {token, enhance:{...}} -> 热替换内存 + 数据库模式落库
+  if (path == "/api/enhance/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("enhance") || in.at("enhance").type() != Json::Type::Object) {
+        r["error"] = "enhance object required";
+      } else {
+        if (world_.applyEnhance(in.at("enhance").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.economy().enhance().config().levels.size();
+          code = 200;
+        } else { r["error"] = "bad enhance"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存分解配置 {token, decompose:{...}} -> 热替换内存 + 数据库模式落库
+  if (path == "/api/decompose/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("decompose") || in.at("decompose").type() != Json::Type::Object) {
+        r["error"] = "decompose object required";
+      } else {
+        if (world_.applyDecompose(in.at("decompose").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.economy().enhance().decomposeConfig().rules.size();
+          code = 200;
+        } else { r["error"] = "bad decompose"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存合成配方 {token, craft:{recipes:[...]}} -> 热替换内存 + 数据库模式落库
+  if (path == "/api/craft/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("craft") || in.at("craft").type() != Json::Type::Object) {
+        r["error"] = "craft object required";
+      } else {
+        if (world_.applyCraft(in.at("craft").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.economy().craft().recipes().size();
+          code = 200;
+        } else { r["error"] = "bad craft"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存商店配置 {token, shops:{...}} -> 热替换内存 + 数据库模式落库
+  if (path == "/api/shop/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("shops") || in.at("shops").type() != Json::Type::Object) {
+        r["error"] = "shops object required";
+      } else {
+        if (world_.applyShop(in.at("shops").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.data().shops().size();
+          code = 200;
+        } else { r["error"] = "bad shops"; }
       }
     } catch (...) { r["error"] = "bad request"; }
     enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
@@ -843,7 +1049,7 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
           Entity* p = world_.findEntity(c.playerId);
           if (p && p->pl.openShopId) {
             const ShopDef* shop = world_.data().shop(p->pl.openShopId);
-            if (shop) sendTo(c, proto::shopFrame(*shop));
+            if (shop) sendTo(c, proto::shopFrame(*shop, p));  // 附带限购已购进度
           }
         }
         break;
@@ -855,8 +1061,103 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
           if (p) {
             sendTo(c, proto::inventoryFrame(*p));   // 金币/背包更新
             sendTo(c, proto::statsFrame(*p));       // 属性（无变化也刷一次，简单一致）
+            // 限购进度刷新：重发 shopFrame（含 bought 计数），客户端据此更新“已购 X/限购 Y”
+            if (p->pl.openShopId) {
+              const ShopDef* shop = world_.data().shop(p->pl.openShopId);
+              if (shop) sendTo(c, proto::shopFrame(*shop, p));
+            }
           }
         }
+        break;
+      }
+      case proto::C2S_SHOP_SELL: {
+        proto::ShopSellMsg m;
+        if (proto::decodeShopSell(f.payload, m)) {
+          uint32_t gain = world_.sellItem(c.playerId, m.isInstance, m.instId, m.itemId, m.count);
+          sendTo(c, proto::sellResultFrame(gain > 0, gain));
+          if (gain > 0) {
+            Entity* p = world_.findEntity(c.playerId);
+            if (p) sendTo(c, proto::inventoryFrame(*p)); // 金币/背包更新（出售背包装备不影响已穿戴属性）
+          }
+        }
+        break;
+      }
+      case proto::C2S_ENHANCE: {
+        proto::EnhanceMsg m;
+        if (proto::decodeEnhance(f.payload, m)) {
+          // 强化：铁匠邻近 + 金币/强化石/保护符校验均在 enhanceEquip 内完成（服务端权威）
+          EnhanceResult r = world_.enhanceEquip(c.playerId, m.instId, m.useProtect);
+          sendTo(c, proto::enhanceFrame(r.ok, (uint8_t)r.failCode, m.instId,
+                                        (uint8_t)r.newLevel, r.success, r.goldLeft));
+          // 成功/降级后的背包与属性由 enhanceEquip 标记脏，netcode 每 tick 补发 S2C_INVENTORY/S2C_STATS
+        }
+        break;
+      }
+      case proto::C2S_DECOMPOSE: {
+        proto::DecomposeMsg m;
+        if (proto::decodeDecompose(f.payload, m)) {
+          // 分解：铁匠邻近 + 已穿戴/锁定校验均在 decomposeEquip 内完成（服务端权威）
+          DecomposeOutput o = world_.decomposeEquip(c.playerId, m.instId);
+          sendTo(c, proto::decomposeFrame(o.ok, (uint8_t)o.failCode, o.items, o.goldGain));
+          // 成功后背包由 decomposeEquip 标记脏，netcode 每 tick 补发 S2C_INVENTORY
+        }
+        break;
+      }
+      case proto::C2S_CRAFT_LIST: {
+        proto::CraftListMsg m;
+        if (proto::decodeCraftList(f.payload, m)) {
+          // 按 NPC 标签 + 玩家等级过滤可用配方（隐藏/等级不足不返回；服务端权威）
+          std::vector<uint32_t> ids = world_.craftList(c.playerId, m.npcWid);
+          sendTo(c, proto::craftListFrame(ids));
+        }
+        break;
+      }
+      case proto::C2S_CRAFT: {
+        proto::CraftMsg m;
+        if (proto::decodeCraft(f.payload, m)) {
+          // 合成：合成 NPC 邻近 + 等级/材料/金币校验均在 craftItem 内完成（服务端权威）
+          CraftOutput o = world_.craftItem(c.playerId, m.recipeId, m.count);
+          sendTo(c, proto::craftFrame(o.ok, (uint8_t)o.failCode, o.recipeId, o.resultItemId,
+                                      (uint16_t)o.resultCount, o.isInstance, o.instId));
+          // 成功后背包由 craftItem 标记脏，netcode 每 tick 补发 S2C_INVENTORY
+        }
+        break;
+      }
+      case proto::C2S_WAREHOUSE_OPEN: {
+        proto::WarehouseOpenMsg m;
+        if (proto::decodeWarehouseOpen(f.payload, m)) {
+          // 打开仓库：银行 NPC 邻近 + BANK 标签校验在 openWarehouse 内（服务端权威）
+          const WarehouseData* wh = world_.openWarehouse(c.playerId, m.npcWid);
+          if (wh) sendTo(c, proto::warehouseFrame(*wh));
+          else sendTo(c, proto::warehouseResultFrame(WH_OP_OPEN, WH_NO_NPC));
+        }
+        break;
+      }
+      case proto::C2S_WAREHOUSE_DEPOSIT: {
+        proto::WarehouseMoveMsg m;
+        if (proto::decodeWarehouseMove(f.payload, m)) {
+          // 存入：银行邻近 + 金币/装备/堆叠处理均在 depositItem 内（服务端权威）
+          uint8_t code = world_.depositItem(c.playerId, m.isInstance, m.instId, m.itemId, m.count);
+          sendTo(c, proto::warehouseResultFrame(WH_OP_DEPOSIT, code));
+          if (code == WH_OK) { const WarehouseData* wh = world_.warehouseData(c.playerId); if (wh) sendTo(c, proto::warehouseFrame(*wh)); }
+        }
+        break;
+      }
+      case proto::C2S_WAREHOUSE_WITHDRAW: {
+        proto::WarehouseMoveMsg m;
+        if (proto::decodeWarehouseMove(f.payload, m)) {
+          // 取出：银行邻近 + 装备保留强化/堆叠回背包均在 withdrawItem 内（服务端权威）
+          uint8_t code = world_.withdrawItem(c.playerId, m.isInstance, m.instId, m.itemId, m.count);
+          sendTo(c, proto::warehouseResultFrame(WH_OP_WITHDRAW, code));
+          if (code == WH_OK) { const WarehouseData* wh = world_.warehouseData(c.playerId); if (wh) sendTo(c, proto::warehouseFrame(*wh)); }
+        }
+        break;
+      }
+      case proto::C2S_WAREHOUSE_EXPAND: {
+        // 扩展：银行邻近 + 扣金币(1000×1.5^n)/满150拒绝均在 expandWarehouse 内（服务端权威）
+        uint8_t code = world_.expandWarehouse(c.playerId);
+        sendTo(c, proto::warehouseResultFrame(WH_OP_EXPAND, code));
+        if (code == WH_OK) { const WarehouseData* wh = world_.warehouseData(c.playerId); if (wh) sendTo(c, proto::warehouseFrame(*wh)); }
         break;
       }
       case proto::C2S_PICKUP: {
@@ -874,7 +1175,7 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
       }
       case proto::C2S_EQUIP: {
         proto::EquipMsg m;
-        if (proto::decodeEquip(f.payload, m) && world_.equipItem(c.playerId, m.slot, m.itemId)) {
+        if (proto::decodeEquip(f.payload, m) && world_.equipItem(c.playerId, m.slot, m.instId)) {
           Entity* p = world_.findEntity(c.playerId);
           if (p) {
             sendTo(c, proto::inventoryFrame(*p));
@@ -1163,7 +1464,7 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
       case proto::C2S_QUEST_ACCEPT: {
         proto::QuestAcceptMsg m;
         if (proto::decodeQuestAccept(f.payload, m)) {
-          auto result = world_.quests().acceptQuest(c.playerId, m.questId);
+          auto result = world_.quests().acceptQuest(c.playerId, m.questId, m.npcWid);
           sendTo(c, world_.quests().questResultFrame(QUEST_OP_ACCEPT, (uint8_t)result, m.questId));
           if (result == QUEST_OK) {
             sendTo(c, world_.quests().questProgressFrame(*world_.findEntity(c.playerId)));
@@ -1196,14 +1497,25 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
               sendTo(c, proto::statsFrame(*p));
               sendTo(c, world_.skillsFrame(*p));
             }
+            // 链式任务解锁通知：完成后自动解锁的后续任务
+            auto nextIds = world_.quests().getNextQuestIds(m.questId);
+            if (!nextIds.empty()) {
+              sendTo(c, world_.quests().questChainFrame(m.questId, nextIds));
+              // 同时推送更新后的可接任务列表（包含新解锁的任务）
+              Entity* p2 = world_.findEntity(c.playerId);
+              if (p2) sendTo(c, world_.quests().questListFrame(*p2));
+            }
           }
         }
         break;
       }
       case proto::C2S_QUEST_LIST: {
-        Entity* p = world_.findEntity(c.playerId);
-        if (!p) break;
-        sendTo(c, world_.quests().questListFrame(*p));
+        proto::QuestListMsg m;
+        if (proto::decodeQuestList(f.payload, m)) {
+          Entity* p = world_.findEntity(c.playerId);
+          if (!p) break;
+          sendTo(c, world_.quests().questListFrame(*p, m.npcWid));
+        }
         break;
       }
       case proto::C2S_QUEST_TRACK: {
@@ -1223,8 +1535,8 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
           if (p->pos.dist2D(npc->pos) > cfg_.questTalkRangeM) break;
           // 触发任务目标
           world_.quests().onTalkNpc(*p, m.npcWid);
-          // 返回可接/可提交任务列表（NPC 交互弹窗）
-          sendTo(c, world_.quests().questListFrame(*p));
+          // 返回该 NPC 发布的可接任务 + 全局活跃任务进度
+          sendTo(c, world_.quests().questListFrame(*p, m.npcWid));
           sendTo(c, world_.quests().questProgressFrame(*p));
         }
         break;
@@ -1236,19 +1548,19 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
 }
 void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
   Entity* p = world_.findEntity(c.playerId);
-  if (!p) return;
-  // 构造防作弊所需的输入描述（复用现有 AntiCheat 校验逻辑）
-  Json j = Json::object();
-  j["type"] = "input";
-  j["seq"] = (int64_t)in.seq;
-  j["moveX"] = in.moveX;
-  j["moveZ"] = in.moveZ;
-  j["jump"] = in.jump;
-  j["px"] = in.px;
-  j["py"] = in.py;
-  j["pz"] = in.pz;
-  ac_.setBypass(world_.testFlags().antiCheatBypass);  // 测试模式：控制台可全局关闭防作弊校验
-  AntiCheatResult res = ac_.process(*p, j, steadyMs());
+  if (!p || p->dead) return;  // 死亡玩家不处理输入
+
+  uint64_t nowMs = steadyMs();
+  ac_.setBypass(world_.testFlags().antiCheatBypass);
+
+  // 必须在 ac_.process() 之前捕获上一次采纳时刻：process() 的成功路径内部会把
+  // p.lastAcceptMs 置为 nowMs，事后再读得到的差值恒为 0 → dt=0 → p->vel 恒为 0，
+  // 连锁后果：减速限速退化为纯 teleportToleranceM 距离上限、广播给其他玩家的
+  // 速度恒为 0、input.targetVX/VZ 恒为 0 使 castSystem 的前摇移动打断彻底失效。
+  const uint64_t prevAcceptMs = p->lastAcceptMs;
+
+  // 1. 防作弊：频率/序号/可达性/地形校验
+  AntiCheatResult res = ac_.process(*p, (int64_t)in.seq, in.px, in.pz, nowMs);
   if (res.kick) {
     sendTo(c, proto::kick(res.reason));
     enqueue(c, wsEncodeFrame(WS_CLOSE, ""));
@@ -1256,13 +1568,82 @@ void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
     return;
   }
   if (res.correction) {
-    // 服务端后校验不通过 → 回退：拉回服务端权威位置 + 强制校准快照重锚定
+    // 诊断：打印「被拒的上报位置」与「权威位置」。旧日志只能从客户端看到权威位置，
+    // 看不到分歧量，无法定位 terrain_blocked 到底是真穿墙还是双端判定误差。
+    if (getenv("EW_DEBUG")) {
+      fprintf(stderr, "[AC] %s 拒绝 claim=(%.2f,%.2f) 权威=(%.2f,%.2f) 原因=%s 地形软失败=%d 违规=%d\n",
+              p->id.c_str(), in.px, in.pz, p->pos.x, p->pos.z,
+              res.reason.c_str(), p->terrainRejects, p->violations);
+    }
     sendTo(c, netcode_.correctionFrame(*p, res.reason, (uint32_t)world_.tickCount()));
     netcode_.requestResync(p->id);
+    return;
   }
+  if (!res.accepted) return;  // rate_limit / stale_seq
+
+  // 地形容差夹紧：严格级失败但收缩半径后通过时，防作弊已把位置沿「权威位置→claim」
+  // 线段夹回严格可通行点。必须采纳夹紧后的值，否则权威位置落在阻挡区内 →
+  // 后续每次上报都判 terrain_blocked（且客户端被校正到阻挡区后 slideMove 兜底会原地卡死）。
+  const double adoptX = res.clamped ? res.x : in.px;
+  const double adoptZ = res.clamped ? res.z : in.pz;
+
+  // 2. 控制效果校验：眩晕时拒绝位置变化
+  const bool stunned = p->hasBuff((uint8_t)BuffType::STUN);
+  if (stunned) {
+    // 眩晕下不允许移动，直接采纳服务端当前位置（忽略客户端上报位置）
+    // 不发送 correction，因为服务端位置未变
+    return;
+  }
+
+  // 3. 减速效果：降低可达性上限
+  double spdMul = 1.0;
+  for (const auto& b : p->buffs) {
+    if (b.type == (uint8_t)BuffType::MOVE_SLOW && b.remainSec > 0)
+      spdMul -= b.value;
+  }
+  if (spdMul < 0.05) spdMul = 0.05;
+  double effectiveMaxSpeed = cfg_.maxMoveSpeed * spdMul;
+
+  double dt = 0.0;
+  if (prevAcceptMs != 0) {
+    dt = (double)(nowMs - prevAcceptMs) / 1000.0;
+    dt = std::max(0.0, std::min(dt, 1.0));
+  }
+  double dist = std::hypot(adoptX - p->pos.x, adoptZ - p->pos.z);
+  double reach = effectiveMaxSpeed * dt + cfg_.teleportToleranceM;
+  if (dist > reach) return;  // 减速下超出可达性，静默丢弃
+
+  // 4. 采纳位置
+  Vec3 oldPos = p->pos;
+  p->pos.x = adoptX;
+  p->pos.z = adoptZ;
+  p->pos.y = groundFootY(adoptX, adoptZ, p->radius);
+  p->grounded = true;
+
+  // 5. 速度估算（供广播/击退用）
+  if (dt > 1e-6) {
+    p->vel.x = (adoptX - oldPos.x) / dt;
+    p->vel.z = (adoptZ - oldPos.z) / dt;
+  } else {
+    p->vel.x = 0;
+    p->vel.z = 0;
+  }
+  p->vel.y = 0;
+
+  // 6. 供 castSystem 移动打断用（位置变化 = 移动中）
+  p->input.targetVX = p->vel.x;
+  p->input.targetVZ = p->vel.z;
+
+  // 7. 任务钩子：移动后检测到达目标
+  if (dist > 0.01) {
+    world_.quests().onPlayerMove(*p);
+  }
+
   if (getenv("EW_DEBUG")) {
-    fprintf(stderr, "[AC] %s reason=%s %s\n", p->id.c_str(), res.reason.c_str(),
-            res.accepted ? "accepted" : "rejected");
+    fprintf(stderr, "[AC] %s pos=(%.1f,%.1f,%.1f) %s%s\n", p->id.c_str(),
+            p->pos.x, p->pos.y, p->pos.z,
+            res.accepted ? "accepted" : "rejected",
+            res.clamped ? "(地形容差夹紧)" : "");
   }
 }
 // 游戏控制台：执行一行命令并把逐行结果发给目标玩家（WS/HTTP 通道）
@@ -1316,13 +1697,33 @@ int GameServer::fdOfPlayer(const std::string& playerId) const {
   return -1;
 }
 // 每 tick：为每个在线玩家构建并下发二进制缓冲（AOI 进出 + 增量 + 校准快照）
-// 物品系统持久化：装备槽 -> JSON {"helm":1001,...}
-static std::string serializeEquip(const std::array<uint32_t, 6>& equip) {
+// 物品系统持久化（装备实例化）：
+// equipJson = {"slots":[{slot,instId,itemId,enhance,locked}], "bag":[{instId,itemId,enhance,locked}]}
+static std::string serializeEquip(const Entity& e) {
   Json o = Json::object();
-  for (int i = 0; i < (int)equip.size(); i++) {
-    if (!equip[i]) continue;
-    o[GameData::slotKey(ew::GameData::indexSlot(i))] = (int64_t)equip[i];
+  Json slots = Json::array();
+  for (int i = 0; i < (int)e.pl.equip.size(); i++) {
+    const ItemInstance& ins = e.pl.equip[i];
+    if (!ins.instId) continue;
+    Json so = Json::object();
+    so["slot"] = (int64_t)GameData::indexSlot(i);  // 槽位值 1..6
+    so["instId"] = (int64_t)ins.instId;
+    so["itemId"] = (int64_t)ins.itemId;
+    so["enhance"] = (int64_t)ins.enhance;
+    so["locked"] = ins.locked;
+    slots.push_back(so);
   }
+  o["slots"] = slots;
+  Json bag = Json::array();
+  for (const auto& ins : e.pl.equipBag) {
+    Json bo = Json::object();
+    bo["instId"] = (int64_t)ins.instId;
+    bo["itemId"] = (int64_t)ins.itemId;
+    bo["enhance"] = (int64_t)ins.enhance;
+    bo["locked"] = ins.locked;
+    bag.push_back(bo);
+  }
+  o["bag"] = bag;
   return o.dump();
 }
 // 背包 itemId->数量 -> JSON {"2001":5,...}
@@ -1331,16 +1732,51 @@ static std::string serializeInventory(const std::unordered_map<uint32_t, uint32_
   for (const auto& [id, cnt] : inv) o[std::to_string(id)] = (int64_t)cnt;
   return o.dump();
 }
-// 从存档 JSON 恢复玩家背包/装备
+// 从存档 JSON 恢复玩家背包/装备（含旧档迁移：旧格式无实例→自动分配 instId）
 void applySaveItems(World& w, Entity& p, const PlayerSave& ps) {
+  uint64_t maxInst = 0;
+  auto readInst = [&](const Json& o) {
+    ItemInstance ins;
+    ins.instId = (uint64_t)(o.has("instId") ? o.at("instId").asInt() : 0);
+    ins.itemId = (uint32_t)(o.has("itemId") ? o.at("itemId").asInt() : 0);
+    ins.enhance = (uint8_t)(o.has("enhance") ? o.at("enhance").asInt() : 0);
+    ins.locked = o.has("locked") && o.at("locked").type() == Json::Type::Bool ? o.at("locked").asBool() : false;
+    if (ins.instId == 0) ins.instId = w.allocInstId();  // 兜底：缺失 instId 则新分配
+    if (ins.instId > maxInst) maxInst = ins.instId;
+    return ins;
+  };
   try {
     if (!ps.equipJson.empty()) {
       Json eq = Json::parse(ps.equipJson);
       if (eq.type() == Json::Type::Object) {
-        for (auto& [key, v] : eq.asObject()) {
-          int idx;
-          EquipSlot slot = GameData::slotFromJson(Json(key), EquipSlot::WEAPON);
-          if (GameData::slotIndex(slot, idx)) p.pl.equip[idx] = (uint32_t)v.asInt();
+        if (eq.has("slots") || eq.has("bag")) {
+          // 新格式：装备实例
+          if (eq.has("slots") && eq.at("slots").type() == Json::Type::Array) {
+            for (const auto& so : eq.at("slots").asArray()) {
+              int idx;
+              int slotVal = (int)(so.has("slot") ? so.at("slot").asInt() : 0);
+              if (!GameData::slotIndex((EquipSlot)slotVal, idx)) continue;
+              p.pl.equip[idx] = readInst(so);
+            }
+          }
+          if (eq.has("bag") && eq.at("bag").type() == Json::Type::Array) {
+            for (const auto& bo : eq.at("bag").asArray())
+              p.pl.equipBag.push_back(readInst(bo));
+          }
+        } else {
+          // 旧格式：{"helm":1001,...} 槽位键 -> itemId（无实例）→ 迁移为实例
+          for (auto& [key, v] : eq.asObject()) {
+            int idx;
+            EquipSlot slot = GameData::slotFromJson(Json(key), EquipSlot::WEAPON);
+            if (!GameData::slotIndex(slot, idx)) continue;
+            uint32_t itemId = (uint32_t)v.asInt();
+            if (!itemId) continue;
+            ItemInstance ins;
+            ins.instId = w.allocInstId();
+            ins.itemId = itemId;
+            if (ins.instId > maxInst) maxInst = ins.instId;
+            p.pl.equip[idx] = ins;
+          }
         }
       }
     }
@@ -1350,14 +1786,29 @@ void applySaveItems(World& w, Entity& p, const PlayerSave& ps) {
         for (auto& [idStr, cnt] : inv.asObject()) {
           uint32_t id = (uint32_t)atoi(idStr.c_str());
           uint32_t n = (uint32_t)cnt.asInt();
-          if (id && n) p.pl.inventory[id] = n;
+          if (!id || !n) continue;
+          const ItemDef* def = w.data().item(id);
+          if (def && def->type == ItemType::EQUIP) {
+            // 旧档：装备曾按 itemId 堆叠 → 迁移为 n 个实例
+            for (uint32_t i = 0; i < n; i++) {
+              ItemInstance ins;
+              ins.instId = w.allocInstId();
+              ins.itemId = id;
+              if (ins.instId > maxInst) maxInst = ins.instId;
+              p.pl.equipBag.push_back(ins);
+            }
+          } else {
+            p.pl.inventory[id] = n;
+          }
         }
       }
     }
+    // 仓库数据恢复（阶段5）：deserialize 内部含 try-catch，失败静默（保留空仓库）
+    if (!ps.warehouseJson.empty()) w.warehouse().deserialize(ps.warehouseJson, p.pl.warehouse);
   } catch (const std::exception& e) {
     fprintf(stderr, "[save] 恢复背包失败: %s\n", e.what());
   }
-  (void)w;
+  if (maxInst) w.setInstIdFloor(maxInst);   // 扩展实例 ID 水位，避免新分配与旧档冲突
 }
 
 void GameServer::savePlayerToStore(const Entity& e) {
@@ -1368,13 +1819,20 @@ void GameServer::savePlayerToStore(const Entity& e) {
   ps.level = e.level;
   ps.exp = e.pl.exp;
   ps.gold = e.pl.gold;
-  ps.equipJson = serializeEquip(e.pl.equip);
+  ps.equipJson = serializeEquip(e);
   ps.inventoryJson = serializeInventory(e.pl.inventory);
   ps.questsJson = world_.quests().serializeQuests(e);
-  ps.updatedAtMs = world_.tickCount() * (uint64_t)cfg_.tickMs;
+  ps.warehouseJson = world_.warehouse().serialize(e.pl.warehouse);   // 仓库数据（阶段5）
+  // 存档时间戳取逻辑时钟（原点=本次进程启动），故它只表示「本进程内的相对时刻」，
+  // 跨重启不可比：不可用于「最后登录时间」展示、也不可据此按自然日判定。若需要真实
+  // 时间语义，应改存 system_clock 的 Unix 毫秒（steady_clock 同样不可用——其原点也是
+  // 系统启动，跨重启不可比）。此处仅做时钟表达式收口，不改语义。
+  ps.updatedAtMs = world_.logicNowMs();
   store_.savePlayer(ps);
   // 任务数据单独存储（便于独立加载）
   store_.saveQuests(e.username, ps.questsJson);
+  // 装备实例 ID 计数器持久化（跨重启唯一性；仅 MySQL 模式生效）
+  world_.saveInstIdCounter();
 }
 void GameServer::periodicSavePlayers() {
   for (const auto& pid : world_.players()) {

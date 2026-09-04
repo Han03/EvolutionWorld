@@ -18,13 +18,14 @@ class Config;
 // 生物/NPC/Boss 通用 AI 状态
 enum AiState : uint8_t {
   AS_IDLE = 0,     // 待机（无目标，等待）
-  AS_PATROL = 1,   // 巡逻：围绕出生点随机游走（生物）
-  AS_CHASE = 2,    // 追击：朝仇恨目标移动
-  AS_ATTACK = 3,   // 近战攻击：目标在攻击范围内
+  AS_PATROL = 1,   // 游走态：沿设定轨迹点巡逻
+  AS_CHASE = 2,    // 仇恨态-追击：朝仇恨目标移动（未攻击）
+  AS_ATTACK = 3,   // 仇恨态-战斗：目标在攻击范围内，进行攻击/施法
   AS_RETURN = 4,   // 回巢：超出追击距离/巡逻半径后返回出生点
   AS_WANDER = 5,   // 随机游走（NPC 低频行为）
   AS_INTERACT = 6, // 交互（NPC 预留：对话/商店/任务）
   AS_DEAD = 7,     // 死亡（复活计时）
+  AS_RECOVER = 8,  // 恢复态：无敌+回血+加速归位（追击超时触发）
 };
 
 // AI 调度器：决定某个实体本 tick 是否更新 AI
@@ -37,7 +38,7 @@ private:
   const Config& cfg_;
 };
 
-// 生物（Monster）状态机：IDLE/PATROL → CHASE/ATTACK → RETURN →（复活）
+// 生物（Monster）状态机：游走态 ⇄ 仇恨态（追击/战斗） → 恢复态 → 游走态
 void tickMonsterAi(World& w, Entity& e, double dt);
 // NPC 状态机：IDLE/WANDER（预留 INTERACT）
 void tickNpcAi(World& w, Entity& e, double dt);

@@ -14,8 +14,18 @@ static uint64_t steadyMs() {
 }
 
 void FriendSystem::init() {
-  // 从存储层加载好友关系和黑名单（内存兜底模式下为空）
-  // 实际加载在 World 初始化时通过 Store 调用完成
+  // 从存储层加载好友关系和黑名单（数据库模式下由 main.cpp 在 setStore 后调用）
+  auto& store = world_.store();
+  // 加载全量好友关系
+  for (const auto& [u, f, sinceMs] : store.loadAllFriends()) {
+    friends_[u].insert(f);
+  }
+  // 加载全量黑名单
+  for (const auto& [u, b] : store.loadAllBlocks()) {
+    blocks_[u].insert(b);
+  }
+  fprintf(stderr, "[friends] 从存储层加载完成：%zu 个用户有好友，%zu 个用户有黑名单\n",
+          friends_.size(), blocks_.size());
 }
 
 FriendResult FriendSystem::sendRequest(const std::string& from, const std::string& to, const std::string& message) {
