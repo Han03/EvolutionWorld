@@ -78,12 +78,18 @@ function decodeQuestProgress(payload) {
   const count = r.u16();
   const prog = [];
   for (let i = 0; i < count; i++) {
-    const q = { questId: r.u32(), status: r.u8(), objectives: [] };
+    const q = { questId: r.u32(), status: r.u8(), name: r.str(), desc: r.str(), category: r.u8(), objectives: [] };
     const objCount = r.u16();
-    for (let j = 0; j < objCount; j++) q.objectives.push({ current: r.u32(), required: r.u32() });
+    for (let j = 0; j < objCount; j++) q.objectives.push({ current: r.u32(), required: r.u32(), type: r.u8(), desc: r.str() });
     prog.push(q);
   }
-  return prog;
+  // 已完成任务摘要
+  const completedCount = r.u16();
+  const completed = [];
+  for (let i = 0; i < completedCount; i++) {
+    completed.push({ questId: r.u32(), category: r.u8(), name: r.str(), desc: r.str() });
+  }
+  return { active: prog, completed };
 }
 
 function decodeQuestResult(payload) {
@@ -240,8 +246,8 @@ async function main() {
     await wait(() => questProgressData !== null, 2000);
     check('S2C_QUEST_PROGRESS 收到(活跃任务)', questProgressData !== null);
     if (questProgressData) {
-      check('活跃任务包含已接受任务', questProgressData.some(q => q.questId === acceptId));
-      const active = questProgressData.find(q => q.questId === acceptId);
+      check('活跃任务包含已接受任务', questProgressData.active.some(q => q.questId === acceptId));
+      const active = questProgressData.active.find(q => q.questId === acceptId);
       if (active) {
         check('任务状态=进行中(0)', active.status === 0, `status=${active.status}`);
         check('目标进度初始=0', active.objectives.every(o => o.current === 0), `objs=${JSON.stringify(active.objectives)}`);
@@ -273,7 +279,7 @@ async function main() {
     // 检查进度更新（可能收到 NOTIFY 或 PROGRESS）
     await wait(() => questProgressData !== null || questNotifyData !== null, 2000);
     if (questProgressData) {
-      const active = questProgressData.find(q => q.questId === acceptId);
+      const active = questProgressData.active.find(q => q.questId === acceptId);
       if (active) {
         const allDone = active.objectives.every(o => o.current >= o.required);
         check('强制完成后目标全部达成', allDone, `objs=${JSON.stringify(active.objectives)}`);

@@ -619,6 +619,10 @@ std::string QuestSystem::questProgressFrame(const Entity& p) const {
     const QuestDef* qd = questDef(aq.questId);
     w.u32(aq.questId);
     w.u8(aq.status);
+    // 携带任务名称、描述、分类，客户端无需再查 questList
+    w.str(qd ? qd->name : "");
+    w.str(qd ? qd->desc : "");
+    w.u8(qd ? (uint8_t)qd->category : 0);
     uint16_t objCount = qd ? (uint16_t)qd->objectives.size() : (uint16_t)aq.progress.size();
     w.u16(objCount);
     for (uint16_t i = 0; i < objCount; i++) {
@@ -626,7 +630,18 @@ std::string QuestSystem::questProgressFrame(const Entity& p) const {
       uint32_t required = (qd && i < qd->objectives.size()) ? qd->objectives[i].required : 0;
       w.u32(current);
       w.u32(required);
+      w.u8(qd && i < qd->objectives.size() ? (uint8_t)qd->objectives[i].type : 0);
+      w.str(qd && i < qd->objectives.size() ? qd->objectives[i].desc : "");
     }
+  }
+  // 追加已完成任务摘要（供客户端「已完成」tab 渲染）
+  w.u16((uint16_t)p.completedQuests.size());
+  for (uint32_t cid : p.completedQuests) {
+    const QuestDef* qd = questDef(cid);
+    w.u32(cid);
+    w.u8(qd ? (uint8_t)qd->category : 0);
+    w.str(qd ? qd->name : "");
+    w.str(qd ? qd->desc : "");
   }
   return proto::frame(proto::S2C_QUEST_PROGRESS, w.data());
 }

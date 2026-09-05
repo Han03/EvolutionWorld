@@ -177,11 +177,14 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 .drop-row select { flex: 1 1 0; min-width: 80px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .drop-row input[type="number"] { flex: 0 0 56px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .drop-row .drop-pct { flex: none; color: #888; font-size: 11px; }
-/* 任务目标子表 */
-.quest-obj-row { display: flex; align-items: center; gap: 4px; margin: 3px 0; min-width: 0; flex-wrap: wrap; }
-.quest-obj-row select.quest-obj-type { flex: 0 0 56px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
-.quest-obj-row input[type="text"] { flex: 1 1 60px; min-width: 0; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
-.quest-obj-row input[type="number"] { flex: 0 0 48px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
+/* 任务目标卡片 */
+.q-obj-card { border: 1px solid #e0e2e8; border-radius: 6px; padding: 8px; margin: 6px 0; background: #fcfcfd; }
+.q-obj-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #eee; }
+.q-obj-title { font-size: 12px; font-weight: 700; color: #2f6fed; }
+.q-obj-head select.q-obj-type { flex: 0 0 auto; font-size: 12px; padding: 2px 6px; border: 1px solid #d8dae0; border-radius: 4px; margin: 0 6px; }
+.q-obj-hint { font-size: 11px; color: #999; margin-bottom: 4px; padding-left: 2px; }
+.q-obj-body .cfg-field > label { flex: 0 0 44px; font-size: 11px; }
+.q-obj-body .cfg-row2 .cfg-field > label { flex: 0 0 40px; }
 /* 经济配置子块（分解品质档 / 商店条目）：分组边框 */
 .de-rule { border: 1px solid #e0e2e8; border-radius: 6px; padding: 8px; margin: 6px 0; background: #fcfcfd; }
 .de-rar-select { width: 100%; font-size: 13px; padding: 4px 6px; border: 1px solid #d8dae0; border-radius: 4px; background: #fff; }

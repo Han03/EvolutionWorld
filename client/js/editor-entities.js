@@ -723,6 +723,14 @@ export function addQuestRewardItem() {
   renderQuestRewardItems();
 }
 
+const QUEST_OBJ_KEY_HINTS = {
+  kill: '怪物 type（如 wolf1）',
+  collect: '物品 ID',
+  reach: '无需填写',
+  talk: 'NPC ID',
+  escort: 'NPC ID',
+};
+
 function renderQuestObjectives() {
   const q = S.gameQuests[S.selectedQuest];
   const box = $('q-objectives'); box.innerHTML = '';
@@ -732,43 +740,109 @@ function renderQuestObjectives() {
   $('q-obj-count').textContent = objs.length;
   if (!objs.length) { box.innerHTML = '<div class="cfg-empty">无目标，点"添加目标"</div>'; return; }
   objs.forEach((o, i) => {
-    const row = document.createElement('div');
-    row.className = 'quest-obj-row';
+    const card = document.createElement('div');
+    card.className = 'q-obj-card';
+
+    // -- 头部：标题 + 类型选择 + 删除 --
+    const head = document.createElement('div');
+    head.className = 'q-obj-head';
+    const title = document.createElement('span');
+    title.className = 'q-obj-title';
+    title.textContent = `目标 #${i + 1}`;
     const typeSel = document.createElement('select');
-    typeSel.className = 'quest-obj-type';
+    typeSel.className = 'q-obj-type';
     for (const t of QUEST_OBJ_TYPES) {
       const opt = document.createElement('option');
       opt.value = t.v; opt.textContent = t.n;
       if (o.type === t.v) opt.selected = true;
       typeSel.appendChild(opt);
     }
-    typeSel.addEventListener('change', () => { o.type = typeSel.value; });
+    const del = document.createElement('button');
+    del.className = 'sp-del'; del.textContent = '✕'; del.title = '删除目标';
+    del.addEventListener('click', () => { objs.splice(i, 1); renderQuestObjectives(); });
+    head.appendChild(title); head.appendChild(typeSel); head.appendChild(del);
+    card.appendChild(head);
+
+    // -- 字段区域 --
+    const body = document.createElement('div');
+    body.className = 'q-obj-body';
+
+    // 目标类型提示（动态）
+    const hintSpan = document.createElement('div');
+    hintSpan.className = 'q-obj-hint';
+    hintSpan.textContent = QUEST_OBJ_KEY_HINTS[o.type] || '';
+    body.appendChild(hintSpan);
+
+    // 目标 key/ID
+    const keyField = document.createElement('div');
+    keyField.className = 'cfg-field';
+    const keyLabel = document.createElement('label');
+    keyLabel.textContent = '目标';
     const keyInput = document.createElement('input');
-    keyInput.type = 'text'; keyInput.placeholder = 'key/ID';
+    keyInput.type = 'text'; keyInput.placeholder = QUEST_OBJ_KEY_HINTS[o.type] || '';
     keyInput.value = o.targetKey || '';
     keyInput.addEventListener('input', () => { o.targetKey = keyInput.value; });
+    keyField.appendChild(keyLabel); keyField.appendChild(keyInput);
+    body.appendChild(keyField);
+
+    // 数量
+    const reqField = document.createElement('div');
+    reqField.className = 'cfg-field';
+    const reqLabel = document.createElement('label');
+    reqLabel.textContent = '数量';
     const reqInput = document.createElement('input');
     reqInput.type = 'number'; reqInput.min = '1'; reqInput.step = '1';
     reqInput.value = o.required || 1;
     reqInput.addEventListener('input', () => { o.required = parseInt(reqInput.value, 10) || 1; });
+    reqField.appendChild(reqLabel); reqField.appendChild(reqInput);
+    body.appendChild(reqField);
+
+    // 描述
+    const descField = document.createElement('div');
+    descField.className = 'cfg-field';
+    const descLabel = document.createElement('label');
+    descLabel.textContent = '描述';
     const descInput = document.createElement('input');
-    descInput.type = 'text'; descInput.placeholder = '描述';
+    descInput.type = 'text'; descInput.placeholder = '显示在任务日志中的文本';
     descInput.value = o.desc || '';
     descInput.addEventListener('input', () => { o.desc = descInput.value; });
+    descField.appendChild(descLabel); descField.appendChild(descInput);
+    body.appendChild(descField);
+
+    // 坐标 X / Z（并排）
+    const coordRow = document.createElement('div');
+    coordRow.className = 'cfg-row2';
+    const xField = document.createElement('div');
+    xField.className = 'cfg-field';
+    const xLabel = document.createElement('label');
+    xLabel.textContent = '坐标X';
     const xInput = document.createElement('input');
-    xInput.type = 'number'; xInput.placeholder = 'x'; xInput.step = '0.5';
+    xInput.type = 'number'; xInput.step = '0.5';
     xInput.value = o.x || 0;
     xInput.addEventListener('input', () => { o.x = parseFloat(xInput.value) || 0; });
+    xField.appendChild(xLabel); xField.appendChild(xInput);
+    const zField = document.createElement('div');
+    zField.className = 'cfg-field';
+    const zLabel = document.createElement('label');
+    zLabel.textContent = '坐标Z';
     const zInput = document.createElement('input');
-    zInput.type = 'number'; zInput.placeholder = 'z'; zInput.step = '0.5';
+    zInput.type = 'number'; zInput.step = '0.5';
     zInput.value = o.z || 0;
     zInput.addEventListener('input', () => { o.z = parseFloat(zInput.value) || 0; });
-    const del = document.createElement('button');
-    del.className = 'sp-del'; del.textContent = '✕'; del.title = '删除';
-    del.addEventListener('click', () => { objs.splice(i, 1); renderQuestObjectives(); });
-    row.appendChild(typeSel); row.appendChild(keyInput); row.appendChild(reqInput);
-    row.appendChild(descInput); row.appendChild(xInput); row.appendChild(zInput); row.appendChild(del);
-    box.appendChild(row);
+    zField.appendChild(zLabel); zField.appendChild(zInput);
+    coordRow.appendChild(xField); coordRow.appendChild(zField);
+    body.appendChild(coordRow);
+
+    card.appendChild(body);
+    box.appendChild(card);
+
+    // 类型切换时更新提示文本和 placeholder
+    typeSel.addEventListener('change', () => {
+      o.type = typeSel.value;
+      const hint = QUEST_OBJ_KEY_HINTS[o.type] || '';
+      hintSpan.textContent = hint;
+      keyInput.placeholder = hint;
+    });
   });
 }
 

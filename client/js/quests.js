@@ -23,6 +23,7 @@ const QUEST_RESULT_CODE = {
 // ---------- 状态 ----------
 let questList = [];      // 可接任务列表 [{questId, category, name, desc, levelReq, giverNpcWid, objectives, rewards, nextQuestIds}]
 let questProgress = [];  // 活跃任务 [{questId, status, objectives: [{current, required}]}]
+let questCompleted = []; // 已完成任务 [{questId, category, name, desc}]
 let questPanelOpen = false;
 let questTab = 'active'; // available / active / completed
 let currentNpcFilter = 0; // NPC 过滤模式：0=全部，>0=指定 NPC wid
@@ -75,19 +76,43 @@ export function decodeQuestList(r) {
   return list;
 }
 
-/** 解析 S2C_QUEST_PROGRESS */
+/** 解析 S2C_QUEST_PROGRESS（含任务名称/描述/目标详情 + 已完成任务摘要） */
 export function decodeQuestProgress(r) {
   const count = r.u16();
   const prog = [];
   for (let i = 0; i < count; i++) {
-    const q = { questId: r.u32(), status: r.u8(), objectives: [] };
+    const q = {
+      questId: r.u32(),
+      status: r.u8(),
+      name: r.str(),
+      desc: r.str(),
+      category: r.u8(),
+      objectives: [],
+    };
     const objCount = r.u16();
     for (let j = 0; j < objCount; j++) {
-      q.objectives.push({ current: r.u32(), required: r.u32() });
+      q.objectives.push({
+        current: r.u32(),
+        required: r.u32(),
+        type: r.u8(),
+        desc: r.str(),
+      });
     }
     prog.push(q);
   }
   questProgress = prog;
+  // 已完成任务摘要（追加在活跃任务之后）
+  const compCount = r.u16();
+  const comp = [];
+  for (let i = 0; i < compCount; i++) {
+    comp.push({
+      questId: r.u32(),
+      category: r.u8(),
+      name: r.str(),
+      desc: r.str(),
+    });
+  }
+  questCompleted = comp;
   updateQuestTracker();
   if (questPanelOpen) renderQuestPanel();
   return prog;
@@ -201,6 +226,7 @@ export function closeQuestPanel() {
 export function isQuestPanelOpen() { return questPanelOpen; }
 export function getQuestList() { return questList; }
 export function getQuestProgress() { return questProgress; }
+export function getQuestCompleted() { return questCompleted; }
 export function setNpcFilter(npcWid) { currentNpcFilter = npcWid; }
 
 function renderQuestPanel() {
@@ -255,37 +281,25 @@ function renderQuestPanel() {
       html = '<div class="quest-empty">当前无进行中任务</div>';
     } else {
       for (const q of questProgress) {
-        // 查找任务名
-        const listQ = questList.find(lq => lq.questId === q.questId);
-        const name = listQ ? listQ.name : `任务#${q.questId}`;
-        const desc = listQ ? listQ.desc : '';
+        const name = q.name || `任务#${q.questId}`;
+        const desc = q.desc || '';
+        const catColor = CATEGORY_COLORS[q.category] || '#fff';
         const statusText = q.status === 1 ? '✅ 可提交' : '进行中';
         const statusClass = q.status === 1 ? 'quest-completable' : '';
         html += `<div class="quest-card ${statusClass}" data-quest-id="${q.questId}">
           <div class="quest-card-header">
+            <span class="quest-cat" style="color:${catColor}">[${CATEGORY_NAMES[q.category] || '未知'}]</span>
             <span class="quest-name">${name}</span>
             <span class="quest-status">${statusText}</span>
           </div>
           <div class="quest-desc">${desc}</div>
           <div class="quest-objectives">`;
-        if (listQ) {
-          for (let i = 0; i < listQ.objectives.length; i++) {
-            const obj = listQ.objectives[i];
-            const prog = q.objectives[i] || { current: 0, required: obj.required };
-            const done = prog.current >= prog.required;
-            html += `<div class="quest-obj ${done ? 'quest-obj-done' : ''}">
-              ${OBJ_TYPE_NAMES[obj.type] || '?'} ${obj.desc} (${prog.current}/${prog.required})
-              <div class="quest-progress-bar"><div class="quest-progress-fill" style="width:${Math.min(100, prog.current / prog.required * 100)}%"></div></div>
-            </div>`;
-          }
-        } else {
-          for (const prog of q.objectives) {
-            const done = prog.current >= prog.required;
-            html += `<div class="quest-obj ${done ? 'quest-obj-done' : ''}">
-              目标 (${prog.current}/${prog.required})
-              <div class="quest-progress-bar"><div class="quest-progress-fill" style="width:${Math.min(100, prog.current / prog.required * 100)}%"></div></div>
-            </div>`;
-          }
+        for (const obj of q.objectives) {
+          const done = obj.current >= obj.required;
+          html += `<div class="quest-obj ${done ? 'quest-obj-done' : ''}">
+            ${OBJ_TYPE_NAMES[obj.type] || '?'} ${obj.desc} (${obj.current}/${obj.required})
+            <div class="quest-progress-bar"><div class="quest-progress-fill" style="width:${Math.min(100, obj.current / obj.required * 100)}%"></div></div>
+          </div>`;
         }
         html += `</div>
           <div class="quest-btns">
@@ -296,7 +310,25 @@ function renderQuestPanel() {
       }
     }
   } else {
-    html = '<div class="quest-empty">已完成任务记录</div>';
+    // completed tab
+    if (questCompleted.length === 0) {
+      html = '<div class="quest-empty">暂无已完成任务</div>';
+    } else {
+      for (const q of questCompleted) {
+        const name = q.name || `任务#${q.questId}`;
+        const desc = q.desc || '';
+        const catColor = CATEGORY_COLORS[q.category] || '#fff';
+        const catName = CATEGORY_NAMES[q.category] || '未知';
+        html += `<div class="quest-card quest-card-completed" data-quest-id="${q.questId}">
+          <div class="quest-card-header">
+            <span class="quest-cat" style="color:${catColor}">[${catName}]</span>
+            <span class="quest-name">${name}</span>
+            <span class="quest-status quest-completed">✔ 已完成</span>
+          </div>
+          ${desc ? `<div class="quest-desc">${desc}</div>` : ''}
+        </div>`;
+      }
+    }
   }
   content.innerHTML = html;
 }
@@ -311,21 +343,16 @@ function updateQuestTracker() {
   }
   let html = '';
   for (const q of questProgress) {
-    const listQ = questList.find(lq => lq.questId === q.questId);
-    const name = listQ ? listQ.name : `任务#${q.questId}`;
-    const catColor = listQ ? (CATEGORY_COLORS[listQ.category] || '#fff') : '#fff';
+    const name = q.name || `任务#${q.questId}`;
+    const catColor = CATEGORY_COLORS[q.category] || '#fff';
     const completable = q.status === 1;
     html += `<div class="quest-track-item ${completable ? 'quest-track-completable' : ''}">
       <div class="quest-track-name" style="border-left-color:${catColor}">${name}${completable ? ' ✅' : ''}</div>`;
-    if (listQ) {
-      for (let i = 0; i < listQ.objectives.length; i++) {
-        const obj = listQ.objectives[i];
-        const prog = q.objectives[i] || { current: 0, required: obj.required };
-        const done = prog.current >= prog.required;
-        html += `<div class="quest-track-obj ${done ? 'quest-track-obj-done' : ''}">
-          ${obj.desc}: ${prog.current}/${prog.required}${done ? ' ✓' : ''}
-        </div>`;
-      }
+    for (const obj of q.objectives) {
+      const done = obj.current >= obj.required;
+      html += `<div class="quest-track-obj ${done ? 'quest-track-obj-done' : ''}">
+        ${obj.desc}: ${obj.current}/${obj.required}${done ? ' ✓' : ''}
+      </div>`;
     }
     html += '</div>';
   }
@@ -349,6 +376,7 @@ export function initQuestUI(net) {
     btn.addEventListener('click', () => {
       questTab = btn.dataset.tab;
       if (questTab === 'available') sendQuestList(net, currentNpcFilter);
+      if (questTab === 'completed') sendQuestTrack(net);
       renderQuestPanel();
     });
   });

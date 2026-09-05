@@ -421,8 +421,6 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   // 荆棘反伤：目标（怪物/精英）若有 THORNS Buff，反弹部分伤害给攻击者
   thornsReflect(*t, *p, dmg);
   if (t->hp <= 0) onVictimDeath(*t, *p, nowMs);
-  // 任务钩子：击杀怪物后检测任务进度
-  quests_->onMonsterKill(*p, t->monsterType);
   return true;
 }
 // 目标死亡统一处理（普攻/技能共用）：精英复活 / 普通怪物失活+复活 + 掉落
@@ -433,6 +431,8 @@ void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
     const MonsterDef* kdef = victim.monsterType.empty() ? nullptr : data_.monster(victim.monsterType);
     uint32_t exp = kdef ? kdef->expReward : (victim.isElite ? 500u : 0u);
     if (exp) grantExp(killer, exp);
+    // 任务钩子：击杀怪物后检测任务进度（普攻/技能共用，仅怪物真正死亡时触发）
+    quests_->onMonsterKill(killer, victim.monsterType);
   }
   if (victim.isElite) {
     victim.eliteState = ES_DEAD;
