@@ -743,6 +743,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       r["warehouse"] = Json::parse(world_.warehouse().configToJson());  // 仓库配置（页数/格子/扩展费用/存金上限）
       r["shops"] = Json::parse(world_.data().shopsToJson());  // 商店配置（阶段7编辑器：分类/限购/折扣/回收）
       r["skills"] = Json::parse(world_.data().skillsToJson());  // 技能配置（世界编辑器技能编辑模式）
+      r["quests"] = Json::parse(world_.quests().questsToJson());  // 任务配置（客户端自动化插件数据驱动）
     } catch (...) {
       r["items"] = Json::array();
       r["monsters"] = Json::object();
@@ -753,6 +754,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       r["warehouse"] = Json::object();
       r["shops"] = Json::object();
       r["skills"] = Json::object();
+      r["quests"] = Json::array();
     }
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
     c.closeAfterFlush = true;

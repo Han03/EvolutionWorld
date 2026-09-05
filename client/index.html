@@ -124,6 +124,18 @@
           </select>
           <button id="debug-print" class="debug-print-btn">打印</button>
         </div>
+        <!-- ── 自动化测试插件控制（autobot.js） ── -->
+        <div class="debug-row autobot-row">
+          <span class="autobot-label">🤖 自动化测试</span>
+          <button id="ab-start" class="debug-print-btn">开始</button>
+          <button id="ab-pause" class="debug-print-btn">暂停</button>
+          <button id="ab-reset" class="debug-print-btn">重置</button>
+          <span id="ab-status" class="autobot-status">停止</span>
+        </div>
+        <div class="debug-row autobot-log-row">
+          <span id="ab-stat" class="autobot-label" style="font-weight:400">—</span>
+        </div>
+        <div id="ab-log" class="autobot-log"></div>
       </div>
     </div>
 
