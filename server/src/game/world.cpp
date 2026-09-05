@@ -101,16 +101,30 @@ bool World::loadWorldFromStore(Store& s) {
             terrainWalkMaskN(), terrainWalkMaskN(), spawns_.size());
   return ok;
 }
-void World::spawnEliteAt(double hx, double hz, const std::string& name) {
-  Entity b = makeMonster(nextEntityId("elite"), "gargoyle");
+void World::spawnEliteAt(double hx, double hz, const std::string& type, const std::string& name) {
+  // 数据驱动：从 MonsterDef 读取属性/技能，Config 全局值仅作兜底
+  const MonsterDef* def = type.empty() ? nullptr : data_.monster(type);
+  Entity b = makeMonster(nextEntityId("elite"), type);
   b.isElite = true;
   b.radius = 1.4;
-  b.hp = b.maxHp = cfg_.eliteHp;
-  b.mp = b.maxMp = cfg_.eliteMp;
-  b.attack = cfg_.eliteAttack;
-  b.defense = cfg_.eliteDefense;
-  b.level = 60;
-  b.name = name.empty() ? "荒原巨兽" : name;
+  if (def) {
+    b.monsterType = type;
+    b.name = name.empty() ? def->name : name;
+    b.level = def->level;
+    b.hp = b.maxHp = def->hp;
+    b.mp = b.maxMp = def->mp;
+    b.attack = def->attack;
+    b.defense = def->defense;
+    b.ai.speed = def->moveSpeed;
+    b.skillIds = def->skillIds;
+  } else {
+    b.name = name.empty() ? type : name;
+    b.hp = b.maxHp = cfg_.eliteHp;
+    b.mp = b.maxMp = cfg_.eliteMp;
+    b.attack = cfg_.eliteAttack;
+    b.defense = cfg_.eliteDefense;
+    fprintf(stderr, "[elite] 警告：type=%s 未找到 MonsterDef，使用 Config 兜底\n", type.c_str());
+  }
   // 在锚点附近找干地出生
   double bx = hx, bz = hz;
   bool found = false;
@@ -124,7 +138,6 @@ void World::spawnEliteAt(double hx, double hz, const std::string& name) {
   b.pos = {bx, groundFootY(bx, bz, b.radius), bz};
   b.ai.homeX = bx;
   b.ai.homeZ = bz;
-  b.skillIds = {2100, 2101};  // 精英技能：地裂冲击 / 暗影波动
   addEntity(std::move(b));
   aliveElite_++;
 }
@@ -133,7 +146,11 @@ void World::spawnFromPoint(const SpawnPoint& sp) {
   if (sp.kind == SP_MONSTER) {
     // 相同怪物成群：群内围绕锚点小半径散布（确定性），避免完全重叠；
     // spawnMonster 会在附近自动寻找可通行干地，保证不落空洞/水中。
-    const std::string type = sp.type.empty() ? "wolf" : sp.type;
+    if (sp.type.empty()) {
+      fprintf(stderr, "[spawn] 警告：怪物出生点 type 为空，跳过 (%.1f,%.1f)\n", sp.x, sp.z);
+      return;
+    }
+    const std::string& type = sp.type;
     int n = sp.count > 0 ? sp.count : 1;
     for (int i = 0; i < n; i++) {
       double ang = (double)i / (double)n * 6.283185307;
@@ -143,7 +160,7 @@ void World::spawnFromPoint(const SpawnPoint& sp) {
   } else if (sp.kind == SP_NPC) {
     spawnNpcAt(sp);
   } else if (sp.kind == SP_ELITE) {
-    spawnEliteAt(sp.x, sp.z, sp.name);
+    spawnEliteAt(sp.x, sp.z, sp.type, sp.name);
   }
 }
 // 按出生点生成一个城镇 NPC：就近找干地，可带商店/名称

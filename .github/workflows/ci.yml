@@ -53,7 +53,8 @@ jobs:
           Start-Sleep -Seconds 3
           wsl -d Ubuntu -- bash -c "for i in 1 2 3 4 5 6 7 8 9 10; do if ! ss -tlnp 2>/dev/null | grep -q ':3000 '; then echo 'Port 3000 free after ${i}s'; break; fi; echo 'Waiting for port 3000... (${i})'; sleep 1; done; ss -tlnp 2>/dev/null | grep ':3000 ' && echo 'WARNING: Port 3000 still in use!' || echo 'Port 3000 confirmed free'"
           # Deploy build artifacts to stable WSL path (survives runner workspace cleanup)
-          wsl -d Ubuntu -- bash -c "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && echo DEPLOY_OK"
+          # Also copy server/data JSON configs (CI does rm -rf so no runtime data to preserve)
+          wsl -d Ubuntu -- bash -c "rm -rf /opt/evolutionworld && mkdir -p /opt/evolutionworld/server/build /opt/evolutionworld/server/data && cp -r '$wsl/client' /opt/evolutionworld/client && cp '$wsl/server/build/evolution_server' /opt/evolutionworld/server/build/evolution_server && chmod +x /opt/evolutionworld/server/build/evolution_server && cp '$wsl'/server/data/*.json /opt/evolutionworld/server/data/ 2>/dev/null || true && echo DEPLOY_OK"
           # Resolve Windows host IP visible from WSL2 (for MySQL/Redis connectivity)
           # Use cut instead of awk to avoid PowerShell→WSL escaping issues with $2
           $winHost = (wsl -d Ubuntu -- bash -c "grep nameserver /etc/resolv.conf | head -1 | cut -d' ' -f2").Trim()

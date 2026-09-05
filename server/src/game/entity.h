@@ -72,7 +72,7 @@ struct Entity {
   // 技能系统（大型网游规模，数据驱动）
   std::unordered_set<uint32_t> learnedSkills;        // 已学习技能 ID
   std::unordered_map<uint32_t, uint64_t> skillCd;    // 技能冷却：skillId -> readyAtMs（服务端权威单调时钟）
-  std::vector<uint32_t> skillIds;                    // 运行时可用技能 ID（怪物由 MonsterDef 写入，精英硬编码）
+  std::vector<uint32_t> skillIds;                    // 运行时可用技能 ID（由 MonsterDef 数据驱动）
   struct Buff {
     uint32_t skillId = 0;   // 来源技能
     uint8_t type = 0;       // BuffType（skills.h）

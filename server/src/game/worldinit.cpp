@@ -397,10 +397,9 @@ bool generateWorld(World& w, const Config& cfg) {
             if (def->shopId) sp.shopId = def->shopId;
           }
         } else {
-          // 回退：无可用 NPC ID，使用旧模式
+          // 回退：无可用 NPC ID，使用标签作为占位（名称由 NpcDef 驱动，此处仅保留结构）
           sp.npcTag = tags[t];
-          sp.name = std::string(tags[t] == NPC_TAG_BASIC ? "向导" : tags[t] == NPC_TAG_QUEST ? "任务使者" : tags[t] == NPC_TAG_SHOP ? "商人" : "铁匠");
-          if (tags[t] & NPC_TAG_SHOP) sp.shopId = city.idx * 100 + g + 1;
+          sp.name = "";
         }
         list.push_back(sp);
       }
@@ -495,7 +494,7 @@ bool generateWorld(World& w, const Config& cfg) {
       if (inAnyCity(bx, bz, 5.0)) continue;
       SpawnPoint sp;
       sp.kind = SP_ELITE;
-      std::string eliteType = (T > 0) ? typesByLevel[T - 1].second : std::string("gargoyle");
+      std::string eliteType = (T > 0) ? typesByLevel[T - 1].second : std::string();
       auto it = w.data().monsters().find(eliteType);
       sp.type = eliteType;
       sp.name = (it != w.data().monsters().end()) ? it->second.name : eliteType;
@@ -516,7 +515,6 @@ bool generateWorld(World& w, const Config& cfg) {
     SpawnPoint sp;
     sp.kind = SP_NPC;
     sp.x = 0.0; sp.z = 0.0;
-    sp.shopId = 1; sp.name = "商店老板"; sp.npcTag = NPC_TAG_SHOP;
     sp.npcGroup = 0; sp.cityId = 0;
     w.spawnsMut().listMut().push_back(sp);
     list.push_back(sp);

@@ -311,7 +311,7 @@ private:
   void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
-  void spawnEliteAt(double homeX, double homeZ, const std::string& name);
+  void spawnEliteAt(double homeX, double homeZ, const std::string& type, const std::string& name);
   const Config& cfg_;
   uint32_t currentSeed_;   // 当前世界种子（reinit 时可更新）
   SpawnConfig spawns_;   // 生物出生点配置（默认确定性生成，可 JSON 覆盖/编辑器修改）
