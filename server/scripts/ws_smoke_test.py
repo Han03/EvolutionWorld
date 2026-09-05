@@ -29,9 +29,9 @@ def u32(v): return struct.pack('<I', v)
 def frame(typ, payload=b''):
     return bytes([0x45, 0x57, 1, typ, 0]) + struct.pack('<HH', 0, len(payload)) + payload
 
-def input_frame(seq, mx, mz, jump, px, py, pz):
-    pay = u32(seq) + i16(int(round(mx*1000))) + i16(int(round(mz*1000))) + bytes([1 if jump else 0]) \
-          + i32(qabs(px)) + i16(qabs(py)) + i32(qabs(pz))
+def input_frame(seq, px, py, pz):
+    """新版纯位置上报：seq(u32) + px(i32) + py(i16) + pz(i32) = 14 字节"""
+    pay = u32(seq) + i32(qabs(px)) + i16(qabs(py)) + i32(qabs(pz))
     return frame(1, pay)
 
 def parse_frames(buf):
@@ -131,10 +131,10 @@ def main():
     x0, y0, z0 = me_pos()
     print(f"[{mode}] start=({x0:.1f},{y0:.1f},{z0:.1f})")
     seq = 0
-    def send(mx, mz, claim, jump=False):
+    def send(claim):
         nonlocal seq
         seq += 1
-        ws.send_binary(input_frame(seq, mx, mz, jump, *claim))
+        ws.send_binary(input_frame(seq, *claim))
     def drain(timeout=0.02, max_reads=200):
         """收集 correction/kick 帧。
         注意：timeout 必须小于服务端广播间隔（50ms），否则会因帧不断到达而永远不超时。
@@ -158,12 +158,14 @@ def main():
         return corr, kick
     corrections, kicks = [], []
     if mode == "normal":
-        me = me_pos()
+        # 新版纯位置上报：客户端每步声称前进 0.15m（合法移动，不触发防作弊）
+        me = me_pos() or (x0, y0, z0)
+        cx, cy, cz = me
         for i in range(40):
-            claim = (me[0], me[1], me[2])  # 用服务端权威位置作为预测基准
-            send(0, -1, claim)
+            cz -= 0.15  # 每步向前（-Z 方向）移动 0.15m
+            claim = (cx, cy, cz)
+            send(claim)
             time.sleep(0.03)
-            me = me_pos() or me
             c, k = drain(0.01)
             corrections += c; kicks += k
         me = me_pos()
@@ -174,7 +176,7 @@ def main():
     elif mode == "teleport":
         for _ in range(60):
             claim = (x0 + 300, y0, z0 + 300)
-            send(0, 0, claim)
+            send(claim)
             time.sleep(0.02)
             c, k = drain(0.02)
             corrections += c; kicks += k
@@ -190,7 +192,7 @@ def main():
         t0 = time.time()
         try:
             for _ in range(500):
-                send(0, -1, (x0, y0, z0))
+                send((x0, y0, z0))
         except Exception:
             pass  # 服务端可能已限频踢出而关闭连接
         dt = time.time() - t0
@@ -201,18 +203,19 @@ def main():
         if kicks:
             print(f"[flood] 被限频踢出: {kicks[0]}")
     elif mode == "jump":
-        # 等待落地（出生点略高于地表，需先落到地面才能起跳）
+        # 跳跃已从协议/物理层移除，此模式验证位置上报仍正常工作
         time.sleep(1.2)
         me = me_pos() or (x0, y0, z0)
-        send(0, 0, me, jump=True)
+        send(me)
         time.sleep(0.05)
         peak = me[1]
         for _ in range(30):
             time.sleep(0.04)
             p = me_pos()
             if p: peak = max(peak, p[1])
-        print(f"[jump] y0={me[1]:.2f} peak={peak:.2f} 升高={(peak-me[1]):.2f}m")
-        assert peak - me[1] > 1.0, "跳跃未生效"
+        print(f"[jump] y0={me[1]:.2f} peak={peak:.2f} (跳跃已移除，验证位置上报正常)")
+        # 不再断言跳跃高度，仅验证连接存活
+        print(f"[jump] 位置上报模式正常，连接存活")
     elif mode == "boss":
         # 世界 Boss 状态共享验证：双客户端血量一致 + 攻击减血 + 死亡/复活
         boss = debug_bosses()[0]

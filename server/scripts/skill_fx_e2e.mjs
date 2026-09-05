@@ -33,15 +33,46 @@ async function main() {
 
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(500);
-  await page.fill('#username', uname);
-  await page.fill('#password', 'pass1234');
-  await page.click('#btn-register');
+  await page.fill('#ew-login-user', uname);
+  await page.fill('#ew-login-pass', 'pass1234');
+  await page.click('#ew-btn-register');
+  await page.waitForTimeout(300);
+  await page.click('#ew-btn-login');
   await page.waitForSelector('#hud:not(.hidden)', { timeout: 30000 });
   await page.waitForFunction(() => window.__ewFrames > 2, null, { timeout: 30000 });
-  await page.waitForTimeout(1200); // 视野加载
+  // 等待视野实体加载（而非固定超时）
+  await page.waitForFunction(() => window.__ewEntities && window.__ewEntities.views && window.__ewEntities.views.size > 1, null, { timeout: 15000 });
+  await page.waitForTimeout(500);
 
   const entCount = await page.evaluate(() => window.__ewEntities ? window.__ewEntities.views.size : 0);
   console.log('视野实体数:', entCount);
+
+  // 出生点安全区无怪，需传送到怪物附近才能施放技能（1002 射程 3.5m）
+  const token = await page.evaluate(() => {
+    try { return JSON.parse(localStorage.getItem('ew_session') || '{}').token || ''; } catch(_) { return ''; }
+  });
+  if (token) {
+    // 获取视野内一只怪物的位置
+    const monsterPos = await page.evaluate(() => {
+      if (!window.__ewEntities) return null;
+      for (const [, e] of window.__ewEntities.views) {
+        if (e.kind === 1) return { x: e.x, z: e.z };  // kind=1 = Monster
+      }
+      return null;
+    });
+    if (monsterPos) {
+      console.log('传送到怪物附近:', JSON.stringify(monsterPos));
+      const tpRes = await fetch(base + '/api/debug/teleport', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, x: monsterPos.x, z: monsterPos.z }),
+      });
+      const tpJson = await tpRes.json();
+      console.log('传送结果:', tpJson.ok ? '成功' : JSON.stringify(tpJson));
+      await page.waitForTimeout(1500);  // 等待新视野加载
+    } else {
+      console.log('视野内无怪物，尝试在原地施放（可能超出距离）');
+    }
+  }
 
   // 1002（烈焰冲击，前摇600ms + AOE 4m）是起始技能，直接按 2 施放
   await page.keyboard.press("Digit2"); // 施放 1002
@@ -72,10 +103,13 @@ async function main() {
     return box ? box.textContent.slice(-600) : '';
   });
   console.log('协议日志尾部:', protoText.replace(/\n/g, ' | ').slice(-500));
-  await page.keyboard.down('KeyA'); // 向左移动 → 打断
-  await page.waitForTimeout(250);
-  await page.keyboard.up('KeyA');
-  await page.waitForTimeout(150);
+  // 移动打断：用点击移动代替键盘（新版移动系统已移除 WASD）
+  const canvasBox2 = await page.$('canvas');
+  if (canvasBox2) {
+    const box = await canvasBox2.boundingBox();
+    await page.mouse.click(box.x + box.width * 0.15, box.y + box.height * 0.5);
+  }
+  await page.waitForTimeout(300);
   await page.screenshot({ path: OUT + '/fx-03-cancel.png' });
   const afterCancel = await page.evaluate(() => {
     const fx = window.__ewFx ? window.__ewFx() : null;

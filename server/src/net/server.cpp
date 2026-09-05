@@ -1192,13 +1192,17 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
       }
       case proto::C2S_PICKUP: {
         proto::PickupMsg m;
-        if (proto::decodePickup(f.payload, m) && world_.playerPickup(c.playerId, m.dropWid)) {
-          Entity* p = world_.findEntity(c.playerId);
-          if (p) {
-            Entity* drop = world_.findByWid(m.dropWid); // 已被拾取销毁，drop=null
-            (void)drop;
-            sendTo(c, proto::lootFrame(true, 0, 0, 0));
-            sendTo(c, proto::inventoryFrame(*p));
+        if (proto::decodePickup(f.payload, m)) {
+          // 拾取前快照掉落物信息（playerPickup 内部会 despawn，之后 findByWid 返回 null）
+          Entity* dropBefore = world_.findByWid(m.dropWid);
+          uint32_t lootGold = dropBefore ? dropBefore->dropGold : 0;
+          uint32_t lootItemId = dropBefore ? dropBefore->dropItemId : 0;
+          if (world_.playerPickup(c.playerId, m.dropWid)) {
+            Entity* p = world_.findEntity(c.playerId);
+            if (p) {
+              sendTo(c, proto::lootFrame(true, lootItemId, lootItemId ? 1 : 0, lootGold));
+              sendTo(c, proto::inventoryFrame(*p));
+            }
           }
         }
         break;

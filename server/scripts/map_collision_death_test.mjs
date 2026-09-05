@@ -146,6 +146,10 @@ async function main() {
   }
   // ============ 2) 怪物死亡 → 定时刷新 ============
   console.log('\n[2] 怪物死亡后定时刷新');
+  // 临时提升攻击力确保快速击杀（狼 45HP，避免攻击冷却 0.5s 下窗口不足）
+  const origAtk = stats ? stats.attack : 10;
+  await postConsole(token, 'stat atk 100');
+  await wait(() => stats && stats.attack >= 100, 3000);
   const farm = await postConsole(token, 'spawn wolf');
   const widM = (farm.output || '').match(/wid=(\d+)/);
   const monsterWid = widM ? parseInt(widM[1], 10) : 0;
@@ -156,7 +160,7 @@ async function main() {
   if (m0) { await debugTp(token, m0.x, m0.z); await sleep(250); }
   let killed = false;
   const t1 = Date.now();
-  while (Date.now() - t1 < 10000 && !killed) {
+  while (Date.now() - t1 < 15000 && !killed) {
     const mm = [...known.values()].find((e) => e.wid === monsterWid);
     if (mm) {
       // 超出攻击范围（怪物游走/被推开）则重新贴身
@@ -166,13 +170,15 @@ async function main() {
         continue;
       }
       send(encodeAttack(monsterWid));
-      await sleep(90);
+      await sleep(550);  // 服务端攻击冷却 0.5s，留 50ms 余量
       if (evtDeath.some((d) => d.wid === monsterWid)) killed = true;
     } else {
       await sleep(120);
     }
   }
   check('击杀怪物 → EVT_DEATH 广播', killed, `wid=${monsterWid}`);
+  // 恢复原始攻击力
+  await postConsole(token, `stat atk ${origAtk}`);
   // 等待该怪物刷新（monsterRespawnSec=10s）
   const respawned = await wait(() => evtRespawn.some((r2) => r2.wid === monsterWid), 13000);
   check('怪物定时刷新 → EVT_RESPAWN（同 wid）', respawned, `wid=${monsterWid}`);

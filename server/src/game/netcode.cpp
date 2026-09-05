@@ -57,9 +57,18 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
     // ---- 1b. 可视范围事件过滤（Fog of War）----
     // 共享事件按玩家视野过滤：只下发主体实体在视野内的事件，
     // 防止脚本通过全区事件流获取视野外的怪物位置/战斗/掉落等信息。
+    // 死亡实体（active=false）不在 visSet 中，但上一帧仍在 v.seen 的
+    // 需要纳入事件投递范围，否则 EVT_DEATH 永远到不了客户端（幽灵怪）。
+    std::unordered_set<uint32_t> evtVis = visSet;
+    for (uint32_t wid : v.seen) {
+      if (!evtVis.count(wid)) {
+        const Entity* dead = w_.findByWid(wid);
+        if (dead && !dead->active) evtVis.insert(wid);
+      }
+    }
     std::string evtBuf;
     for (const auto& ev : sharedEvents) {
-      if (visSet.count(ev.wid)) {
+      if (evtVis.count(ev.wid)) {
         evtBuf += proto::eventFrame(ev.type, ev.wid, ev.b, ev.x, ev.z);
       }
     }
