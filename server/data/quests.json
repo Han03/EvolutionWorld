@@ -1,0 +1,73 @@
+[
+  {
+    "id": 1001, "name": "初入世界", "desc": "你来到了这片陌生的大陆。先与当地人交谈，了解这片世界的情况，然后消灭附近的狼群威胁。",
+    "category": "main", "levelReq": 1, "prereq": [],
+    "objectives": [
+      {"type": "talk", "desc": "与村民交谈", "required": 1},
+      {"type": "kill", "targetKey": "wolf", "desc": "击杀灰狼", "required": 5}
+    ],
+    "rewards": {"gold": 50, "exp": 0, "items": [{"id": 1501, "count": 1}], "skills": []},
+    "nextQuests": [1002]
+  },
+  {
+    "id": 1002, "name": "荒原威胁", "desc": "荒原深处的巨兽开始频繁出没，威胁到城镇安全。前往消灭它！",
+    "category": "main", "levelReq": 5, "prereq": [1001],
+    "objectives": [
+      {"type": "kill", "targetKey": "gargoyle", "desc": "击杀荒原巨兽", "required": 1}
+    ],
+    "rewards": {"gold": 200, "exp": 0, "items": [], "skills": [1003]},
+    "nextQuests": [2004]
+  },
+  {
+    "id": 2001, "name": "采集药草", "desc": "村里的药师需要一些草药来制作绷带。收集草药并交付。",
+    "category": "side", "levelReq": 1, "prereq": [],
+    "objectives": [
+      {"type": "collect", "targetKey": "3001", "targetId": 3001, "desc": "收集草药", "required": 3}
+    ],
+    "rewards": {"gold": 20, "exp": 0, "items": [{"id": 2001, "count": 3}], "skills": []}
+  },
+  {
+    "id": 2002, "name": "探索遗迹", "desc": "据说大陆中央有一处古老遗迹，前去探索并回报。",
+    "category": "side", "levelReq": 1, "prereq": [],
+    "objectives": [
+      {"type": "reach", "x": 60, "z": 60, "radius": 8.0, "desc": "到达古老遗迹", "required": 1}
+    ],
+    "rewards": {"gold": 30, "exp": 0, "items": [], "skills": []}
+  },
+  {
+    "id": 2003, "name": "商人的委托", "desc": "旅行商人需要一批物资。先与他交谈了解详情。",
+    "category": "side", "levelReq": 3, "prereq": [],
+    "objectives": [
+      {"type": "talk", "desc": "与旅行商人交谈", "required": 1},
+      {"type": "collect", "targetKey": "3001", "targetId": 3001, "desc": "收集草药", "required": 5},
+      {"type": "talk", "desc": "向旅行商人交付", "required": 1}
+    ],
+    "rewards": {"gold": 40, "exp": 0, "items": [{"id": 2002, "count": 2}], "skills": []}
+  },
+  {
+    "id": 2004, "name": "勇者试炼", "desc": "证明你的实力。击败荒原上的石像鬼。",
+    "category": "side", "levelReq": 5, "prereq": [1001],
+    "objectives": [
+      {"type": "kill", "targetKey": "gargoyle", "desc": "击败石像鬼", "required": 1}
+    ],
+    "rewards": {"gold": 100, "exp": 0, "items": [{"id": 1502, "count": 1}], "skills": []}
+  },
+  {
+    "id": 3001, "name": "猎魔修行", "desc": "通过战斗磨炼自己。击杀任意怪物10只。",
+    "category": "daily", "levelReq": 1, "prereq": [],
+    "objectives": [
+      {"type": "kill", "targetKey": "*", "desc": "击杀任意怪物", "required": 10}
+    ],
+    "rewards": {"gold": 30, "exp": 0, "items": [], "skills": []},
+    "dailyCd": 86400
+  },
+  {
+    "id": 3002, "name": "矿材收集", "desc": "铁匠需要矿石来打造装备。帮忙收集一些。",
+    "category": "daily", "levelReq": 2, "prereq": [],
+    "objectives": [
+      {"type": "collect", "targetKey": "3002", "targetId": 3002, "desc": "收集矿石", "required": 5}
+    ],
+    "rewards": {"gold": 25, "exp": 0, "items": [], "skills": []},
+    "dailyCd": 86400
+  }
+]

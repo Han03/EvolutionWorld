@@ -1,0 +1,27 @@
+{
+  "1": {
+    "name": "全能杂货铺",
+    "desc": "主城杂货商人，出售装备/消耗品，含每日特惠与每周限购",
+    "shopType": 0,
+    "currencyItemId": 0,
+    "entries": [
+      {"item": 1001, "price": 8, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1002, "price": 30, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1101, "price": 10, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1102, "price": 35, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1201, "price": 9, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1202, "price": 28, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1301, "price": 9, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1302, "price": 28, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1401, "price": 8, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1402, "price": 26, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1501, "price": 12, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 1502, "price": 40, "discountPrice": 0, "stock": 0, "buyLimit": 2, "category": 1, "refreshType": 2, "sellPrice": 20},
+      {"item": 1503, "price": 120, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 2001, "price": 5, "discountPrice": 3, "stock": 0, "buyLimit": 5, "category": 2, "refreshType": 1, "sellPrice": 2},
+      {"item": 2002, "price": 15, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 2101, "price": 5, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0},
+      {"item": 2102, "price": 15, "discountPrice": 0, "stock": 0, "buyLimit": 0, "category": 0, "refreshType": 0, "sellPrice": 0}
+    ]
+  }
+}

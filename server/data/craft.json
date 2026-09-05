@@ -1,0 +1,12 @@
+{
+  "recipes": [
+    {"recipeId": 1, "name": "小血瓶×3", "resultItemId": 2001, "resultCount": 3, "goldCost": 2, "levelReq": 1, "hidden": false, "materials": [{"itemId": 3001, "count": 1}]},
+    {"recipeId": 2, "name": "大血瓶", "resultItemId": 2002, "resultCount": 1, "goldCost": 5, "levelReq": 1, "hidden": false, "materials": [{"itemId": 3001, "count": 2}, {"itemId": 4001, "count": 1}]},
+    {"recipeId": 3, "name": "大蓝瓶", "resultItemId": 2102, "resultCount": 1, "goldCost": 5, "levelReq": 1, "hidden": false, "materials": [{"itemId": 3003, "count": 2}, {"itemId": 4001, "count": 1}]},
+    {"recipeId": 4, "name": "强化石", "resultItemId": 4006, "resultCount": 1, "goldCost": 20, "levelReq": 3, "hidden": false, "materials": [{"itemId": 4002, "count": 3}, {"itemId": 4003, "count": 1}]},
+    {"recipeId": 5, "name": "保护符", "resultItemId": 4007, "resultCount": 1, "goldCost": 100, "levelReq": 8, "hidden": false, "materials": [{"itemId": 4004, "count": 2}, {"itemId": 4005, "count": 1}]},
+    {"recipeId": 6, "name": "铁剑", "resultItemId": 1502, "resultCount": 1, "goldCost": 30, "levelReq": 3, "hidden": false, "materials": [{"itemId": 4001, "count": 5}, {"itemId": 4002, "count": 2}]},
+    {"recipeId": 7, "name": "锁子甲", "resultItemId": 1102, "resultCount": 1, "goldCost": 40, "levelReq": 3, "hidden": false, "materials": [{"itemId": 4002, "count": 4}, {"itemId": 4001, "count": 2}]},
+    {"recipeId": 8, "name": "烈焰剑", "resultItemId": 1503, "resultCount": 1, "goldCost": 150, "levelReq": 5, "hidden": true, "materials": [{"itemId": 4003, "count": 3}, {"itemId": 4004, "count": 2}]}
+  ]
+}

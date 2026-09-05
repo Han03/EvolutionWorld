@@ -1,0 +1,8 @@
+{
+  "hp": 100,
+  "mp": 50,
+  "attack": 12,
+  "defense": 3,
+  "level": 1,
+  "radius": 0.55
+}

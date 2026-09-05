@@ -1,0 +1,8 @@
+{
+  "initialSlots": 30,
+  "slotsPerPage": 30,
+  "maxSlots": 150,
+  "expandBaseCost": 1000,
+  "expandCostMul": 1.5,
+  "maxGold": 100000000
+}
