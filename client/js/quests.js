@@ -192,6 +192,12 @@ export function toggleQuestPanel() {
   }
 }
 
+export function closeQuestPanel() {
+  questPanelOpen = false;
+  const panel = document.getElementById('quest-panel');
+  if (panel) panel.classList.add('hidden');
+}
+
 export function isQuestPanelOpen() { return questPanelOpen; }
 export function getQuestList() { return questList; }
 export function getQuestProgress() { return questProgress; }

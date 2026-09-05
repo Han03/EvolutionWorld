@@ -20,8 +20,8 @@ import { loadEditCells, loadWalkMask, terrainHeight, terrainBlockedExact } from 
 import { Minimap } from './minimap.js';
 
 // ---- 功能模块 ----
-import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, decodeQuestChain, toggleQuestPanel, sendQuestList, sendTalkNpc, sendQuestAccept, sendQuestTurnIn, getQuestList, getQuestProgress, setNpcFilter } from './quests.js';
-import { initSocialUI, toggleFriendPanel, toggleGuildPanel, toggleChatFocus, isChatFocused,
+import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, decodeQuestChain, toggleQuestPanel, closeQuestPanel, sendQuestList, sendTalkNpc, sendQuestAccept, sendQuestTurnIn, getQuestList, getQuestProgress, setNpcFilter } from './quests.js';
+import { initSocialUI, toggleFriendPanel, toggleGuildPanel, closeFriendPanel, closeGuildPanel, toggleChatFocus, isChatFocused,
   handleFriendRequest, handleFriendList, handleFriendStatus, handleFriendResult,
   handleGuildInfo, handleGuildResult, handleGuildNotify, handleGuildList, handleGuildApplyN,
   handleChatMsg, handleChatHistory, handleChatResult, addChatMessage } from './social.js';
@@ -52,7 +52,7 @@ import {
   findNearbyNpc, pickupNearbyDrops, openNpcDialog, closeNpcDialog, refreshNpcDialog,
   interactWithNearestNpc,
   renderSkillBar, renderBuffBar, isSkillLearned, castSkillNow, findEntityByWid,
-  updateEliteHud, loop, debugPrint,
+  updateEliteHud, loop, debugPrint, closeAllNpcPanels,
 } from './boot-game.js';
 
 // ============================================================================
@@ -274,6 +274,13 @@ async function enterWorld(token, username, worldMeta) {
     if (ev.evtType === EVT.DEATH) {
       if (ev.wid === net.selfWid) {
         S.selfDead = true; S.deathAtMs = performance.now();
+        // 死亡时停止移动/寻路
+        if (S.input) S.input.clearMovement();
+        // 关闭所有功能面板
+        closeAllNpcPanels();
+        closeQuestPanel();
+        closeFriendPanel();
+        closeGuildPanel();
         const de = $('death-overlay'); if (de) de.classList.remove('hidden');
         $('hud-conn').textContent = '你被击倒了'; $('hud-conn').className = 'hud-status-chip warn';
       } else if (S.entities) { S.entities.applyDeath(ev.wid); }

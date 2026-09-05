@@ -120,7 +120,7 @@ export function closeNpcDialog() {
 }
 
 /** 关闭所有 NPC 相关面板（移动时自动触发） */
-function closeAllNpcPanels() {
+export function closeAllNpcPanels() {
   closeNpcDialog();
   if (closeEnhancePanel) closeEnhancePanel();
   if (closeCraftPanel) closeCraftPanel();

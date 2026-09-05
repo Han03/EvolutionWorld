@@ -91,7 +91,7 @@ export const S = {
 };
 
 // ---- 常量 ----
-export const PLAYER_RESPAWN_SEC = 8;
+export const PLAYER_RESPAWN_SEC = 3;
 
 export const ENHANCE_FAIL_TEXT = {
   1: '已达最高强化等级',

@@ -319,13 +319,13 @@ export function toggleChatFocus() {
   }
 }
 
-function closeFriendPanel() {
+export function closeFriendPanel() {
   friendPanelOpen = false;
   const panel = document.getElementById('friend-panel');
   if (panel) panel.classList.add('hidden');
 }
 
-function closeGuildPanel() {
+export function closeGuildPanel() {
   guildPanelOpen = false;
   const panel = document.getElementById('guild-panel');
   if (panel) panel.classList.add('hidden');

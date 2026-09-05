@@ -199,8 +199,8 @@ async function main() {
   // 狼需要仇恨到玩家并贴身攻击；等待玩家死亡（EVT_DEATH self）
   const selfDied = await wait(() => evtDeath.some((d) => d.wid === selfWid), 12000);
   check('玩家死亡 → EVT_DEATH(self)', selfDied, `killer=${(evtDeath.find((d) => d.wid === selfWid) || {}).b}`);
-  // 等待复活（playerRespawnSec=8s + 网络余量）
-  const selfRespawned = await wait(() => evtRespawn.some((r2) => r2.wid === selfWid), 13000);
+  // 等待复活（playerRespawnSec=3s + 网络余量）
+  const selfRespawned = await wait(() => evtRespawn.some((r2) => r2.wid === selfWid), 8000);
   check('玩家复活 → EVT_RESPAWN(self)', selfRespawned);
   // 复活后满血（相对当前 maxHp=20）
   const hpFull = await wait(() => stats && stats.hp >= stats.maxHp && stats.maxHp === 20, 3000);

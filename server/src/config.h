@@ -46,7 +46,7 @@ struct Config {
   float eliteRespawnSec = 30.0f;      // 精英死亡复活（秒）
   float eliteRegenPerSec = 4.0f;      // 脱战回血/秒
   float monsterRespawnSec = 10.0f;   // 普通怪物死亡复活（秒）
-  float playerRespawnSec = 8.0f;     // 玩家死亡复活（秒）
+  float playerRespawnSec = 3.0f;     // 玩家死亡复活（秒）
   float playerAttackRange = 3.2f;    // 玩家攻击判定范围
   float playerAttackCdSec = 0.5f;    // 玩家攻击冷却（秒）
   float playerRegenPerSec = 3.0f;    // 玩家脱战回血/秒
