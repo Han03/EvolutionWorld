@@ -20,7 +20,7 @@ import { loadEditCells, loadWalkMask, terrainHeight, terrainBlockedExact } from 
 import { Minimap } from './minimap.js';
 
 // ---- 功能模块 ----
-import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, decodeQuestChain, toggleQuestPanel, closeQuestPanel, sendQuestList, sendTalkNpc, sendQuestAccept, sendQuestTurnIn, getQuestList, getQuestProgress, setNpcFilter } from './quests.js';
+import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, decodeQuestChain, toggleQuestPanel, closeQuestPanel, sendQuestList, sendQuestTrack, sendTalkNpc, sendQuestAccept, sendQuestTurnIn, getQuestList, getQuestProgress, setNpcFilter } from './quests.js';
 import { initSocialUI, toggleFriendPanel, toggleGuildPanel, closeFriendPanel, closeGuildPanel, toggleChatFocus, isChatFocused,
   handleFriendRequest, handleFriendList, handleFriendStatus, handleFriendResult,
   handleGuildInfo, handleGuildResult, handleGuildNotify, handleGuildList, handleGuildApplyN,
@@ -28,6 +28,7 @@ import { initSocialUI, toggleFriendPanel, toggleGuildPanel, closeFriendPanel, cl
 import { initConsole, appendConsoleOutput } from './console.js';
 import { clearSession } from './session.js';
 import { initLogin, hideLogin, showLogin, showLoading, setLoadingText } from './login.js';
+import * as autobot from './autobot.js';
 
 // ---- 共享状态 + 工具函数 ----
 import { S, CLIENT_VERSION, toast, renderHud, protocolLog } from './boot-state.js';
@@ -161,6 +162,50 @@ initLogin({
 // ============================================================================
 // 进入世界
 // ============================================================================
+/** 初始化自动化测试插件（net 就绪后调用） */
+function initAutobotUI(net) {
+  autobot.configure({
+    S,
+    net,
+    // 任务模块
+    sendQuestList, sendQuestTrack, sendQuestAccept, sendQuestTurnIn, sendTalkNpc,
+    getQuestList, getQuestProgress,
+    // 面板模块
+    openEnhancePanel, openCraftPanel, openShopPanel, closeAllNpcPanels,
+    // UI 回调
+    onStatus: (st) => {
+      const el = $('ab-status');
+      if (!el) return;
+      const phaseMap = { stop: '停止', paused: '已暂停', thinking: '规划中', idle: '空闲',
+        accept: '接任务', turnin: '交任务', talk: '对话', reach: '到达', kill: '战斗',
+        collect: '收集', explore: '探索', buyEquip: '购装备', buyConsumable: '购补给',
+        enhance: '强化', craftConsumable: '合成' };
+      const ph = phaseMap[st.phase] || st.phase;
+      el.textContent = `${st.running ? (st.paused ? '⏸ ' : '▶ ') : '⏹ '}${ph}`;
+      el.className = 'autobot-status ' + (st.running ? (st.paused ? 'ab-paused' : 'ab-running') : 'ab-stop');
+      const statEl = $('ab-stat');
+      if (statEl && st.stats) {
+        statEl.textContent = `任务${st.stats.questsDone} 击杀${st.stats.monstersKilled} 购${st.stats.itemsBought} 合${st.stats.itemsCrafted}`;
+      }
+    },
+    onLog: (msg) => {
+      const box = $('ab-log');
+      if (!box) return;
+      const div = document.createElement('div');
+      div.className = 'ab-log-line';
+      div.textContent = msg;
+      box.appendChild(div);
+      while (box.children.length > 80) box.removeChild(box.firstChild);
+      box.scrollTop = box.scrollHeight;
+    },
+  });
+  // 手动输入检测：玩家操作时自动暂停插件（避免互相干扰）
+  const mark = () => { S._lastManualInput = performance.now(); };
+  document.addEventListener('keydown', mark);
+  document.addEventListener('mousedown', mark);
+  window.__ewAutobot = autobot; // 调试钩子
+}
+
 async function enterWorld(token, username, worldMeta) {
   console.log(`%c[EvolutionWorld] client v${CLIENT_VERSION}`, 'color:#c9a84c;font-weight:bold;font-size:14px');
   showLoading('连接世界中…');
@@ -407,6 +452,7 @@ async function enterWorld(token, username, worldMeta) {
   };
   initQuestUI(net);
   initConsole(net);
+  initAutobotUI(net);
 
   // ---- 社交系统回调 ----
   net.onFriendRequest = (msg) => handleFriendRequest(msg);
@@ -493,6 +539,18 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (!sel) return;
     debugPrint(sel.value);
   });
+
+  // ── 自动化测试插件（autobot.js） ──
+  const abStart = $('ab-start');
+  const abPause = $('ab-pause');
+  const abReset = $('ab-reset');
+  if (abStart) abStart.addEventListener('click', () => autobot.start());
+  if (abPause) abPause.addEventListener('click', () => autobot.pause());
+  if (abReset) abReset.addEventListener('click', () => autobot.reset());
+  // 决策循环（主循环外独立节流，不侵入渲染帧）
+  setInterval(() => autobot.tick(performance.now()), 200);
+  // 刷新页面后若上次运行中 → 自动恢复
+  autobot.restore();
 
   // 游戏菜单
   const gm = $('game-menu');

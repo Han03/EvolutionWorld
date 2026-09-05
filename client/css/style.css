@@ -426,6 +426,27 @@ kbd {
   border-color: var(--gold);
 }
 
+/* ── 自动化测试插件（autobot.js） ── */
+.autobot-row { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(201,168,76,0.12); flex-wrap: wrap; }
+.autobot-label { color: var(--gold); font-weight: 600; font-size: 11px; }
+.autobot-status {
+  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+  background: rgba(30,30,30,0.5); border: 1px solid rgba(128,128,128,0.3); color: var(--text-dim);
+}
+.autobot-status.ab-running { background: rgba(56,142,60,0.18); border-color: rgba(76,175,80,0.5); color: #81c784; }
+.autobot-status.ab-paused { background: rgba(255,167,38,0.15); border-color: rgba(255,167,38,0.5); color: #ffb74d; }
+.autobot-status.ab-stop { color: var(--text-dim); }
+.autobot-log-row { margin-top: 5px; }
+#ab-log {
+  margin-top: 3px; max-height: 110px; overflow-y: auto;
+  background: rgba(4,7,13,0.75); border: 1px solid rgba(201,168,76,0.12);
+  border-radius: 4px; padding: 4px 6px; font-size: 10px; line-height: 1.5;
+  color: #9ad39a; font-family: ui-monospace, monospace;
+}
+#ab-log::-webkit-scrollbar { width: 4px; }
+#ab-log::-webkit-scrollbar-thumb { background: rgba(201,168,76,0.3); border-radius: 2px; }
+.ab-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* ══════════════════════════════════════════
    协议监控面板（左侧，默认收起）
    ══════════════════════════════════════════ */

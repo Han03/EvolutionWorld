@@ -9,6 +9,7 @@ client/dist/
 
 # 运行时数据（用户账号、会话）
 server/src/data/
+server/data/
 
 # 本地产物
 artifacts/
