@@ -19,36 +19,44 @@
     </div>
     <div class="editor-body">
       <div class="editor-tools" id="editor-tools">
-        <!-- 模式切换 -->
-        <div class="tool-group">
-          <div class="tool-label">编辑模式</div>
-          <div class="tool-row mode-row">
-            <label><input type="radio" name="mode" value="terrain" checked /><span>🗺 地形</span></label>
-            <label><input type="radio" name="mode" value="spawn" /><span>👾 出生点</span></label>
-            <label><input type="radio" name="mode" value="item" /><span>🎒 物品</span></label>
-            <label><input type="radio" name="mode" value="creature" /><span>🐺 生物</span></label>
-            <label><input type="radio" name="mode" value="npc" /><span>🧑 NPC</span></label>
-            <label><input type="radio" name="mode" value="quest" /><span>📜 任务</span></label>
-            <label><input type="radio" name="mode" value="enhance" /><span>⚒ 强化</span></label>
-            <label><input type="radio" name="mode" value="decompose" /><span>♻ 分解</span></label>
-            <label><input type="radio" name="mode" value="craft" /><span>⚗ 合成</span></label>
-            <label><input type="radio" name="mode" value="shop" /><span>🛒 商店</span></label>
+        <!-- 模式切换（固定顶部） -->
+        <div class="tools-top">
+          <div class="top-row">
+            <label class="top-label" for="mode-select">编辑模式</label>
+            <select id="mode-select" class="mode-select">
+              <option value="terrain" selected>🗺 地形</option>
+              <option value="item">🎒 物品</option>
+              <option value="creature">🐺 生物</option>
+              <option value="npc">🧑 NPC</option>
+              <option value="quest">📜 任务</option>
+              <option value="enhance">⚒ 强化</option>
+              <option value="decompose">♻ 分解</option>
+              <option value="craft">⚗ 合成</option>
+              <option value="shop">🛒 商店</option>
+              <option value="skill">✨ 技能</option>
+            </select>
           </div>
-          <div class="tool-row tool-tip" id="mode-tip">画刷编辑地形：浅灰=可通行 / 白=空洞</div>
+          <div class="top-tip" id="mode-tip">画刷编辑地形：浅灰=可通行 / 白=空洞</div>
+          <div class="top-nav">
+            <span class="top-label">平移速度（WASD）</span>
+            <input type="range" id="pan-speed" min="1" max="15" step="0.5" value="5" />
+            <b id="pan-speed-v">5</b>
+          </div>
         </div>
 
-        <!-- 视图导航（常驻） -->
-        <div class="tool-group">
-          <div class="tool-label">视图导航</div>
-          <div class="tool-row"><span class="tool-name">平移速度</span><input type="range" id="pan-speed" min="1" max="15" step="0.5" value="5" /><b id="pan-speed-v">5</b></div>
-          <div class="tool-row tool-tip">WASD/方向键平移 · 滚轮缩放 · 右键拖动平移（速度随缩放自适应）</div>
-        </div>
+        <!-- 中间可滚动区域 -->
+        <div class="tools-middle">
 
         <!-- 地形画刷面板 -->
         <div id="panel-terrain">
           <div class="tool-group">
+            <button id="btn-worldinit" class="btn btn-ghost">🌍 初始化世界</button>
+          </div>
+          <div class="tool-group">
             <div class="tool-label">画刷类型</div>
-            <label class="tool-row"><input type="radio" name="brush" value="raise" checked /><span>⤴ 抬高</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="select" checked /><span>☝ 选择</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="place" /><span>📍 放置</span></label>
+            <label class="tool-row"><input type="radio" name="brush" value="raise" /><span>⤴ 抬高</span></label>
             <label class="tool-row"><input type="radio" name="brush" value="lower" /><span>⤵ 降低</span></label>
             <label class="tool-row"><input type="radio" name="brush" value="flatten" /><span>▦ 铺平</span></label>
             <label class="tool-row"><input type="radio" name="brush" value="smooth" /><span>◍ 平滑</span></label>
@@ -66,35 +74,12 @@
               </select>
             </div>
             <div class="tool-row"><span class="tool-name">目标高度 (铺平)</span><input type="number" id="brush-target" value="8" min="-12" max="34" step="1" /><span>m</span></div>
-            <div class="tool-row"><span class="tool-name">显示高度色带</span><input type="checkbox" id="show-height" /></div>
+            <div class="tool-row"><span class="tool-name">使用高度色带</span><input type="checkbox" id="show-height" /></div>
           </div>
-        </div>
 
-        <!-- 生物出生点面板（剧本） -->
-        <div id="panel-spawn" class="hidden">
-          <div class="tool-group">
-            <div class="tool-label">新增出生点</div>
-            <div class="tool-row"><span class="tool-name">类型</span>
-              <select id="spawn-kind">
-                <option value="monster">怪物</option>
-                <option value="npc">NPC</option>
-                <option value="boss">Boss</option>
-              </select>
-            </div>
-            <div class="tool-row" id="spawn-type-row"><span class="tool-name">子类型</span>
-              <select id="spawn-type">
-                <option value="wolf">野狼 wolf</option>
-                <option value="goblin">哥布林 goblin</option>
-                <option value="skeleton">骷髅兵 skeleton</option>
-                <option value="gargoyle">石像鬼 gargoyle</option>
-              </select>
-            </div>
-            <div class="tool-row" id="spawn-count-row"><span class="tool-name">数量</span><input type="number" id="spawn-count" value="1" min="1" max="50" step="1" /></div>
-            <div class="tool-row tool-tip">点击地图空白处 = 新增出生点<br/>左键拖动标记 = 移动出生点<br/>点击标记选中 → 按 Del 或下方按钮删除</div>
-            <div class="tool-row"><button id="btn-spawn-del" class="btn btn-ghost">🗑 删除选中</button></div>
-          </div>
-          <div class="tool-group">
+          <div class="tool-group spawn-list-group">
             <div class="tool-label">出生点列表 (<span id="spawn-count-label">0</span>)</div>
+            <input type="text" id="spawn-search" class="spawn-search" placeholder="搜索类型/名称…" />
             <div id="spawn-list" class="spawn-list"></div>
           </div>
         </div>
@@ -103,6 +88,7 @@
         <div id="panel-item" class="hidden">
           <div class="tool-group">
             <div class="tool-label">物品列表 (<span id="item-count-label">0</span>)</div>
+            <input type="text" id="item-search" class="cfg-list-search" placeholder="搜索物品名称/ID…" />
             <div id="item-list" class="cfg-list"></div>
             <div class="cfg-actions">
               <button id="btn-item-new" class="btn btn-ghost">＋ 新建</button>
@@ -170,6 +156,7 @@
         <div id="panel-creature" class="hidden">
           <div class="tool-group">
             <div class="tool-label">生物列表 (<span id="creature-count-label">0</span>)</div>
+            <input type="text" id="creature-search" class="cfg-list-search" placeholder="搜索生物名称/类型…" />
             <div id="creature-list" class="cfg-list"></div>
             <div class="cfg-actions">
               <button id="btn-creature-new" class="btn btn-ghost">＋ 新建</button>
@@ -200,13 +187,13 @@
                 <div class="cfg-field"><label>金max</label><input type="number" id="cr-goldMax" min="0" step="1" /></div>
               </div>
               <div class="cfg-field"><label>技能IDs</label><input type="text" id="cr-skillIds" placeholder="2001,2002（逗号分隔）" /></div>
-              <div class="cfg-field"><label>Boss</label><input type="checkbox" id="cr-isBoss" /><span style="font-size:11px;color:#888">勾选后显示 Boss 专属参数</span></div>
-              <div id="cr-boss-fields" class="hidden">
+              <div class="cfg-field"><label>精英</label><input type="checkbox" id="cr-isElite" /><span style="font-size:11px;color:#888">勾选后显示精英专属参数</span></div>
+              <div id="cr-elite-fields" class="hidden">
                 <div class="cfg-row2">
                   <div class="cfg-field"><label>仇恨范围</label><input type="number" id="cr-aggroRange" min="1" step="0.5" /><span style="font-size:11px;color:#888">m</span></div>
                   <div class="cfg-field"><label>追击速度</label><input type="number" id="cr-chaseSpeed" min="0" step="0.1" /><span style="font-size:11px;color:#888">m/s</span></div>
                 </div>
-                <div class="cfg-field"><label>攻击范围</label><input type="number" id="cr-bossAttackRange" min="0.5" step="0.1" /><span style="font-size:11px;color:#888">m</span></div>
+                <div class="cfg-field"><label>攻击范围</label><input type="number" id="cr-eliteAttackRange" min="0.5" step="0.1" /><span style="font-size:11px;color:#888">m</span></div>
               </div>
             </div>
           </div>
@@ -224,6 +211,7 @@
         <div id="panel-npc" class="hidden">
           <div class="tool-group">
             <div class="tool-label">NPC 类型列表 (<span id="npc-count-label">0</span>)</div>
+            <input type="text" id="npc-search" class="cfg-list-search" placeholder="搜索 NPC 名称/ID…" />
             <div id="npc-list" class="cfg-list"></div>
             <div class="cfg-actions">
               <button id="btn-npc-new" class="btn btn-ghost">＋ 新建</button>
@@ -237,22 +225,24 @@
               <div class="cfg-field"><label>名称</label><input type="text" id="npc-name" /></div>
               <div class="cfg-field"><label>描述</label><textarea id="npc-desc"></textarea></div>
               <div class="cfg-field"><label>模型</label><input type="text" id="npc-model" placeholder="npc_merchant" /></div>
-              <div class="cfg-field"><label>标签</label>
-                <select id="npc-tag" multiple size="8">
-                  <option value="1" selected>基础（对话/闲聊）</option>
-                  <option value="2">任务（接取/提交）</option>
-                  <option value="4">商店（商品列表）</option>
-                  <option value="8">铁匠（装备强化/分解）</option>
-                  <option value="16">传送（城市间传送）</option>
-                  <option value="32">日常（每日可接任务）</option>
-                  <option value="64">合成（物品合成）</option>
-                  <option value="128">仓库（物品存储）</option>
-                </select>
+              <div class="npc-tag-group" id="npc-tag">
+                <label class="npc-tag-item"><input type="checkbox" value="1" /> 基础（对话）</label>
+                <label class="npc-tag-item"><input type="checkbox" value="4" /> 商店</label>
+                <label class="npc-tag-item"><input type="checkbox" value="8" /> 铁匠（强化/分解）</label>
+                <label class="npc-tag-item"><input type="checkbox" value="16" /> 传送</label>
+                <label class="npc-tag-item"><input type="checkbox" value="64" /> 合成</label>
+                <label class="npc-tag-item"><input type="checkbox" value="128" /> 仓库</label>
               </div>
-              <div class="cfg-field"><label>商店ID</label><input type="number" id="npc-shopId" min="0" step="1" /><span style="font-size:11px;color:#888">0=无</span></div>
+              <!-- 标签联动配置区：基础对话 -->
+              <div id="npc-cfg-dialogue" class="npc-cfg-section">
+                <div class="cfg-field"><label>对话文本</label><textarea id="npc-dialogue" placeholder="NPC 见面时显示的对话内容"></textarea></div>
+              </div>
+              <!-- 标签联动配置区：商店 -->
+              <div id="npc-cfg-shop" class="npc-cfg-section">
+                <div class="cfg-field"><label>商店ID</label><input type="number" id="npc-shopId" min="0" step="1" /><span style="font-size:11px;color:#888">0=无</span></div>
+              </div>
               <div class="cfg-field"><label>等级</label><input type="number" id="npc-level" min="1" step="1" value="1" /></div>
               <div class="cfg-field"><label>游走半径</label><input type="number" id="npc-wander" min="0" step="0.5" value="0" /><span style="font-size:11px;color:#888">0=不游走</span></div>
-              <div class="cfg-field"><label>对话文本</label><textarea id="npc-dialogue"></textarea></div>
             </div>
           </div>
         </div>
@@ -261,6 +251,7 @@
         <div id="panel-quest" class="hidden">
           <div class="tool-group">
             <div class="tool-label">任务列表 (<span id="quest-count-label">0</span>)</div>
+            <input type="text" id="quest-search" class="cfg-list-search" placeholder="搜索任务名称/ID…" />
             <div id="quest-list" class="cfg-list"></div>
             <div class="cfg-actions">
               <button id="btn-quest-new" class="btn btn-ghost">＋ 新建</button>
@@ -285,8 +276,9 @@
               <div class="cfg-field"><label>描述</label><textarea id="q-desc"></textarea></div>
               <div class="cfg-row2">
                 <div class="cfg-field"><label>等级需</label><input type="number" id="q-levelReq" min="1" step="1" /></div>
-                <div class="cfg-field"><label>发布NPC</label><input type="number" id="q-giverNpc" min="0" step="1" /><span style="font-size:11px;color:#888">wid</span></div>
+                <div class="cfg-field"><label>发布NPC</label><input type="text" id="q-giverNpc" placeholder="npcId，如 merchant_001" /></div>
               </div>
+              <div class="cfg-field"><label>提交NPC</label><input type="text" id="q-talkNpc" placeholder="npcId，如 merchant_001；留空=任意NPC" /></div>
               <div class="cfg-field"><label>前置任务</label><input type="text" id="q-prereq" placeholder="逗号分隔 ID，如 1001,1002" /></div>
               <div class="cfg-field"><label>后续任务</label><input type="text" id="q-nextQuests" placeholder="逗号分隔 ID" /></div>
               <div class="cfg-row2">
@@ -363,6 +355,7 @@
         <div id="panel-craft" class="hidden">
           <div class="tool-group">
             <div class="tool-label">配方列表 (<span id="craft-count-label">0</span>)</div>
+            <input type="text" id="craft-search" class="cfg-list-search" placeholder="搜索配方名称/ID…" />
             <div id="craft-list" class="cfg-list"></div>
             <div class="cfg-actions">
               <button id="btn-craft-new" class="btn btn-ghost">＋ 新建</button>
@@ -399,6 +392,7 @@
         <div id="panel-shop" class="hidden">
           <div class="tool-group">
             <div class="tool-label">商店列表 (<span id="shop-count-label">0</span>)</div>
+            <input type="text" id="shop-search" class="cfg-list-search" placeholder="搜索商店名称/ID…" />
             <div id="shop-list" class="cfg-list"></div>
             <div class="cfg-actions">
               <button id="btn-shop-new" class="btn btn-ghost">＋ 新建</button>
@@ -434,24 +428,126 @@
           </div>
         </div>
 
-        <div class="tool-group tool-actions">
-          <button id="btn-undo" class="btn btn-ghost">↶ 撤销</button>
-          <button id="btn-redo" class="btn btn-ghost">↷ 重做</button>
-          <button id="btn-reset" class="btn btn-ghost">重置(还原程序化)</button>
-          <button id="btn-worldinit" class="btn btn-ghost">🌍 重新初始化世界</button>
-          <button id="btn-save" class="btn btn-primary">💾 保存到服务器</button>
+        <!-- 技能配置面板 -->
+        <div id="panel-skill" class="hidden">
+          <div class="tool-group">
+            <div class="tool-label">技能列表 (<span id="skill-count-label">0</span>)</div>
+            <input type="text" id="skill-search" class="cfg-list-search" placeholder="搜索技能名称/ID…" />
+            <div id="skill-list" class="cfg-list"></div>
+            <div class="cfg-actions">
+              <button id="btn-skill-new" class="btn btn-ghost">＋ 新建</button>
+              <button id="btn-skill-del" class="btn btn-ghost">🗑 删除</button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">技能属性</div>
+            <div id="skill-form" class="cfg-form">
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>ID</label><input type="number" id="sk-id" min="1" step="1" /></div>
+                <div class="cfg-field"><label>名称</label><input type="text" id="sk-name" /></div>
+              </div>
+              <div class="cfg-field"><label>描述</label><textarea id="sk-desc"></textarea></div>
+              <div class="cfg-field"><label>图标键</label><input type="text" id="sk-icon" placeholder="atk / s1 / m_atk1" /></div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>目标</label>
+                  <select id="sk-target">
+                    <option value="self">自身</option>
+                    <option value="enemy">敌方</option>
+                    <option value="aoe">区域</option>
+                  </select>
+                </div>
+                <div class="cfg-field"><label>效果</label>
+                  <select id="sk-effect">
+                    <option value="damage">伤害</option>
+                    <option value="heal">治疗</option>
+                    <option value="buff">增益</option>
+                  </select>
+                </div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>耗蓝</label><input type="number" id="sk-mana" min="0" step="1" /></div>
+                <div class="cfg-field"><label>冷却(ms)</label><input type="number" id="sk-cooldownMs" min="0" step="100" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>范围(m)</label><input type="number" id="sk-range" min="0" step="0.1" /></div>
+                <div class="cfg-field"><label>AOE半径(m)</label><input type="number" id="sk-radius" min="0" step="0.1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>伤害系数</label><input type="number" id="sk-dmgMul" min="0" step="0.1" /></div>
+                <div class="cfg-field"><label>固定伤害</label><input type="number" id="sk-flatDmg" min="0" step="1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>治疗量</label><input type="number" id="sk-heal" min="0" step="1" /></div>
+                <div class="cfg-field"><label>吸血(0~1)</label><input type="number" id="sk-lifesteal" min="0" max="1" step="0.05" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>Buff类型</label>
+                  <select id="sk-buffType">
+                    <option value="none">无</option>
+                    <option value="atk">攻击提升</option>
+                    <option value="def">防御提升</option>
+                    <option value="move_slow">减速</option>
+                    <option value="regen">持续回血</option>
+                    <option value="thorns">荆棘反伤</option>
+                    <option value="bleed">流血</option>
+                    <option value="def_down">减防</option>
+                    <option value="atk_down">减攻</option>
+                    <option value="stun">眩晕</option>
+                    <option value="speed">加速</option>
+                  </select>
+                </div>
+                <div class="cfg-field"><label>Buff值</label><input type="number" id="sk-buffValue" step="0.1" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>Buff时长(s)</label><input type="number" id="sk-buffDur" min="0" step="0.5" /></div>
+                <div class="cfg-field"><label>前摇(ms)</label><input type="number" id="sk-castTimeMs" min="0" step="100" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>击退(m)</label><input type="number" id="sk-knockback" min="0" step="0.5" /></div>
+                <div class="cfg-field"><label>霸体</label><input type="checkbox" id="sk-superArmor" /></div>
+              </div>
+              <div class="cfg-row2">
+                <div class="cfg-field"><label>移动打断</label><input type="checkbox" id="sk-cancelOnMove" checked /></div>
+                <div class="cfg-field"><label>受击打断</label><input type="checkbox" id="sk-cancelOnHit" checked /></div>
+              </div>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">起始技能（新玩家自动习得）</div>
+            <div class="cfg-field"><input type="text" id="sk-starterSkills" placeholder="逗号分隔 ID，如 1000,1001,1002,1003" /></div>
+            <div class="tool-row tool-tip">起始技能 ID 必须在技能列表中存在</div>
+          </div>
         </div>
-        <div class="tool-group tool-status" id="editor-status">就绪（WASD 平移 · 滚轮缩放 · 左键画刷/拖拽）</div>
-        <div class="tool-group tool-info">
-          <div>世界地形与生物布局由服务端世界初始化执行器生成（主城 + 连通路网 + 分组投放）</div>
-          <div>“重新初始化世界”：重生成连通地形、主城与生物（怪物由主城向外逐渐增强、成群），全图可达</div>
-          <div>保存后：游戏客户端下次进入自动加载；当前在线玩家亦实时生效（生物热重载）</div>
+
+        </div><!-- /tools-middle -->
+        
+        <!-- 操作按钮（固定底部） -->
+        <div class="tools-bottom">
+          <div class="bottom-status" id="editor-status">就绪（WASD 平移 · 滚轮缩放 · 左键画刷/拖拽）</div>
+          <div class="bottom-actions">
+            <button id="btn-undo" class="btn btn-ghost">↶ 撤销</button>
+            <button id="btn-redo" class="btn btn-ghost">↷ 重做</button>
+            <button id="btn-reset" class="btn btn-ghost">重置</button>
+            <button id="btn-save" class="btn btn-primary">💾 保存</button>
+          </div>
         </div>
       </div>
 
       <div class="editor-canvas-wrap" id="editor-canvas-wrap">
         <div id="editor-coord" class="editor-coord">x:0 z:0 h:- void:-</div>
         <div id="editor-legend" class="editor-legend hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建实体模态框 -->
+  <div id="editor-modal-mask" class="editor-modal-mask hidden">
+    <div class="editor-modal">
+      <div class="editor-modal-head" id="editor-modal-title">新建</div>
+      <div class="editor-modal-body" id="editor-modal-body"></div>
+      <div class="editor-modal-foot">
+        <button id="editor-modal-cancel" class="btn btn-ghost">取消</button>
+        <button id="editor-modal-ok" class="btn btn-primary">确定</button>
       </div>
     </div>
   </div>

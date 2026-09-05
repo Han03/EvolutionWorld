@@ -12,7 +12,6 @@ const SKILL_KEYS = [
 
 // 动作注册表（技能栏动态生成）
 const ACTIONS = {
-  ATTACK:     { key: 'KeyJ' },
   INTERACT:   { key: 'KeyG' },
   PICKUP:     { key: 'KeyE' },
   SHOP:       { key: 'KeyB' },

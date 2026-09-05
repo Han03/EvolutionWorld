@@ -15,63 +15,6 @@ static std::string readFileEnhance(const std::string& path) {
   return ss.str();
 }
 
-// ---------- 内置 15 级表（成功率递减、消耗递增、+6 起失败降级且可用保护符） ----------
-void EnhanceSystem::loadDefaults() {
-  cfg_ = EnhanceConfig{};   // 复位为默认（maxLevel=15, stoneItemId=4006, protect=4007, 系数）
-  cfg_.levels.clear();
-  // {成功率, 金币消耗, 强化石数量, 失败降级(负数), 可用保护符}
-  static const struct { double rate; uint32_t gold; uint32_t stone; int degrade; bool protect; } T[] = {
-    { 1.00,   100,  1,  0, false },  // +1  新手保底，无风险
-    { 1.00,   200,  1,  0, false },  // +2
-    { 1.00,   400,  2,  0, false },  // +3
-    { 0.90,   800,  2,  0, false },  // +4  开始有失败率，但失败不降级
-    { 0.80,  1500,  3,  0, false },  // +5
-    { 0.70,  2500,  3, -1, true  },  // +6  起：失败降 1 级，可用保护符防降
-    { 0.60,  4000,  4, -1, true  },  // +7
-    { 0.50,  6000,  4, -1, true  },  // +8
-    { 0.40,  9000,  5, -1, true  },  // +9
-    { 0.30, 13000,  5, -1, true  },  // +10
-    { 0.25, 18000,  6, -1, true  },  // +11
-    { 0.20, 24000,  7, -2, true  },  // +12 起：失败降 2 级
-    { 0.15, 32000,  8, -2, true  },  // +13
-    { 0.10, 42000,  9, -2, true  },  // +14
-    { 0.05, 55000, 10, -3, true  },  // +15 顶级：5% 成功率，失败降 3 级
-  };
-  const int n = (int)(sizeof(T) / sizeof(T[0]));
-  cfg_.levels.reserve(n);
-  for (int i = 0; i < n; i++) {
-    EnhanceLevelDef d;
-    d.level = i + 1;
-    d.successRate = T[i].rate;
-    d.goldCost = T[i].gold;
-    d.stoneItemId = cfg_.stoneItemId;
-    d.stoneCount = T[i].stone;
-    d.failDegrade = T[i].degrade;
-    d.canProtect = T[i].protect;
-    cfg_.levels.push_back(d);
-  }
-  cfg_.maxLevel = n;
-
-  // ---------- 分解规则（按品质 0..4 五档；品质越高材料越好、金币/强化石返还越多）----------
-  // 强化石返还 = floor(enhanceStoneRate × enhance)：高强化装备分解返还更多强化石（验收标准）
-  decfg_ = DecomposeConfig{};
-  decfg_.stoneItemId = cfg_.stoneItemId;   // 返还强化石与消耗强化石同 itemId
-  auto addRule = [&](int rarity, double goldRate, double stoneRate,
-                     std::initializer_list<DecomposeResult> results) {
-    DecomposeRule r;
-    r.rarity = rarity;
-    r.goldReturnRate = goldRate;
-    r.enhanceStoneRate = stoneRate;
-    for (const auto& res : results) r.results.push_back(res);
-    decfg_.rules.push_back(r);
-  };
-  addRule(0, 0.30, 0.5, { DecomposeResult{4001, 2, 4, 1.0} });                                     // 普通：铁屑
-  addRule(1, 0.35, 0.6, { DecomposeResult{4002, 2, 4, 1.0}, DecomposeResult{4001, 1, 3, 0.5} });  // 优秀：精钢碎片(+铁屑)
-  addRule(2, 0.40, 0.7, { DecomposeResult{4003, 2, 4, 1.0}, DecomposeResult{4002, 1, 3, 0.6} });  // 稀有：魔晶(+精钢)
-  addRule(3, 0.45, 0.8, { DecomposeResult{4004, 2, 3, 1.0}, DecomposeResult{4003, 2, 4, 0.7} });  // 史诗：龙鳞(+魔晶)
-  addRule(4, 0.50, 1.0, { DecomposeResult{4005, 1, 3, 1.0}, DecomposeResult{4004, 2, 4, 0.8} });  // 传说：星辰核心(+龙鳞)
-}
-
 // ---------- 查询 ----------
 const EnhanceLevelDef* EnhanceSystem::levelDef(int targetLevel) const {
   if (targetLevel < 1 || targetLevel > (int)cfg_.levels.size()) return nullptr;

@@ -14,14 +14,14 @@ namespace ew {
 enum SpawnKind : uint8_t {
   SP_MONSTER = 0,
   SP_NPC = 1,
-  SP_BOSS = 2,
+  SP_ELITE = 2,
 };
 
 // 单个出生点
 struct SpawnPoint {
-  uint8_t kind = SP_MONSTER;  // 0 monster / 1 npc / 2 boss
-  std::string type;           // monster/boss 类型（wolf/goblin/skeleton/gargoyle）
-  std::string name;           // NPC/Boss 名称（可选，覆盖默认）
+  uint8_t kind = SP_MONSTER;  // 0 monster / 1 npc / 2 elite
+  std::string type;           // monster/elite 类型（wolf/goblin/skeleton/gargoyle）
+  std::string name;           // NPC/精英名称（可选，覆盖默认）
   int shopId = 0;             // NPC 商店 id（0=无）
   double x = 0, z = 0;
   int count = 1;              // 该点刷怪数量（monster）

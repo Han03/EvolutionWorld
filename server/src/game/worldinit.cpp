@@ -8,7 +8,7 @@
 //   5) NPC 投放：不重复，按组别号+城市标号绑定（基础功能/任务/商店/铁匠），
 //      NPC 不够则标号靠后的主城不投放，太多则组别号大的不投放；
 //   6) 怪物投放：主城范围内不出怪，按群体投放到主城以外，距主城 0 越远等级越高；
-//   7) Boss 投放：远境均匀分布，取最强怪物类型。
+//   7) 精英投放：远境均匀分布，取最强怪物类型。
 #include "worldinit.h"
 #include "world.h"
 #include "terrain.h"
@@ -69,10 +69,10 @@ static int nearestCell(const std::vector<Cell>& walk, double tx, double tz,
 }
 
 bool generateWorld(World& w, const Config& cfg) {
-  setTerrainSeed((int32_t)cfg.worldSeed);
+  setTerrainSeed((int32_t)w.seed());
   int N = gMaskN, OFF = gMaskOff;   // 默认值，岛屿生成后根据实际占地重算
   std::vector<uint8_t> grown;   // 延迟分配（网格尺寸由岛屿实际占地决定）
-  Mulberry32 rng((uint32_t)cfg.worldSeed ^ 0x5eed1u);
+  Mulberry32 rng(w.seed() ^ 0x5eed1u);
 
   // 标记圆盘为可通行（无条件 → 工程建筑可跨水/跨崖）
   auto markDisc = [&](double cx, double cz, double r) {
@@ -480,13 +480,11 @@ bool generateWorld(World& w, const Config& cfg) {
     }
   }
 
-  // ---- 6c) Boss：远境均匀分布，取最强怪物类型 ----
-  int nBoss = cfg.bossCount > 0 ? cfg.bossCount : 3;
-  static const char* kBossNames[] = { "荒原巨兽", "深渊领主", "冰霜女王", "熔岩魔君", "幽冥主宰" };
-  const int kBossNameN = 5;
+  // ---- 6c) 精英：远境均匀分布，取最强怪物类型 ----
+  int nElite = cfg.eliteCount > 0 ? cfg.eliteCount : 3;
   if (!walk.empty()) {
-    for (int i = 0; i < nBoss; i++) {
-      double ang = (double)i / (double)nBoss * kTwoPi + rng.next() * 0.5;
+    for (int i = 0; i < nElite; i++) {
+      double ang = (double)i / (double)nElite * kTwoPi + rng.next() * 0.5;
       double rr = maxR * 0.82;
       double tx = std::cos(ang) * rr, tz = std::sin(ang) * rr;
       int idx = nearestCell(walk, tx, tz, 0.0, 0.0, maxR * 0.60, maxR);
@@ -496,9 +494,11 @@ bool generateWorld(World& w, const Config& cfg) {
       double bx = cellX(walk[idx].gx), bz = cellZ(walk[idx].gz);
       if (inAnyCity(bx, bz, 5.0)) continue;
       SpawnPoint sp;
-      sp.kind = SP_BOSS;
-      sp.type = (T > 0) ? typesByLevel[T - 1].second : std::string("gargoyle");
-      sp.name = kBossNames[i % kBossNameN];
+      sp.kind = SP_ELITE;
+      std::string eliteType = (T > 0) ? typesByLevel[T - 1].second : std::string("gargoyle");
+      auto it = w.data().monsters().find(eliteType);
+      sp.type = eliteType;
+      sp.name = (it != w.data().monsters().end()) ? it->second.name : eliteType;
       sp.x = bx; sp.z = bz;
       list.push_back(sp);
     }

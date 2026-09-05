@@ -1,7 +1,7 @@
 // ai.h - 大型网游 AI 框架：状态机 + 大规模调度
 //
 // 设计要点（对应大型网游规模）：
-//  1. 统一状态机：生物/NPC/Boss 共用 AiState，行为可组合、可扩展
+//  1. 统一状态机：生物/NPC/精英共用 AiState，行为可组合、可扩展
 //  2. 感知层：半径侦测 + 仇恨表（玩家攻击/靠近累积仇恨，脱战衰减）
 //  3. 调度层（关键）：
 //     - 时间片轮转：用 wid 做相位偏移，把同档位实体的 AI 计算摊到不同 tick，避免帧峰
@@ -15,7 +15,7 @@ namespace ew {
 class World;
 class Config;
 
-// 生物/NPC/Boss 通用 AI 状态
+// 生物/NPC/精英通用 AI 状态
 enum AiState : uint8_t {
   AS_IDLE = 0,     // 待机（无目标，等待）
   AS_PATROL = 1,   // 游走态：沿设定轨迹点巡逻
@@ -42,8 +42,8 @@ private:
 void tickMonsterAi(World& w, Entity& e, double dt);
 // NPC 状态机：IDLE/WANDER（预留 INTERACT）
 void tickNpcAi(World& w, Entity& e, double dt);
-// 世界 Boss 状态机：IDLE（回血/侦测）→ ENGAGE（追击/普攻/AOE/阶段）→ DEAD（复活）
-void tickBossAi(World& w, Entity& e, double dt);
+// 世界精英状态机：IDLE（回血/侦测）→ ENGAGE（追击/普攻/AOE/阶段）→ DEAD（复活）
+void tickEliteAi(World& w, Entity& e, double dt);
 
 // 工具：选取仇恨最高的存活玩家目标（无则返回 nullptr）
 Entity* pickAggroTarget(World& w, Entity& e);

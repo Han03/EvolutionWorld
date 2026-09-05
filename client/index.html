@@ -30,14 +30,14 @@
       </div>
     </div>
 
-    <!-- ── Boss 血条（顶部居中） ── -->
-    <div id="boss-bar" class="hidden">
-      <div class="boss-skull">💀</div>
-      <div class="boss-info">
-        <div id="boss-name">世界Boss</div>
-        <div class="boss-track"><div id="boss-fill"></div></div>
+    <!-- ── 精英血条（顶部居中） ── -->
+    <div id="elite-bar" class="hidden">
+      <div class="elite-skull">💀</div>
+      <div class="elite-info">
+        <div id="elite-name">世界精英</div>
+        <div class="elite-track"><div id="elite-fill"></div></div>
       </div>
-      <span id="boss-hp">0/0</span>
+      <span id="elite-hp">0/0</span>
     </div>
 
     <!-- ── 左侧：角色头像框 + 血量/蓝量 ── -->
@@ -70,11 +70,6 @@
 
     <!-- ── 右下角：游戏菜单 + 操作提示 ── -->
     <div class="hud-bottom-right">
-      <div class="hud-controls">
-        <div>左键长按跟随 · 右键点击移动</div>
-        <div><kbd>J</kbd> 攻击 · <kbd>G</kbd> 交互 · <kbd>E</kbd> 拾取</div>
-        <div><kbd>1-8</kbd> 技能 · <kbd>Enter</kbd> 聊天</div>
-      </div>
       <div class="game-menu" id="game-menu">
         <button class="gm-btn" data-action="inventory" title="背包/装备 (I)">
           <span class="gm-icon">🎒</span><span class="gm-label">背包</span><span class="gm-key">I</span>
@@ -298,6 +293,22 @@
       </div>
     </div>
     <div id="warehouse-footer" class="warehouse-footer"></div>
+  </div>
+
+  <!-- ═══════════ 控制台面板（~ 键开关，功能测试用） ═══════════ -->
+  <div id="console-panel" class="console-panel hidden">
+    <div class="console-head">
+      <span class="console-title">🖥 控制台</span>
+      <span class="console-hint">输入 <b>help</b> 查看命令 · <kbd>~</kbd>/<kbd>Esc</kbd> 关闭</span>
+      <button id="console-clear" class="console-mini-btn" title="清空日志">清空</button>
+      <button id="console-close" class="panel-close" title="关闭">✕</button>
+    </div>
+    <div id="console-log" class="console-log"></div>
+    <div class="console-input-row">
+      <span class="console-prompt">&gt;</span>
+      <input id="console-input" class="console-input" type="text"
+             placeholder="输入命令后回车…" autocomplete="off" spellcheck="false" maxlength="200" />
+    </div>
   </div>
 
   <!-- ═══════════ 提示浮层 ═══════════ -->

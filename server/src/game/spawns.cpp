@@ -26,7 +26,7 @@ bool SpawnConfig::fromJson(const std::string& json) {
       std::string kind = jv.has("kind") ? jv.at("kind").asString() : "monster";
       if (kind == "monster") sp.kind = SP_MONSTER;
       else if (kind == "npc") sp.kind = SP_NPC;
-      else if (kind == "boss") sp.kind = SP_BOSS;
+      else if (kind == "elite" || kind == "boss") sp.kind = SP_ELITE;  // "boss" 为旧档兼容别名
       else continue;
       if (jv.has("type")) sp.type = jv.at("type").asString();
       if (jv.has("name")) sp.name = jv.at("name").asString();
@@ -50,7 +50,7 @@ std::string SpawnConfig::toJson() const {
   Json arr = Json::array();
   for (const auto& sp : list_) {
     Json j = Json::object();
-    j["kind"] = sp.kind == SP_NPC ? "npc" : (sp.kind == SP_BOSS ? "boss" : "monster");
+    j["kind"] = sp.kind == SP_NPC ? "npc" : (sp.kind == SP_ELITE ? "elite" : "monster");
     if (!sp.type.empty()) j["type"] = sp.type;
     if (!sp.name.empty()) j["name"] = sp.name;
     if (sp.shopId) j["shopId"] = sp.shopId;

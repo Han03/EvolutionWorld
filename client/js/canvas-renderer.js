@@ -51,12 +51,15 @@ export class WebGLRenderer {
 
     // ---- 状态 ----
     this._self = null;
+    this._dirTarget = null;  // {x, z} 鼠标世界坐标（方向指示器用）
     this._entities = [];
     this._effects = [];
     this._spawnMarkers = [];
     this._brushPreview = null;
     this._clickIndicators = [];
     this._gridVisible = false;
+    this.heightColorMode = false;  // 高度色带着色模式（编辑器）
+    this._selfPos = null; // {x, z} 自身位置（交互按键提示用）
     this._bounce = new Map();
     this._bounceActive = new Set();
     this._lastBuildMs = 0;
@@ -127,6 +130,10 @@ export class WebGLRenderer {
 
   setSelf(x, y, z, name, dead) {
     this._self = { x, y, z, name, dead };
+    this._selfPos = { x, z };
+  }
+  setDirectionTarget(x, z) {
+    this._dirTarget = (x != null && z != null) ? { x, z } : null;
   }
   setEntities(list) { this._entities = list; }
   addClickRipple(x, z) {
@@ -267,6 +274,9 @@ export class WebGLRenderer {
       return [140, 190, 230]; // 不可通行区域：天空蓝（浮岛间空隙）
     }
     const h = terrainHeight(wx, wz);
+    if (this.heightColorMode) {
+      return this._heightToBandRgb(h);
+    }
     if (h < WATER_LEVEL) {
       return [148, 134, 92]; // 河床/湖底 → 沙泥色
     }
@@ -277,6 +287,32 @@ export class WebGLRenderer {
       Math.round(tc.g * 168 + 12),
       Math.round(tc.b * 148 + 8),
     ];
+  }
+
+  // ── 高度 → 色带 RGB（匹配图例渐变） ──
+  _heightToBandRgb(h) {
+    const stops = [
+      [-2,  45,  70, 160],
+      [ 4,  80, 150, 195],
+      [10, 110, 185, 120],
+      [16, 225, 215, 130],
+      [22, 175, 135,  85],
+      [34, 245, 245, 245],
+    ];
+    if (h <= stops[0][0]) return [stops[0][1], stops[0][2], stops[0][3]];
+    const last = stops[stops.length - 1];
+    if (h >= last[0]) return [last[1], last[2], last[3]];
+    for (let i = 0; i < stops.length - 1; i++) {
+      if (h >= stops[i][0] && h < stops[i + 1][0]) {
+        const t = (h - stops[i][0]) / (stops[i + 1][0] - stops[i][0]);
+        return [
+          Math.round(stops[i][1] + (stops[i + 1][1] - stops[i][1]) * t),
+          Math.round(stops[i][2] + (stops[i + 1][2] - stops[i][2]) * t),
+          Math.round(stops[i][3] + (stops[i + 1][3] - stops[i][3]) * t),
+        ];
+      }
+    }
+    return [200, 200, 200];
   }
 
   // ── 地形渲染（连续色块，与小地图一致） ──
@@ -468,12 +504,63 @@ export class WebGLRenderer {
       const r = e.kind === 'item' ? 0.4 : 0.55;
       const bn = (e.kind === 'item' || e.dying) ? 0 : this._bounceOffset(e.wid, e.x, e.z, dt);
       drawCircle(e.x, e.z + bn * 0.3, r, color, e.dying);
+
+      // 仇恨状态怪物血条（aiState=2追击/3战斗）
+      if (e.kind === 'monster' && e.maxHp > 0 && (e.aiState === 2 || e.aiState === 3)) {
+        const sx = (e.x - this.cam.cx) * scale + this.canvas.clientWidth / 2;
+        const sy = (e.z + bn * 0.3 - this.cam.cz) * scale + this.canvas.clientHeight / 2;
+        const sr = r * scale;
+        const barW = sr * 2.2;
+        const barH = Math.max(3, sr * 0.25);
+        const barY = sy - sr - barH - 4;
+        const barX = sx - barW / 2;
+        const ratio = Math.max(0, Math.min(1, e.hp / e.maxHp));
+
+        // 背景
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+        // 红色底
+        ctx.fillStyle = '#4a1c1c';
+        ctx.fillRect(barX, barY, barW, barH);
+        // 血量填充（绿→黄→红渐变）
+        const hpColor = ratio > 0.5 ? '#4ade80' : ratio > 0.25 ? '#fbbf24' : '#ef4444';
+        ctx.fillStyle = hpColor;
+        ctx.fillRect(barX, barY, barW * ratio, barH);
+      }
     }
 
     if (this._self) {
       const s = this._self;
       const bn = s.dead ? 0 : this._bounceOffset('self', s.x, s.z, dt);
       drawCircle(s.x, s.z + bn * 0.3, 0.55, '#ff8c1a', s.dead);
+
+      // 方向指示器：玩家外圈指向鼠标方向的三角箭头
+      if (this._dirTarget && !s.dead) {
+        const dx = this._dirTarget.x - s.x;
+        const dz = this._dirTarget.z - s.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.1) {
+          const angle = Math.atan2(dz, dx);
+          const arrowDist = 0.75;  // 箭头距球心距离（略大于球半径 0.55）
+          const ax = s.x + Math.cos(angle) * arrowDist;
+          const az = s.z + Math.sin(angle) * arrowDist;
+          const sax = (ax - this.cam.cx) * scale + this.canvas.clientWidth / 2;
+          const say = (az - this.cam.cz) * scale + this.canvas.clientHeight / 2;
+          const arrowSize = Math.max(4, scale * 0.18);
+
+          ctx.save();
+          ctx.translate(sax, say);
+          ctx.rotate(angle);
+          ctx.fillStyle = 'rgba(255,140,26,0.85)';
+          ctx.beginPath();
+          ctx.moveTo(arrowSize, 0);
+          ctx.lineTo(-arrowSize * 0.6, -arrowSize * 0.6);
+          ctx.lineTo(-arrowSize * 0.6, arrowSize * 0.6);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+      }
     }
 
     // 清理已离开视野实体的弹跳状态
@@ -514,9 +601,11 @@ export class WebGLRenderer {
       const [r, g, b] = hexRgb(ef.color || '#ffd166');
       let ex = ef.x, ez = ef.z, rad = ef.radius || 1.5;
 
+      // cast 效果：跟随施法者实体位置
+      let casterX = ex, casterZ = ez;
       if (ef.kind === 'cast' && ef.wid > 0) {
         for (const e of this._entities) {
-          if (e.wid === ef.wid) { ex = e.x; ez = e.z; break; }
+          if (e.wid === ef.wid) { casterX = e.x; casterZ = e.z; ex = e.x; ez = e.z; break; }
         }
       }
 
@@ -524,15 +613,53 @@ export class WebGLRenderer {
       const sy = (ez - this.cam.cz) * scale + ch / 2;
       const sr = rad * scale;
 
-      ctx.strokeStyle = rgbStr(r, g, b, alpha);
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(sx, sy, Math.max(1, sr), 0, Math.PI * 2);
-      ctx.stroke();
+      if (ef.kind === 'cast') {
+        // ── 前摇蓄力圈：虚线边框 + 扇形进度填充 ──
+        // 蓄力方向：施法者 → 落点
+        const dirAngle = Math.atan2(ef.z - casterZ, ef.x - casterX);
+        const startAngle = dirAngle - Math.PI / 2;
+        const sweepAngle = life * Math.PI * 2;
 
-      // 填充半透明
-      ctx.fillStyle = rgbStr(r, g, b, alpha * 0.15);
-      ctx.fill();
+        // 虚线边框圆（完整圆，低透明度）
+        ctx.strokeStyle = rgbStr(r, g, b, alpha * 0.5);
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(1, sr), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 扇形填充（从起始终角度扫过 progress × 2π）
+        if (sweepAngle > 0.01) {
+          ctx.fillStyle = rgbStr(r, g, b, alpha * 0.3);
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.arc(sx, sy, Math.max(1, sr), startAngle, startAngle + sweepAngle);
+          ctx.closePath();
+          ctx.fill();
+
+          // 扫掠边沿线（高亮当前进度前沿）
+          const edgeAngle = startAngle + sweepAngle;
+          const edgeX = sx + Math.cos(edgeAngle) * sr;
+          const edgeY = sy + Math.sin(edgeAngle) * sr;
+          ctx.strokeStyle = rgbStr(r, g, b, alpha * 0.9);
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(edgeX, edgeY);
+          ctx.stroke();
+        }
+      } else {
+        // ── 其他效果（AOE 结算等）：简单圆形边框 + 半透明填充 ──
+        ctx.strokeStyle = rgbStr(r, g, b, alpha);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(1, sr), 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = rgbStr(r, g, b, alpha * 0.15);
+        ctx.fill();
+      }
     }
   }
 
@@ -623,10 +750,27 @@ export class WebGLRenderer {
     const all = [];
 
     for (const e of this._entities) {
-      if (e.name) all.push({ x: e.x, z: e.z, name: e.name, id: 'e' + e.wid });
+      if (e.name) all.push({ x: e.x, z: e.z, name: e.name, id: 'e' + e.wid, kind: e.kind });
     }
     if (this._self && this._self.name) {
-      all.push({ x: this._self.x, z: this._self.z, name: this._self.name, id: 'self' });
+      all.push({ x: this._self.x, z: this._self.z, name: this._self.name, id: 'self', kind: 'self' });
+    }
+
+    // 交互按键提示：只对最近的可交互目标显示按键徽标
+    const hints = [];
+    if (this._selfPos) {
+      const px = this._selfPos.x, pz = this._selfPos.z;
+      // NPC：只选 4m 范围内最近的一个
+      let bestNpc = null, bestNpcD = 4;
+      // 掉落物：只选 2.5m 范围内最近的一个
+      let bestItem = null, bestItemD = 2.5;
+      for (const e of this._entities) {
+        const d = Math.hypot(e.x - px, e.z - pz);
+        if (e.kind === 'npc' && d < bestNpcD) { bestNpcD = d; bestNpc = e; }
+        else if (e.kind === 'item' && d < bestItemD) { bestItemD = d; bestItem = e; }
+      }
+      if (bestNpc) hints.push({ id: 'h_e' + bestNpc.wid, x: bestNpc.x, z: bestNpc.z, key: 'G', hasName: !!bestNpc.name });
+      if (bestItem) hints.push({ id: 'h_e' + bestItem.wid, x: bestItem.x, z: bestItem.z, key: 'E', hasName: !!bestItem.name });
     }
 
     for (const lb of all) {
@@ -645,6 +789,28 @@ export class WebGLRenderer {
       el.style.transform = 'translate(-50%,-100%)';
       used.add(lb.id);
     }
+
+    // 渲染交互按键提示（姓名上方的按键徽标）
+    for (const h of hints) {
+      const s = this.w2s(h.x, h.z);
+      if (s.x < -60 || s.x > cw + 60 || s.y < -40 || s.y > ch + 40) continue;
+      let el = this._labelEls.get(h.id);
+      if (!el) {
+        el = document.createElement('div');
+        el.style.cssText = 'position:absolute;pointer-events:none;white-space:nowrap;' +
+          'font:bold 10px monospace;color:#ffd700;background:rgba(0,0,0,0.6);' +
+          'padding:1px 5px;border-radius:3px;border:1px solid rgba(255,215,0,0.4);';
+        this._labelBox.appendChild(el);
+        this._labelEls.set(h.id, el);
+      }
+      el.textContent = h.key;
+      el.style.left = s.x + 'px';
+      // 有名字时浮于姓名上方，无名字时贴近实体
+      el.style.top = (s.y - (h.hasName ? 26 : 14)) + 'px';
+      el.style.transform = 'translate(-50%,-100%)';
+      used.add(h.id);
+    }
+
     for (const [id, el] of this._labelEls) {
       if (!used.has(id)) { el.remove(); this._labelEls.delete(id); }
     }
@@ -694,7 +860,11 @@ export class WebGLRenderer {
         // 内联颜色计算 —— 避免 terrainColor 每格创建 {r,g,b} 对象
         const h = terrainHeight(sampleX, sampleZ);
         let r, g, b;
-        if (h < WATER_LEVEL) {
+        if (this.heightColorMode) {
+          // 高度色带模式：使用图例渐变颜色
+          const band = this._heightToBandRgb(h);
+          r = band[0]; g = band[1]; b = band[2];
+        } else if (h < WATER_LEVEL) {
           // 湖床 → 暖沙色（暗化版）
           r = 148; g = 134; b = 92;
         } else if (h < 6) {

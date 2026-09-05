@@ -132,9 +132,11 @@ async function main() {
     await debugTp(token, edge.x, edge.z);
     await sleep(250);
     let sent = 0;
+    let curX = edge.x, curZ = edge.z;
     const t0 = Date.now();
     while (Date.now() - t0 < 1800) {
-      send(encodeInput(++sent, edge.dx, edge.dz, 0, edge.x, 0, edge.z)); // 朝阻挡方向移动
+      curX += edge.dx * 0.05; curZ += edge.dz * 0.05; // 朝阻挡方向每步移动 0.05m
+      send(encodeInput(++sent, curX, 0, curZ));
       await sleep(50);
     }
     const finalPos = await selfPosFromConsole();

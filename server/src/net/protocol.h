@@ -86,7 +86,7 @@ enum MsgType : uint8_t {
   S2C_PING    = 0x88, // 心跳
   S2C_KICK    = 0x89, // 踢出
   S2C_ERROR   = 0x8A, // 错误
-  S2C_BOSS    = 0x8B, // 世界 Boss 全局共享状态（血量/阶段/状态/目标/位置）
+  S2C_ELITE    = 0x8B, // 世界精英全局共享状态（血量/阶段/状态/目标/位置）
   S2C_SHOP     = 0x8C, // 商店列表（shopId/名称/商品条目）
   S2C_INVENTORY= 0x8D, // 背包/装备/金币 全量（服务端权威）
   S2C_LOOT     = 0x8E, // 拾取反馈（获得物品/金币）
@@ -121,6 +121,7 @@ enum MsgType : uint8_t {
   S2C_QUEST_COMPLETE = 0xD3, // 任务完成通知（目标全部达成）
   S2C_QUEST_NOTIFY   = 0xD4, // 任务目标进度更新推送
   S2C_QUEST_CHAIN    = 0xD5, // 链式任务解锁通知（完成当前任务后解锁的后续任务 ID 列表）
+  S2C_NPC_DIALOGUE   = 0xD6, // NPC 对话文本 (str: dialogue)
   // ---- 经济系统 S2C（0xE0-0xEF）----
   S2C_ENHANCE        = 0xE0, // 强化结果 (u8 ok, u8 failCode, u64 instId, u8 newLevel, u8 success, u32 goldLeft)
   S2C_DECOMPOSE      = 0xE1, // 分解结果 (u8 ok, u8 failCode, u16 count, [u32 itemId, u16 count]..., u32 goldGain)
@@ -140,10 +141,10 @@ enum EvtType : uint8_t {
   EVT_SKILL_CASTING = 6, // 技能前摇开始：wid 施法者, b skillId, x/z 施放落点（客户端画前摇圈）
   EVT_SKILL_CANCEL   = 7, // 技能前摇被打断：wid 施法者, b skillId, x 打断原因(1移动/2受击)
 };
-// ---------- Boss 状态位（S2C_BOSS.state，与 entity.h BossState 一致） ----------
-constexpr uint8_t BOSS_IDLE = 0;
-constexpr uint8_t BOSS_ENGAGE = 1;
-constexpr uint8_t BOSS_DEAD = 2;
+// ---------- 精英状态位（S2C_ELITE.state，与 entity.h EliteState 一致） ----------
+constexpr uint8_t ELITE_IDLE = 0;
+constexpr uint8_t ELITE_ENGAGE = 1;
+constexpr uint8_t ELITE_DEAD = 2;
 
 // ---------- flags ----------
 enum Flags : uint8_t {
@@ -269,8 +270,8 @@ std::string selfCorrection(const std::string& reason, const Entity& p, uint32_t 
 std::string ping(uint32_t ts);
 std::string kick(const std::string& reason);
 std::string error(uint8_t code, const std::string& msg);
-// 世界共享状态（Boss 全区广播 + 战斗事件）
-std::string bossState(const Entity& boss);
+// 世界共享状态（精英全区广播 + 战斗事件）
+std::string eliteState(const Entity& elite);
 std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z);
 
 // 世界共享状态编码：S2C_SHOP / S2C_INVENTORY / S2C_STATS / S2C_LOOT

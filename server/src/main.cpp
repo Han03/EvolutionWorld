@@ -47,10 +47,10 @@ int main(int argc, char** argv) {
   cfg.maxInputRatePerSec = envInt("EW_MAX_RATE", cfg.maxInputRatePerSec);
   cfg.inputBurst = envInt("EW_BURST", cfg.inputBurst);
   cfg.kickThreshold = envInt("EW_KICK_THRESHOLD", cfg.kickThreshold);
-  cfg.bossCount = envInt("EW_BOSS_COUNT", cfg.bossCount);
-  cfg.bossHp = (float)envDouble("EW_BOSS_HP", cfg.bossHp);
-  cfg.bossAttack = (float)envDouble("EW_BOSS_ATTACK", cfg.bossAttack);
-  cfg.bossRespawnSec = (float)envDouble("EW_BOSS_RESPAWN", cfg.bossRespawnSec);
+  cfg.eliteCount = envInt("EW_ELITE_COUNT", cfg.eliteCount);
+  cfg.eliteHp = (float)envDouble("EW_ELITE_HP", cfg.eliteHp);
+  cfg.eliteAttack = (float)envDouble("EW_ELITE_ATTACK", cfg.eliteAttack);
+  cfg.eliteRespawnSec = (float)envDouble("EW_ELITE_RESPAWN", cfg.eliteRespawnSec);
   cfg.monsterRespawnSec = (float)envDouble("EW_MONSTER_RESPAWN", cfg.monsterRespawnSec);
   cfg.playerAttackCdSec = (float)envDouble("EW_PLAYER_ATTACK_CD", cfg.playerAttackCdSec);
 

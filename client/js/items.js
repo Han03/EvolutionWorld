@@ -216,39 +216,39 @@ export function applyGameData(data) {
     RUNTIME_WAREHOUSE = data.warehouse;
   }
 }
-/** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示） */
+/** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示/客户端预校验） */
 export const SKILL_DEFS = {
-  // castMs=前摇毫秒, radius=命中半径(0=近战贴身 1.2m)，与服务端 skills.json 对齐
-  1000: { name: '普通攻击', icon: '⚔️', color: '#e0e0e0', desc: '100% 攻击伤害', key: 'J', castMs: 200, radius: 0 },
-  // castMs=前摇毫秒, radius=命中半径(0=近战贴身 1.2m)，与服务端 skills.json 对齐
-  1001: { name: '冲刺斩', icon: '⚔️', color: '#ff6b35', desc: '220% 攻击伤害', key: '1', castMs: 0, radius: 0 },
-  1002: { name: '烈焰冲击', icon: '🔥', color: '#ff3d2e', desc: '150% AOE 伤害', key: '2', castMs: 600, radius: 4 },
-  1003: { name: '治疗之光', icon: '✨', color: '#7ef9ff', desc: '恢复 60 生命', key: '3', castMs: 500, radius: 0 },
-  1004: { name: '冰霜新星', icon: '❄️', color: '#6dd5ff', desc: '120% AOE + 减速', key: '4', castMs: 800, radius: 4 },
-  1005: { name: '战吼', icon: '📢', color: '#ffd166', desc: '攻击 +8（10s）', key: '5', castMs: 400, radius: 0 },
-  1006: { name: '雷霆一击', icon: '⚡', color: '#fff35b', desc: '300% 伤害（落点命中）', key: '6', castMs: 1000, radius: 0 },
-  1007: { name: '吸血打击', icon: '🩸', color: '#c44dff', desc: '180% + 吸血 35%', key: '7', castMs: 300, radius: 0 },
-  1008: { name: '荆棘护体', icon: '🌵', color: '#6bd968', desc: '反弹伤害 20%（8s）', key: '8', castMs: 600, radius: 0 },
+  // castMs=前摇毫秒, radius=命中半径(0=近战贴身 1.2m), mana=耗蓝, range=施法距离(0=无限制), cooldownMs=冷却毫秒
+  // target: 1=SELF, 2=ENEMY, 3=AOE（与服务端 SkillTarget 枚举对齐）
+  1000: { name: '普通攻击', icon: '⚔️', color: '#e0e0e0', desc: '100% 攻击伤害', key: 'J', target: 2, castMs: 200, radius: 0, mana: 0, range: 3.2, cooldownMs: 500 },
+  1001: { name: '冲刺斩', icon: '⚔️', color: '#ff6b35', desc: '220% 攻击伤害', key: '1', target: 2, castMs: 0, radius: 0, mana: 8, range: 3.5, cooldownMs: 3000 },
+  1002: { name: '烈焰冲击', icon: '🔥', color: '#ff3d2e', desc: '150% AOE 伤害', key: '2', target: 3, castMs: 600, radius: 4, mana: 15, range: 10, cooldownMs: 6000 },
+  1003: { name: '治疗之光', icon: '✨', color: '#7ef9ff', desc: '恢复 60 生命', key: '3', target: 1, castMs: 500, radius: 0, mana: 15, range: 0, cooldownMs: 8000 },
+  1004: { name: '冰霜新星', icon: '❄️', color: '#6dd5ff', desc: '120% AOE + 减速', key: '4', target: 3, castMs: 800, radius: 4, mana: 18, range: 10, cooldownMs: 10000 },
+  1005: { name: '战吼', icon: '📢', color: '#ffd166', desc: '攻击 +8（10s）', key: '5', target: 1, castMs: 400, radius: 0, mana: 10, range: 0, cooldownMs: 12000 },
+  1006: { name: '雷霆一击', icon: '⚡', color: '#fff35b', desc: '300% 伤害（落点命中）', key: '6', target: 2, castMs: 1000, radius: 0, mana: 25, range: 4.5, cooldownMs: 12000 },
+  1007: { name: '吸血打击', icon: '🩸', color: '#c44dff', desc: '180% + 吸血 35%', key: '7', target: 2, castMs: 300, radius: 0, mana: 12, range: 3.5, cooldownMs: 6000 },
+  1008: { name: '荆棘护体', icon: '🌵', color: '#6bd968', desc: '反弹伤害 20%（8s）', key: '8', target: 1, castMs: 600, radius: 0, mana: 12, range: 0, cooldownMs: 15000 },
   // 大型网游扩展：控制/减益/增益/击退
-  1010: { name: '铁壁守护', icon: '🛡️', color: '#8ab4f8', desc: '防御+15 霸体·不可打断 8s', key: '9', castMs: 800, radius: 0 },
-  1011: { name: '撕裂', icon: '🩸', color: '#e53935', desc: '130% AOE + 流血 10/s·5s', key: '0', castMs: 700, radius: 4 },
-  1012: { name: '破甲斩', icon: '⛏️', color: '#ffb74d', desc: '140% AOE + 减防12·6s', key: '-', castMs: 600, radius: 3 },
-  1013: { name: '虚弱咒印', icon: '💀', color: '#9575cd', desc: 'AOE 减攻8·8s', key: '=', castMs: 500, radius: 4 },
-  1014: { name: '震荡波', icon: '🌀', color: '#4dd0e1', desc: '100% AOE + 眩晕2s', key: 'q', castMs: 800, radius: 3.5 },
-  1015: { name: '疾风步', icon: '💨', color: '#69f0ae', desc: '移速+50%·8s', key: 'R', castMs: 300, radius: 0 },
-  1016: { name: '猛击', icon: '🔨', color: '#ffca28', desc: '180% AOE + 击退6m', key: 'T', castMs: 500, radius: 3 },
-  1017: { name: '生命涌动', icon: '💚', color: '#81c784', desc: '回血 25/s·8s', key: 'Y', castMs: 400, radius: 0 },
+  1010: { name: '铁壁守护', icon: '🛡️', color: '#8ab4f8', desc: '防御+15 霸体·不可打断 8s', key: '9', target: 1, castMs: 800, radius: 0, mana: 15, range: 0, cooldownMs: 18000 },
+  1011: { name: '撕裂', icon: '🩸', color: '#e53935', desc: '130% AOE + 流血 10/s·5s', key: '0', target: 3, castMs: 700, radius: 4, mana: 14, range: 10, cooldownMs: 9000 },
+  1012: { name: '破甲斩', icon: '⛏️', color: '#ffb74d', desc: '140% AOE + 减防12·6s', key: '-', target: 3, castMs: 600, radius: 3, mana: 15, range: 8, cooldownMs: 10000 },
+  1013: { name: '虚弱咒印', icon: '💀', color: '#9575cd', desc: 'AOE 减攻8·8s', key: '=', target: 3, castMs: 500, radius: 4, mana: 12, range: 10, cooldownMs: 12000 },
+  1014: { name: '震荡波', icon: '🌀', color: '#4dd0e1', desc: '100% AOE + 眩晕2s', key: 'q', target: 3, castMs: 800, radius: 3.5, mana: 18, range: 9, cooldownMs: 14000 },
+  1015: { name: '疾风步', icon: '💨', color: '#69f0ae', desc: '移速+50%·8s', key: 'R', target: 1, castMs: 300, radius: 0, mana: 8, range: 0, cooldownMs: 12000 },
+  1016: { name: '猛击', icon: '🔨', color: '#ffca28', desc: '180% AOE + 击退6m', key: 'T', target: 3, castMs: 500, radius: 3, mana: 16, range: 8, cooldownMs: 10000 },
+  1017: { name: '生命涌动', icon: '💚', color: '#81c784', desc: '回血 25/s·8s', key: 'Y', target: 1, castMs: 400, radius: 0, mana: 14, range: 0, cooldownMs: 16000 },
   // ---- 怪物专属技能 ----
-  2001: { name: '撕咬', icon: '🦷', color: '#f87171', desc: '100% + 流血', key: '', castMs: 400, radius: 3 },
-  2002: { name: '利爪挥击', icon: '🐾', color: '#f87171', desc: '100% + 减速', key: '', castMs: 500, radius: 3 },
-  2003: { name: '骨刺投掷', icon: '🦴', color: '#f87171', desc: '90% + 减防', key: '', castMs: 600, radius: 5 },
-  2004: { name: '石像冲击', icon: '🗿', color: '#f87171', desc: '120% + 击退', key: '', castMs: 700, radius: 3 },
+  2001: { name: '撕咬', icon: '🦷', color: '#f87171', desc: '100% + 流血', key: '', castMs: 400, radius: 3, mana: 0, range: 3 },
+  2002: { name: '利爪挥击', icon: '🐾', color: '#f87171', desc: '100% + 减速', key: '', castMs: 500, radius: 3, mana: 0, range: 3 },
+  2003: { name: '骨刺投掷', icon: '🦴', color: '#f87171', desc: '90% + 减防', key: '', castMs: 600, radius: 5, mana: 0, range: 5 },
+  2004: { name: '石像冲击', icon: '🗿', color: '#f87171', desc: '120% + 击退', key: '', castMs: 700, radius: 3, mana: 0, range: 3 },
   // ---- Boss 专属技能 ----
-  2100: { name: '地裂冲击', icon: '💥', color: '#f87171', desc: '80% AOE + 击退3m', key: '', castMs: 1500, radius: 6 },
-  2101: { name: '暗影波动', icon: '🌑', color: '#f87171', desc: '60% AOE + 减速35%', key: '', castMs: 2000, radius: 8 },
+  2100: { name: '地裂冲击', icon: '💥', color: '#f87171', desc: '80% AOE + 击退3m', key: '', castMs: 1500, radius: 6, mana: 0, range: 0 },
+  2101: { name: '暗影波动', icon: '🌑', color: '#f87171', desc: '60% AOE + 减速35%', key: '', castMs: 2000, radius: 8, mana: 0, range: 0 },
 };
 export function skillDef(id) {
-  return SKILL_DEFS[id] || { name: `技能#${id}`, icon: '❔', color: '#aaa', desc: '', key: '' };
+  return SKILL_DEFS[id] || { name: `技能#${id}`, icon: '❔', color: '#aaa', desc: '', key: '', cooldownMs: 0 };
 }
 export function skillName(id) {
   return skillDef(id).name;

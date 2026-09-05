@@ -99,7 +99,7 @@ async function main() {
     pred.applyInput(s.mx, s.mz, s.jump);
     // 发送输入（带当前预测位置，WS 即时送达，AC 校验不受拉取延迟影响）
     const pNow = pred.predicted();
-    ws.send(encodeInput(++seq, s.mx, s.mz, s.jump, pNow.x, pNow.y, pNow.z));
+    ws.send(encodeInput(++seq, pNow.x, pNow.y, pNow.z));
     // 拉取服务端权威位置
     const sp = await debugSelf(uname);
     // 把预测器推进到与服务端采样相同的墙钟时刻（真实 dt，predictor 内部有积压上限兜底）

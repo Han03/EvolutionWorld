@@ -3,7 +3,7 @@
 //  - 物品：装备（6 槽位）/ 消耗品 / 任务道具，按 ID 管理（名称/描述/缩略图/穿戴属性/价格）
 //  - 属性：血量/蓝量/攻击力/防御力；装备影响基础属性（服务端权威计算）
 //  - 商店：商店 NPC 出售物品（价格/库存），金币购买
-//  - 配置：内置默认数据 + 商店 JSON 覆盖；物品/生物由编辑器热替换，数据库模式持久化
+//  - 配置：data/*.json 提供默认数据；物品/生物由编辑器热替换，数据库模式持久化
 #pragma once
 #include <cstdint>
 #include <string>
@@ -90,11 +90,11 @@ struct MonsterDef {
   std::vector<DropEntry> drops;        // 掉落物品概率表
   double dropRadius = 1.6;             // 掉落物散布半径
   std::vector<uint32_t> skillIds;      // 该怪物类型可用的技能 ID
-  // ---- Boss 扩展（isBoss=true 时使用以下字段覆盖 Config 全局默认值）----
-  bool isBoss = false;                 // Boss 标志
-  double aggroRange = 18.0;            // Boss 仇恨侦测范围（米）
-  double chaseSpeed = 3.0;             // Boss 追击速度（m/s）
-  double attackRange = 2.5;            // Boss 攻击范围（米，覆盖怪物默认值）
+  // ---- 精英扩展（isElite=true 时使用以下字段覆盖 Config 全局默认值）----
+  bool isElite = false;                // 精英标志
+  double aggroRange = 18.0;            // 精英仇恨侦测范围（米）
+  double chaseSpeed = 3.0;             // 精英追击速度（m/s）
+  double attackRange = 2.5;            // 精英攻击范围（米，覆盖怪物默认值）
 };
 
 // ---------- NPC 定义已移至 npc.h（NPC 插件模块） ----------
@@ -120,11 +120,20 @@ struct ShopDef {
   std::vector<ShopEntry> entries;
 };
 
+// ---------- 玩家基础属性（player.json 可配置） ----------
+struct PlayerDefaults {
+  double hp = 100;
+  double mp = 50;
+  double attack = 12;
+  double defense = 3;
+  int level = 1;
+  double radius = 0.55;
+};
+
 // ---------- 游戏数据表（配置系统） ----------
 class GameData {
 public:
-  void loadDefaults();   // 内嵌默认数据（无配置文件兜底，保证任何环境可运行）
-  bool loadFromJson(const std::string& dir); // 可选外部配置覆盖（失败仅告警，用默认）
+  bool loadFromJson(const std::string& dir); // 从 data/*.json 加载配置（items/monsters/shop/skills/player）
 
   const ItemDef* item(uint32_t id) const;
   const std::unordered_map<uint32_t, ItemDef>& items() const { return items_; }
@@ -140,6 +149,8 @@ public:
   const std::unordered_map<uint32_t, SkillDef>& skills() const { return skills_; }
   // 默认起始技能（新玩家自动习得，用于开箱即测）
   const std::vector<uint32_t>& starterSkills() const { return starterSkills_; }
+  // 玩家基础属性（player.json 可配置）
+  const PlayerDefaults& playerDefaults() const { return playerDefaults_; }
 
   // 槽位工具
   static const char* slotName(EquipSlot s);    // "头盔/上衣/…"
@@ -157,29 +168,21 @@ public:
   std::string itemsToJson() const;    // ItemDef 数组（字段与 loadFromJson 对齐）
   std::string monstersToJson() const; // MonsterDef 对象（键=type）
   std::string shopsToJson() const;    // ShopDef 对象（键=shopId，含扩展字段，与 shop.json 对齐）
+  std::string skillsToJson() const;   // 技能对象 {starterSkills:[], skills:[...]}
   // NPC 序列化已委托给 NpcManager（见 World::npcs()）
   bool replaceItems(const Json& arr);    // 清空并用完整数组重填 items_
   bool replaceMonsters(const Json& obj); // 清空并用完整对象重填 monsters_
   bool replaceShops(const Json& obj);    // 清空并用完整对象重填 shops_（键=shopId，字段与 shop.json 对齐）
+  bool replaceSkills(const Json& obj);   // 清空并用完整对象重填 skills_ + starterSkills_
 
 private:
-  void addDefaultItem(uint32_t id, const char* name, const char* desc, const char* icon,
-                      ItemType type, EquipSlot slot, double hp, double mp, double atk, double def,
-                      double rHp, double rMp, uint32_t price, uint32_t stack = 99);
-  void addDefaultMonster(const char* type, const char* name, int level, double hp, double mp,
-                         double atk, double def, uint32_t gMin, uint32_t gMax);
-  void addDefaultSkill(uint32_t id, const char* name, const char* desc, const char* icon,
-                       SkillTarget target, SkillEffect effect, double mana, uint32_t cdMs,
-                       double range, double radius, double dmgMul, double flatDmg, double heal,
-                       BuffType buffType, double buffValue, double buffDur, double lifesteal,
-                       uint16_t castTimeMs = 0, bool cancelOnMove = true, bool cancelOnHit = true,
-                       double knockback = 0, bool superArmor = false);
   std::unordered_map<uint32_t, ItemDef> items_;
   std::unordered_map<std::string, MonsterDef> monsters_;
   // NPC 数据已委托给 NpcManager（见 npc.h）
   std::unordered_map<uint32_t, ShopDef> shops_;
   std::unordered_map<uint32_t, SkillDef> skills_;
   std::vector<uint32_t> starterSkills_;
+  PlayerDefaults playerDefaults_;
 };
 
 } // namespace ew

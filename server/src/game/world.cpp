@@ -1,4 +1,4 @@
-// world.cpp - 世界管理器实现 + 世界怪物/世界Boss 状态共享（服务端单点权威）
+// world.cpp - 世界管理器实现 + 世界怪物/世界精英状态共享（服务端单点权威）
 #include "world.h"
 #include "terrain.h"
 #include "worldinit.h"
@@ -12,20 +12,20 @@ namespace ew {
 // 简易随机源（AI 用；单线程）
 static Mulberry32 gAiRng(0xC0FFEE);
 static double rng01() { return gAiRng.next(); }
-// 世界 Boss 固定锚点（确定性，可调）
-// 世界 Boss 锚点：远离城镇/出生点安全区（>=40m），且位于可通行地图区域（用与地形 mask 一致的采样选定）
+// 世界精英固定锚点（确定性，可调）
+// 世界精英锚点：远离城镇/出生点安全区（>=40m），且位于可通行地图区域（用与地形 mask 一致的采样选定）
 // 默认系统（前向声明，定义在文件后部）
 static void inputSystem(World& w, double dt);
 static void moveSystem(World& w, double dt);
 static void aiSystem(World& w, double dt);
 static void castSystem(World& w, double dt);
 static void buffSystem(World& w, double dt);
-static void bossSystem(World& w, double dt);
+static void eliteSystem(World& w, double dt);
 static void respawnSystem(World& w, double dt);
 static void playerRespawnSystem(World& w, double dt);
 static void dropSystem(World& w, double dt);
 World::World(const Config& cfg)
-    : cfg_(cfg), physics_(cfg), chunks_(*this, cfg),
+    : cfg_(cfg), currentSeed_((uint32_t)cfg.worldSeed), physics_(cfg), chunks_(*this, cfg),
       aoi_(cfg.aoiCellSizeM), rng_((uint32_t)cfg.worldSeed ^ 0x51ab) {
   // 出生点布局不再硬编码：由世界初始化执行器（runWorldInit）数据驱动生成，
   // 或数据库模式从库还原（loadWorldFromStore）。构造时不填充默认布局。
@@ -42,23 +42,19 @@ World::World(const Config& cfg)
   addSystem(30, "ai", aiSystem);
   addSystem(32, "cast", castSystem);
   addSystem(35, "buff", buffSystem);
-  addSystem(40, "boss", bossSystem);
+  addSystem(40, "elite", eliteSystem);
   addSystem(50, "respawn", respawnSystem);
   addSystem(55, "player_respawn", playerRespawnSystem);
   addSystem(60, "drop", dropSystem);
-  // 配置系统：内置默认数据 + 商店 JSON 覆盖（shop.json）；物品/生物由编辑器热替换
-  data_.loadDefaults();
+  // 配置系统：从 data/*.json 加载游戏数据（items/monsters/shop/skills/player）
   data_.loadFromJson(cfg.dataDir);
-  // NPC 插件：内置默认花名册 + 可选 JSON 覆盖
-  npcs_->loadDefaults();
+  // NPC 插件：从 data/npcs.json 加载 NPC 定义
   npcs_->loadFromJson(cfg.dataDir);
-  // 经济系统：内置默认强化表 + 可选 enhance.json 覆盖
-  economy_->loadDefaults();
+  // 经济系统：从 data/enhance.json + data/craft.json 加载配置
   economy_->loadFromJson(cfg.dataDir);
-  // 仓库系统：内置默认配置 + 可选 warehouse.json 覆盖
-  warehouse_->loadDefaults();
+  // 仓库系统：从 data/warehouse.json 加载配置
   warehouse_->loadFromJson(cfg.dataDir);
-  // 任务系统：内置默认任务 + 可选 JSON 覆盖
+  // 任务系统：从 data/quests.json 加载任务定义
   quests_->init();
 }
 Store& World::store() {
@@ -105,14 +101,14 @@ bool World::loadWorldFromStore(Store& s) {
             terrainWalkMaskN(), terrainWalkMaskN(), spawns_.size());
   return ok;
 }
-void World::spawnBossAt(double hx, double hz, const std::string& name) {
-  Entity b = makeMonster(nextEntityId("boss"), "gargoyle");
-  b.isBoss = true;
+void World::spawnEliteAt(double hx, double hz, const std::string& name) {
+  Entity b = makeMonster(nextEntityId("elite"), "gargoyle");
+  b.isElite = true;
   b.radius = 1.4;
-  b.hp = b.maxHp = cfg_.bossHp;
-  b.mp = b.maxMp = cfg_.bossMp;
-  b.attack = cfg_.bossAttack;
-  b.defense = cfg_.bossDefense;
+  b.hp = b.maxHp = cfg_.eliteHp;
+  b.mp = b.maxMp = cfg_.eliteMp;
+  b.attack = cfg_.eliteAttack;
+  b.defense = cfg_.eliteDefense;
   b.level = 60;
   b.name = name.empty() ? "荒原巨兽" : name;
   // 在锚点附近找干地出生
@@ -128,11 +124,11 @@ void World::spawnBossAt(double hx, double hz, const std::string& name) {
   b.pos = {bx, groundFootY(bx, bz, b.radius), bz};
   b.ai.homeX = bx;
   b.ai.homeZ = bz;
-  b.skillIds = {2100, 2101};  // Boss 技能：地裂冲击 / 暗影波动
+  b.skillIds = {2100, 2101};  // 精英技能：地裂冲击 / 暗影波动
   addEntity(std::move(b));
-  aliveBoss_++;
+  aliveElite_++;
 }
-// 按出生点生成一只生物（monster/npc/boss）
+// 按出生点生成一只生物（monster/npc/elite）
 void World::spawnFromPoint(const SpawnPoint& sp) {
   if (sp.kind == SP_MONSTER) {
     // 相同怪物成群：群内围绕锚点小半径散布（确定性），避免完全重叠；
@@ -146,8 +142,8 @@ void World::spawnFromPoint(const SpawnPoint& sp) {
     }
   } else if (sp.kind == SP_NPC) {
     spawnNpcAt(sp);
-  } else if (sp.kind == SP_BOSS) {
-    spawnBossAt(sp.x, sp.z, sp.name);
+  } else if (sp.kind == SP_ELITE) {
+    spawnEliteAt(sp.x, sp.z, sp.name);
   }
 }
 // 按出生点生成一个城镇 NPC：就近找干地，可带商店/名称
@@ -210,11 +206,11 @@ void World::reseedCreatures() {
   std::vector<std::string> toRemove;
   for (const auto& [id, e] : entities_) {
     if (e.kind == EntityKind::Player) continue;
-    if (id.rfind("m_", 0) == 0 || id.rfind("n_", 0) == 0 || id.rfind("boss_", 0) == 0)
+    if (id.rfind("m_", 0) == 0 || id.rfind("n_", 0) == 0 || id.rfind("elite_", 0) == 0)
       toRemove.push_back(id);
   }
   for (const auto& id : toRemove) despawnEntity(id);
-  aliveBoss_ = 0;
+  aliveElite_ = 0;
   npcs_->clearSpawned();  // NPC 插件：清空唯一性追踪
   seedWorld();
   fprintf(stderr, "[spawns] 热重载完成：%zu 个出生点 → 重建世界生物\n", spawns_.size());
@@ -253,15 +249,26 @@ bool World::applyMonsters(const std::string& monstersJson, const std::string& da
   fprintf(stderr, "[gamedata] 生物配置热重载：%zu 种\n", data_.monsters().size());
   return true;
 }
-// 应用编辑器 NPC 配置：热替换内存 npcs_（数据库模式同步落库；NPC 为模板数据，无需 reseed）
+// 应用编辑器 NPC 配置：热替换内存 npcs_ → 同步已生成 NPC 实体的标签/名称/商店（数据库模式同步落库）
 bool World::applyNpcs(const std::string& npcsJson, const std::string& dataDir) {
   (void)dataDir;
   try {
     Json obj = Json::parse(npcsJson);
     if (!npcs_->replaceNpcs(obj)) return false;
   } catch (...) { return false; }
+  // 同步已生成 NPC 实体的 npcTag/name/shopId（编辑器保存后立即生效，无需手动重新初始化世界）
+  int synced = 0;
+  for (auto& [id, e] : entities_) {
+    if (e.kind != EntityKind::Npc || e.npcId.empty()) continue;
+    const NpcDef* def = npcs_->npc(e.npcId);
+    if (!def) continue;
+    e.npcTag = def->npcTag;
+    e.name = def->name;
+    e.shopId = def->shopId;
+    ++synced;
+  }
   if (store_ && store_->worldDataPersistent()) store_->saveWorldData("npcs", npcsJson);
-  fprintf(stderr, "[npc] NPC 配置热重载：%zu 种\n", npcs_->npcs().size());
+  fprintf(stderr, "[npc] NPC 配置热重载：%zu 种，同步 %d 个已生成实体\n", npcs_->npcs().size(), synced);
   return true;
 }
 // 应用编辑器强化配置：热替换内存 enhance 配置（数据库模式同步落库）
@@ -308,8 +315,27 @@ bool World::applyShop(const std::string& json, const std::string& dataDir) {
   fprintf(stderr, "[gamedata] 商店配置热重载：%zu 个\n", data_.shops().size());
   return true;
 }
+// 应用编辑器技能配置：热替换内存 skills_ + starterSkills_（数据库模式同步落库）
+bool World::applySkills(const std::string& json, const std::string& dataDir) {
+  (void)dataDir;
+  try {
+    Json obj = Json::parse(json);
+    if (!data_.replaceSkills(obj)) return false;
+  } catch (...) { return false; }
+  if (store_ && store_->worldDataPersistent()) store_->saveWorldData("skills", json);
+  fprintf(stderr, "[gamedata] 技能配置热重载：%zu 个, %zu 起始技能\n", data_.skills().size(), data_.starterSkills().size());
+  return true;
+}
 Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
   Entity p = makePlayer(nextEntityId("p"), username);
+  // 应用 player.json 加载的玩家基础属性（覆盖 makePlayer 硬编码默认值）
+  const auto& pd = data_.playerDefaults();
+  p.hp = p.maxHp = pd.hp;
+  p.mp = p.maxMp = pd.mp;
+  p.attack = pd.attack;
+  p.defense = pd.defense;
+  p.level = pd.level;
+  p.radius = pd.radius;
   p.wid = nextWireId();
   // 起始技能：新玩家自动习得默认技能（开箱即测）
   for (uint32_t sid : data_.starterSkills()) {
@@ -372,34 +398,35 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   double dmg = calcDamage(p->attack, t->defense, 0.8 + rng01() * 0.4);
   t->hp -= dmg;
   t->aggro[p->wid] += dmg;  // 仇恨表（世界共享核心状态）
+  t->ai.chaseTime = 0;       // 被攻击时重置追击计时，避免追击超时误触发恢复态
   pushEvent(proto::EVT_DAMAGE, t->wid, (uint32_t)dmg, 0, 0);
-  if (t->isBoss) markBossDirty();
-  // 荆棘反伤：目标（怪物/Boss）若有 THORNS Buff，反弹部分伤害给攻击者
+  if (t->isElite) markEliteDirty();
+  // 荆棘反伤：目标（怪物/精英）若有 THORNS Buff，反弹部分伤害给攻击者
   thornsReflect(*t, *p, dmg);
   if (t->hp <= 0) onVictimDeath(*t, *p, nowMs);
   // 任务钩子：击杀怪物后检测任务进度
   quests_->onMonsterKill(*p, t->monsterType);
   return true;
 }
-// 目标死亡统一处理（普攻/技能共用）：Boss 复活 / 普通怪物失活+复活 + 掉落
+// 目标死亡统一处理（普攻/技能共用）：精英复活 / 普通怪物失活+复活 + 掉落
 void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
   victim.hp = 0;
-  // 击杀奖励经验（仅玩家击杀者）：怪物按 expReward，Boss 无类型配置时兜底
+  // 击杀奖励经验（仅玩家击杀者）：怪物按 expReward，精英无类型配置时兆底
   if (killer.kind == EntityKind::Player) {
     const MonsterDef* kdef = victim.monsterType.empty() ? nullptr : data_.monster(victim.monsterType);
-    uint32_t exp = kdef ? kdef->expReward : (victim.isBoss ? 500u : 0u);
+    uint32_t exp = kdef ? kdef->expReward : (victim.isElite ? 500u : 0u);
     if (exp) grantExp(killer, exp);
   }
-  if (victim.isBoss) {
-    victim.bossState = BS_DEAD;
-    victim.bossTarget = 0;
-    victim.respawnAtMs = nowMs + (uint64_t)(cfg_.bossRespawnSec * 1000.0);
+  if (victim.isElite) {
+    victim.eliteState = ES_DEAD;
+    victim.eliteTarget = 0;
+    victim.respawnAtMs = nowMs + (uint64_t)(cfg_.eliteRespawnSec * 1000.0);
     victim.aggro.clear();
     victim.buffs.clear();
     victim.vel = {0, 0, 0};
-    if (aliveBoss_ > 0) aliveBoss_--;
+    if (aliveElite_ > 0) aliveElite_--;
     pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
-    markBossDirty();
+    markEliteDirty();
     rollDrops(killer, victim);
   } else {
     // 普通怪物死亡：失活 + 本区复活计时 + 掉落
@@ -435,14 +462,16 @@ bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
   markSkillsDirty(playerId);
   return true;
 }
-// 施放技能：校验（已学/冷却/耗蓝/目标/距离）→ 扣蓝+冷却 → 施加效果 → 广播
+// 施放技能：校验（已学/眩晕/冷却/耗蓝/施法距离）→ 扣蓝+冷却 → 施加效果 → 广播
 // 开始施放技能（两阶段：前摇 → 结算）。返回是否成功开始施放。
+//  - 非 SELF 技能校验施法距离（落点距施法者 ≤ range），超距拒绝
 //  - castTimeMs==0：瞬发，直接结算（扣蓝/冷却/效果）
 //  - castTimeMs>0 ：进入前摇（castingSkillId 置位 + 广播 EVT_SKILL_CASTING），
 //                  由 castSystem 到期后 resolveCast；移动/受击打断（cancelCast）
 bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t targetWid, double tx, double tz) {
   Entity* p = findEntity(playerId);
   if (!p || p->kind != EntityKind::Player || p->dead) return false;  // 死亡不可施放
+  if (p->hasBuff((uint8_t)BuffType::STUN)) return false;  // 眩晕不可施放
   const SkillDef* sd = data_.skill(skillId);
   if (!sd) return false;
   if (!p->learnedSkills.count(skillId)) return false;  // 未学习
@@ -451,12 +480,18 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
   auto cdit = p->skillCd.find(skillId);
   if (!freeCast && cdit != p->skillCd.end() && cdit->second > nowMs) return false;  // 冷却中
   if (!freeCast && p->mp < sd->manaCost) return false;  // 蓝量不足
-  // 取消目标检测：无目标（targetWid=0）也可施放。命中全部按「落点 + radius」范围计算。
-  // 落点语义：SELF=自身位置；ENEMY/AOE=客户端指定落点（用于范围命中判定）。
+  // 落点语义：SELF=自身位置；ENEMY/AOE=客户端指定落点
   double gx = tx, gz = tz;
   if (sd->target == SkillTarget::SELF) { gx = p->pos.x; gz = p->pos.z; }
   else if (sd->range > 0 && p->pos.dist2D({gx, 0, gz}) > sd->range) {
-    return false; // 施法距离（落点距施法者）——仍作基础约束，防止超距施法
+    return false; // 施法距离（落点距施法者超过 range）
+  }
+  // 单目标 ENEMY 技能：校验目标实体存在+存活+在施法距离内
+  if (sd->target == SkillTarget::ENEMY && targetWid > 0) {
+    Entity* tgt = nullptr;
+    for (auto& [id, e] : entities_) { (void)id; if (e.wid == targetWid) { tgt = &e; break; } }
+    if (!tgt || !tgt->active || tgt->dead) return false;  // 目标无效/已死亡
+    if (sd->range > 0 && p->pos.dist2D(tgt->pos) > sd->range) return false;  // 目标超距
   }
   // 霸体技能：施放即挂 SUPER_ARMOR（免疫眩晕/击退），持续 = 前摇 + 0.5s 尾部余量
   if (sd->superArmor) {
@@ -484,6 +519,13 @@ static double hitRadius(const SkillDef& sd) { return sd.radius > 0 ? sd.radius :
 // 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 按范围施加效果
 void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz) {
   uint64_t nowMs = logicNowMs();
+  // 单目标 ENEMY 技能：结算时再次校验目标有效性，无效则不扣蓝/不上冷却（施放失败）
+  if (sd.target == SkillTarget::ENEMY && targetWid > 0) {
+    Entity* tgt = nullptr;
+    for (auto& [id, e] : entities_) { (void)id; if (e.wid == targetWid) { tgt = &e; break; } }
+    if (!tgt || !tgt->active || tgt->dead) return;  // 目标已死亡/消失，不消耗资源
+    if (sd.range > 0 && caster.pos.dist2D(tgt->pos) > sd.range) return;  // 目标已超出距离
+  }
   if (!testFlags_.noSkillCost) {  // 测试：无消耗模式下不扣蓝、不上冷却（可连续施放）
     caster.mp -= sd.manaCost;
     caster.skillCd[sd.id] = nowMs + (uint64_t)sd.cooldownMs;
@@ -553,8 +595,9 @@ void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& s
   double dmg = calcDamage(caster.attack * sd.dmgMul, target.defense, variance) + sd.flatDmg;
   target.hp -= dmg;
   target.aggro[caster.wid] += dmg;
+  if (target.kind == EntityKind::Monster) target.ai.chaseTime = 0; // 被攻击时重置追击计时
   pushEvent(proto::EVT_DAMAGE, target.wid, (uint32_t)dmg, 0, 0);
-  if (target.isBoss) markBossDirty();
+  if (target.isElite) markEliteDirty();
   // 荆棘反伤（目标有 THORNS 时反弹）
   thornsReflect(target, caster, dmg);
   // 吸血（治疗施法者）
@@ -575,7 +618,7 @@ void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& s
     if (target.kind == EntityKind::Player) {
       killPlayer(target, &caster);  // 玩家死亡：标记 + 复活计时 + EVT_DEATH
     } else {
-      onVictimDeath(target, caster, nowMs);  // 怪物/Boss 死亡
+      onVictimDeath(target, caster, nowMs);  // 怪物/精英死亡
     }
   }
 }
@@ -605,7 +648,7 @@ void World::applyKnockback(Entity& from, Entity& target, double dist) {
   target.pos.x = nx;
   target.pos.z = nz;
   target.pos.y = groundFootY(nx, nz, target.radius); // 落回地表（与其他贴地点同一语义）
-  if (target.isBoss) markBossDirty();
+  if (target.isElite) markEliteDirty();
   cancelCastOnHit(target); // 击退视为受击：打断目标前摇（霸体技能 castCancelOnHit=false 不受影响）
   // 位移由 netcode 的 UPDATE/SNAPSHOT 帧自动同步给视野内玩家，无需额外事件
 }
@@ -761,19 +804,19 @@ bool World::killEntity(const std::string& playerId, uint32_t wid) {
 bool World::respawnEntity(const std::string& id) {
   Entity* e = findEntity(id);
   if (!e) return false;
-  if (e->isBoss) {
+  if (e->isElite) {
     e->hp = e->maxHp;
     e->mp = e->maxMp;
-    e->bossState = BS_IDLE;
-    e->bossTarget = 0;
-    e->bossPhase = 1;
+    e->eliteState = ES_IDLE;
+    e->eliteTarget = 0;
+    e->elitePhase = 1;
     e->aggro.clear();
     e->buffs.clear();
     e->active = true;
     e->respawnAtMs = 0;
-    aliveBoss_++;
+    aliveElite_++;
     pushEvent(proto::EVT_RESPAWN, e->wid, 0, 0, 0);
-    markBossDirty();
+    markEliteDirty();
     return true;
   }
   if (e->kind == EntityKind::Monster && !e->active) {
@@ -791,7 +834,7 @@ bool World::respawnEntity(const std::string& id) {
 void World::respawnAllMonsters() {
   for (auto& [id, e] : entitiesMut()) {
     if (e.kind != EntityKind::Monster) continue;
-    if (e.isBoss && e.active) continue;   // 存活 Boss 不动
+    if (e.isElite && e.active) continue;   // 存活精英不动
     respawnEntity(id);
   }
 }
@@ -882,15 +925,15 @@ void World::spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold) {
     spawnDrop(sx, sz, itemId, gold);
   }
 }
-Json World::bossesStatus() const {
+Json World::elitesStatus() const {
   Json arr = Json::array();
   for (const auto& [id, e] : entities_) {
-    if (!e.isBoss) continue;
+    if (!e.isElite) continue;
     Json j = Json::object();
     j["name"] = e.name;
     j["wid"] = (int64_t)e.wid;
-    j["state"] = (int64_t)e.bossState;
-    j["phase"] = (int64_t)e.bossPhase;
+    j["state"] = (int64_t)e.eliteState;
+    j["phase"] = (int64_t)e.elitePhase;
     j["hp"] = e.hp;
     j["maxHp"] = e.maxHp;
     j["active"] = e.active;
@@ -1436,22 +1479,22 @@ std::vector<SharedEvent> World::takeSharedEvents() {
   sharedEvents_.clear();
   return out;
 }
-// 世界 Boss 全局共享状态帧（dirty 去重；force 用于 HELLO 加入即一致）
-std::string World::bossFrame(bool force) {
-  if (!force && !bossDirty_) return "";
-  bossDirty_ = false;
+// 世界精英全局共享状态帧（dirty 去重；force 用于 HELLO 加入即一致）
+std::string World::eliteFrame(bool force) {
+  if (!force && !eliteDirty_) return "";
+  eliteDirty_ = false;
   std::string out;
   for (auto& [id, e] : entities_) {
     (void)id;
-    if (e.isBoss && e.active) out += proto::bossState(e);
+    if (e.isElite && e.active) out += proto::eliteState(e);
   }
   return out;
 }
-std::vector<const Entity*> World::bosses() const {
+std::vector<const Entity*> World::elites() const {
   std::vector<const Entity*> out;
   for (auto& [id, e] : entities_) {
     (void)id;
-    if (e.isBoss) out.push_back(&e);
+    if (e.isElite) out.push_back(&e);
   }
   return out;
 }
@@ -1549,6 +1592,12 @@ static void castSystem(World& w, double dt) {
       if (s2) w.resolveCast(e, *s2, twid, tx, tz);
     }
   }
+  // 位置上报模式：targetVX/VZ 由 handleInput 从位置差分估算，代表「本 tick 收到的移动意图」。
+  // castSystem 消费后必须归零，否则残留速度会在后续 tick 误触发移动打断（即使玩家已停止发送输入）。
+  for (const auto& pid : w.players()) {
+    Entity* p = w.findEntity(pid);
+    if (p) { p->input.targetVX = 0; p->input.targetVZ = 0; }
+  }
 }
 // Buff 系统：每 tick 衰减剩余时长 + 持续效果（REGEN 回血 / BLEED 流血），过期移除并重算属性
 static void buffSystem(World& w, double dt) {
@@ -1596,7 +1645,7 @@ static void aiSystem(World& w, double dt) {
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (e.kind == EntityKind::Player || !e.active) continue;
-    if (e.isBoss) continue; // Boss 走 bossSystem（全局，不走 LOD）
+    if (e.isElite) continue; // 精英走 eliteSystem（全局，不走 LOD）
     if (!sched.shouldTick(w, e, tick)) continue; // AOI 激活 + 时间片 + 距离分级
     if (e.kind == EntityKind::Monster) tickMonsterAi(w, e, dt);
     else tickNpcAi(w, e, dt);
@@ -1614,13 +1663,13 @@ static void dropSystem(World& w, double) {
   for (const auto& id : expire) w.despawnDrop(id);
 }
 
-// 世界 Boss 状态机：全区共享（Idle 回血/侦测 → Engage 追击/普攻/范围技能 → Dead 复活计时）
-static void bossSystem(World& w, double dt) {
-  if (w.testFlags().monstersPaused) return;  // 测试：全局冻结 Boss AI（站桩测试）
+// 世界精英状态机：全区共享（Idle 回血/侦测 → Engage 追击/普攻/范围技能 → Dead 复活计时）
+static void eliteSystem(World& w, double dt) {
+  if (w.testFlags().monstersPaused) return;  // 测试：全局冻结精英 AI（站桩测试）
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
-    if (!e.isBoss || !e.active) continue;
-    tickBossAi(w, e, dt); // Boss 仅 3 只，每 tick 全量（全局共享状态需确定性推进）
+    if (!e.isElite || !e.active) continue;
+    tickEliteAi(w, e, dt); // 精英仅 3 只，每 tick 全量（全局共享状态需确定性推进）
   }
 }
 // 普通怪物死亡复活
@@ -1628,7 +1677,7 @@ static void respawnSystem(World& w, double) {
   uint64_t nowMs = w.logicNowMs();
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
-    if (e.kind == EntityKind::Player || e.isBoss) continue;
+    if (e.kind == EntityKind::Player || e.isElite) continue;
     if (!e.active && nowMs >= e.respawnAtMs) {
       e.hp = e.maxHp;
       e.active = true;

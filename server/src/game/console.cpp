@@ -2,7 +2,7 @@
 //
 // 设计：命令解析与执行完全与传输通道解耦（ConsoleCtx.out 回调输出），
 //       服务端 stdin 与网页控制台走同一套逻辑，保证测试行为一致。
-// 命令面向"测试"，覆盖：实体/物品/金币/技能/属性/传送/Boss/掉落等全系统。
+// 命令面向“测试”，覆盖：实体/物品/金币/技能/属性/传送/精英/掉落等全系统。
 #include "console.h"
 #include <cstdio>
 #include <cstring>
@@ -38,15 +38,16 @@ std::string consoleHelpText() {
     "  status                       查看自身状态（位置/属性/技能/Buff）\n"
     "  players                      在线玩家列表\n"
     "  entities [range]             附近实体（默认 100m）\n"
-    "  boss                         世界 Boss 状态\n"
+    "  elite                        世界精英状态\n"
     "  gold <n>                     给自身发放 n 金币\n"
     "  item <itemId> [count]        给自身发放物品\n"
-    "  drop <itemId> [count]        在自身位置生成地面掉落物（drop gold <n> 发金币）\n"
+    "  drop <itemId|gold> [count]   在自身位置生成地面掉落物（drop gold <n> 发金币）\n"
     "  heal                         恢复满血满蓝\n"
+    "  shoprefresh                  重置当前玩家商店限购计数\n"
     "  level <n>                    设置等级（重算基础属性）\n"
     "  stat <hp|mp|atk|def> <v>     设置基础属性（上限）\n"
     "  sethp <v> / setmp <v>        设置当前 HP/MP（确定性压血/压蓝，测试用）\n"
-    "  monsterpause <on|off>        全局冻结怪物/Boss AI+移动+施放（站桩测试）\n"
+    "  monsterpause <on|off>        全局冻结怪物/精英 AI+移动+施放（站桩测试）\n"
     "  freecast <on|off>            技能/普攻无蓝耗无冷却（重复测试同一技能）\n"
     "  anticheat <on|off>           开关防作弊校验（off=输入直接接受，测位移/瞬移）\n"
     "  enhanceforce <off|success|fail>  强化结果旁路（跳过 RNG，测升级/降级/保护符）\n"
@@ -55,13 +56,13 @@ std::string consoleHelpText() {
     "  skill <skillId>              学习技能\n"
     "  skills                       查看已学技能与冷却\n"
     "  cast <skillId> [targetWid]   施放技能（无目标自动选最近怪物）\n"
+    "  cdreset                      重置自身全部技能冷却\n"
     "  buff <atk|def|slow|regen|thorns|bleed|def_down|atk_down|stun|super_armor|speed> <value> <dur>   给自身挂 Buff\n"
     "  buff clear                   清除自身所有 Buff\n"
+    "  buffmon <wid> <type> <v> <d> 给指定实体挂 Buff（调试/测试）\n"
     "  spawn <type> [x z]           生成怪物（wolf/goblin/skeleton/gargoyle）\n"
-    "  heal                         恢复自身 HP/MP 至满\n"
-    "  buffmon <wid> <type> <v> <d> 给指定怪物挂 Buff（调试/测试）\n"
-    "  kill <wid|all|monsters|boss> 击杀实体/全部/普通怪/Boss\n"
-    "  respawn [all|monsters|boss]  复活死亡实体\n"
+    "  kill <wid|all|monsters|elite> 击杀实体/全部/普通怪/精英\n"
+    "  respawn [all|monsters|elite]  复活死亡实体\n"
     "  teleport <x> <z>             传送自身\n"
     "  quest list                   查看可接任务\n"
     "  quest active                 查看当前活跃任务\n"
@@ -121,11 +122,11 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     out(os.str());
     return true;
   }
-  if (cmd == "boss") {
-    Json arr = w.bossesStatus();
+  if (cmd == "elite") {
+    Json arr = w.elitesStatus();
     for (const auto& j : arr.asArray()) {
       std::ostringstream os;
-      os << "[Boss] " << j.at("name").asString() << " wid=" << j.at("wid").asInt()
+      os << "[精英] " << j.at("name").asString() << " wid=" << j.at("wid").asInt()
          << " 状态=" << j.at("state").asInt() << " 阶段=" << j.at("phase").asInt()
          << " hp=" << j.at("hp").asInt() << "/" << j.at("maxHp").asInt()
          << " 激活=" << (j.at("active").asBool() ? "是" : "否")
@@ -463,15 +464,15 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     return true;
   }
   if (cmd == "kill") {
-    if (args.size() < 2) { out("用法: kill <wid|all|monsters|boss>"); return true; }
+    if (args.size() < 2) { out("用法: kill <wid|all|monsters|elite>"); return true; }
     const std::string& t = args[1];
     int killed = 0;
-    if (t == "all" || t == "monsters" || t == "boss") {
+    if (t == "all" || t == "monsters" || t == "elite") {
       std::vector<uint32_t> wids;
       for (const auto& [id, e] : w.entities()) {
         if (e.kind != EntityKind::Monster || !e.active) continue;
-        if (t == "boss" && !e.isBoss) continue;
-        if (t == "monsters" && e.isBoss) continue;
+        if (t == "elite" && !e.isElite) continue;
+        if (t == "monsters" && e.isElite) continue;
         wids.push_back(e.wid);
       }
       for (uint32_t wid : wids) if (w.killEntity(ctx.playerId, wid)) killed++;
@@ -485,13 +486,13 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
   if (cmd == "respawn") {
     std::string t = args.size() > 1 ? args[1] : "all";
     int n = 0;
-    if (t == "boss") {
+    if (t == "elite") {
       for (auto& [id, e] : w.entitiesMut()) {
-        if (e.isBoss) { if (w.respawnEntity(id)) n++; }
+        if (e.isElite) { if (w.respawnEntity(id)) n++; }
       }
     } else if (t == "monsters") {
       for (auto& [id, e] : w.entitiesMut()) {
-        if (e.kind == EntityKind::Monster && !e.isBoss) { if (w.respawnEntity(id)) n++; }
+        if (e.kind == EntityKind::Monster && !e.isElite) { if (w.respawnEntity(id)) n++; }
       }
     } else {
       for (auto& [id, e] : w.entitiesMut()) {

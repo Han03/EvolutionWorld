@@ -547,19 +547,19 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
     c.closeAfterFlush = true;
     return;
   }
-  if (path == "/api/debug/bosses" && req.method == "GET" && getenv("EW_DEBUG")) {
+  if (path == "/api/debug/elites" && req.method == "GET" && getenv("EW_DEBUG")) {
     Json arr = Json::array();
-    for (const Entity* b : world_.bosses()) {
+    for (const Entity* b : world_.elites()) {
       Json j = Json::object();
       j["id"] = b->id; j["wid"] = (int64_t)b->wid; j["name"] = b->name;
       j["x"] = b->pos.x; j["y"] = b->pos.y; j["z"] = b->pos.z;
       j["hp"] = b->hp; j["maxHp"] = b->maxHp;
-      j["state"] = (int64_t)b->bossState;
-      j["phase"] = (int64_t)b->bossPhase;
-      j["target"] = (int64_t)b->bossTarget;
+      j["state"] = (int64_t)b->eliteState;
+      j["phase"] = (int64_t)b->elitePhase;
+      j["target"] = (int64_t)b->eliteTarget;
       arr.push_back(j);
     }
-    Json r = Json::object(); r["bosses"] = arr;
+    Json r = Json::object(); r["elites"] = arr;
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
     c.closeAfterFlush = true;
     return;
@@ -634,7 +634,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       r["n"] = (int64_t)terrainWalkMaskN();
       r["off"] = (int64_t)terrainWalkMaskOff();
       r["b64"] = base64Encode(m.data(), m.size());
-      r["seedOffset"] = (int64_t)cfg_.worldSeed;
+      r["seedOffset"] = (int64_t)world_.seed();
     } else {
       r["ok"] = false;
     }
@@ -652,7 +652,12 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       Json in = Json::parse(req.body);
       std::string username = auth_.verifyToken(in.at("token").asString());
       if (username.empty()) { r["error"] = "auth"; code = 401; }
-      else if (world_.runWorldInit()) {
+      else {
+        // 生成新种子，确保每次 reinit 产生不同的地形/mask/出生点
+        uint32_t newSeed = (uint32_t)std::chrono::system_clock::now().time_since_epoch().count();
+        world_.setSeed(newSeed);
+        fprintf(stderr, "[reinit] 新世界种子: %u\n", newSeed);
+        if (world_.runWorldInit()) {
         if (store_.worldDataPersistent()) world_.saveWorldToStore(store_);
         world_.reseedCreatures();   // 清空旧生物并按新出生点重建
         // 通知所有在线客户端重拉地形：mask 已整张重建。不同步会让客户端的
@@ -663,11 +668,12 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         r["n"] = (int64_t)terrainWalkMaskN();
         r["off"] = (int64_t)terrainWalkMaskOff();
         r["b64"] = base64Encode(m.data(), m.size());
-        r["seedOffset"] = (int64_t)cfg_.worldSeed;
+        r["seedOffset"] = (int64_t)world_.seed();
         r["count"] = (int64_t)world_.spawns().size();
         r["spawns"] = Json::parse(world_.spawns().toJson())["spawns"];
         code = 200;
       } else { r["error"] = "worldinit failed"; }
+      }
     } catch (...) { r["error"] = "bad request"; }
     enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
     c.closeAfterFlush = true;
@@ -736,6 +742,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       r["craft"] = Json::parse(world_.economy().craft().configToJson());  // 合成配方表（材料/产出/等级/隐藏）
       r["warehouse"] = Json::parse(world_.warehouse().configToJson());  // 仓库配置（页数/格子/扩展费用/存金上限）
       r["shops"] = Json::parse(world_.data().shopsToJson());  // 商店配置（阶段7编辑器：分类/限购/折扣/回收）
+      r["skills"] = Json::parse(world_.data().skillsToJson());  // 技能配置（世界编辑器技能编辑模式）
     } catch (...) {
       r["items"] = Json::array();
       r["monsters"] = Json::object();
@@ -745,6 +752,7 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
       r["craft"] = Json::object();
       r["warehouse"] = Json::object();
       r["shops"] = Json::object();
+      r["skills"] = Json::object();
     }
     enqueue(c, httpBuildResponse(200, "OK", "application/json", r.dump()));
     c.closeAfterFlush = true;
@@ -943,6 +951,28 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
           r["count"] = (int64_t)world_.data().shops().size();
           code = 200;
         } else { r["error"] = "bad shops"; }
+      }
+    } catch (...) { r["error"] = "bad request"; }
+    enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
+    c.closeAfterFlush = true;
+    return;
+  }
+  // POST: 保存技能配置 {token, skills:{starterSkills:[], skills:[...]}} -> 热替换内存 + 数据库模式落库
+  if (path == "/api/skills/edit" && req.method == "POST") {
+    Json r = Json::object(); r["ok"] = false;
+    int code = 400;
+    try {
+      Json in = Json::parse(req.body);
+      std::string username = auth_.verifyToken(in.at("token").asString());
+      if (username.empty()) { r["error"] = "auth"; code = 401; }
+      else if (!in.has("skills") || in.at("skills").type() != Json::Type::Object) {
+        r["error"] = "skills object required";
+      } else {
+        if (world_.applySkills(in.at("skills").dump(), cfg_.dataDir)) {
+          r["ok"] = true;
+          r["count"] = (int64_t)world_.data().skills().size();
+          code = 200;
+        } else { r["error"] = "bad skills"; }
       }
     } catch (...) { r["error"] = "bad request"; }
     enqueue(c, httpBuildResponse(code, code == 200 ? "OK" : "Error", "application/json", r.dump()));
@@ -1198,7 +1228,7 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
       case proto::C2S_CAST_SKILL: {
         proto::CastSkillMsg m;
         if (proto::decodeCastSkill(f.payload, m)) {
-          // 服务端权威施放（校验已学/冷却/耗蓝/目标/距离 + 前摇/施放时间判定）
+          // 服务端权威施放（校验已学/眩晕/冷却/耗蓝/施法距离 + 前摇/施放时间判定）
           bool ok = world_.beginCast(c.playerId, m.skillId, m.targetWid, m.tx, m.tz);
           const SkillDef* sd = world_.data().skill(m.skillId);
           uint16_t ctm = sd ? (uint16_t)sd->castTimeMs : 0;
@@ -1464,7 +1494,11 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
       case proto::C2S_QUEST_ACCEPT: {
         proto::QuestAcceptMsg m;
         if (proto::decodeQuestAccept(f.payload, m)) {
-          auto result = world_.quests().acceptQuest(c.playerId, m.questId, m.npcWid);
+          // 查找 NPC 的 npcId（用于 giverNpcId 稳定匹配）
+          std::string npcIdStr;
+          Entity* acceptNpc = world_.findByWid(m.npcWid);
+          if (acceptNpc && acceptNpc->kind == EntityKind::Npc) npcIdStr = acceptNpc->npcId;
+          auto result = world_.quests().acceptQuest(c.playerId, m.questId, m.npcWid, npcIdStr);
           sendTo(c, world_.quests().questResultFrame(QUEST_OP_ACCEPT, (uint8_t)result, m.questId));
           if (result == QUEST_OK) {
             sendTo(c, world_.quests().questProgressFrame(*world_.findEntity(c.playerId)));
@@ -1487,7 +1521,11 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
       case proto::C2S_QUEST_TURNIN: {
         proto::QuestTurnInMsg m;
         if (proto::decodeQuestTurnIn(f.payload, m)) {
-          auto result = world_.quests().turnInQuest(c.playerId, m.questId, m.npcWid);
+          // 查找 NPC 的 npcId（用于 talkNpcId 稳定匹配）
+          std::string npcIdStr;
+          Entity* turnInNpc = world_.findByWid(m.npcWid);
+          if (turnInNpc && turnInNpc->kind == EntityKind::Npc) npcIdStr = turnInNpc->npcId;
+          auto result = world_.quests().turnInQuest(c.playerId, m.questId, m.npcWid, npcIdStr);
           sendTo(c, world_.quests().questResultFrame(QUEST_OP_TURNIN, (uint8_t)result, m.questId));
           if (result == QUEST_OK) {
             Entity* p = world_.findEntity(c.playerId);
@@ -1514,7 +1552,11 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
         if (proto::decodeQuestList(f.payload, m)) {
           Entity* p = world_.findEntity(c.playerId);
           if (!p) break;
-          sendTo(c, world_.quests().questListFrame(*p, m.npcWid));
+          // 查找 NPC 的 npcId（用于 giverNpcId 稳定匹配）
+          std::string npcIdStr;
+          Entity* listNpc = world_.findByWid(m.npcWid);
+          if (listNpc && listNpc->kind == EntityKind::Npc) npcIdStr = listNpc->npcId;
+          sendTo(c, world_.quests().questListFrame(*p, m.npcWid, npcIdStr));
         }
         break;
       }
@@ -1535,9 +1577,17 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
           if (p->pos.dist2D(npc->pos) > cfg_.questTalkRangeM) break;
           // 触发任务目标
           world_.quests().onTalkNpc(*p, m.npcWid);
-          // 返回该 NPC 发布的可接任务 + 全局活跃任务进度
-          sendTo(c, world_.quests().questListFrame(*p, m.npcWid));
+          // 查找 NPC 定义（用于任务过滤 + 对话文本）
+          const NpcDef* def = !npc->npcId.empty() ? world_.npcs().npc(npc->npcId) : nullptr;
+          // 返回该 NPC 发布的可接任务 + 全局活跃任务进度（按 npcId 稳定匹配）
+          sendTo(c, world_.quests().questListFrame(*p, m.npcWid, npc->npcId));
           sendTo(c, world_.quests().questProgressFrame(*p));
+          // 发送 NPC 对话文本（客户端展示配置的对话内容）
+          if (def && !def->dialogue.empty()) {
+            proto::Writer dw;
+            dw.str(def->dialogue);
+            sendTo(c, proto::frame(proto::S2C_NPC_DIALOGUE, dw.data()));
+          }
         }
         break;
       }
@@ -1608,6 +1658,10 @@ void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
   if (prevAcceptMs != 0) {
     dt = (double)(nowMs - prevAcceptMs) / 1000.0;
     dt = std::max(0.0, std::min(dt, 1.0));
+  } else {
+    // 首次输入（prevAcceptMs=0，如刚登录/传送后）：用 1/60s 作为默认 dt，
+    // 避免 dt=0 → vel=0 → targetVX/VZ=0 → castSystem 移动打断判据永不成立。
+    dt = 1.0 / 60.0;
   }
   double dist = std::hypot(adoptX - p->pos.x, adoptZ - p->pos.z);
   double reach = effectiveMaxSpeed * dt + cfg_.teleportToleranceM;
@@ -1640,8 +1694,8 @@ void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
   }
 
   if (getenv("EW_DEBUG")) {
-    fprintf(stderr, "[AC] %s pos=(%.1f,%.1f,%.1f) %s%s\n", p->id.c_str(),
-            p->pos.x, p->pos.y, p->pos.z,
+    fprintf(stderr, "[AC] %s pos=(%.1f,%.1f,%.1f) dt=%.4f vel=(%.2f,%.2f) %s%s\n", p->id.c_str(),
+            p->pos.x, p->pos.y, p->pos.z, dt, p->vel.x, p->vel.z,
             res.accepted ? "accepted" : "rejected",
             res.clamped ? "(地形容差夹紧)" : "");
   }
@@ -1661,7 +1715,21 @@ void GameServer::handleConsoleLine(const std::string& playerId, const std::strin
   int fd = fdOfPlayer(playerId);
   if (fd >= 0) {
     auto it = conns_.find(fd);
-    if (it != conns_.end()) sendTo(it->second, proto::consoleFrame(all));
+    if (it != conns_.end()) {
+      // S2C_CONSOLE 文本经 Writer::str 走 u8 长度前缀，单帧上限 255 字节。
+      // help / entities / players 等长文本按 <=250 字节在 UTF-8 字符边界切分为多帧，
+      // 客户端按流式重组（console.js 的 pendingPartial：以 '\n' 拼行、半行续接）。
+      const size_t kMaxChunk = 250;
+      size_t i = 0, n = all.size();
+      while (i < n) {
+        size_t end = i + kMaxChunk;
+        if (end > n) end = n;
+        // 回退到 UTF-8 字符起始，避免把多字节字符切到两帧（否则客户端逐帧解码会出现乱码）
+        while (end < n && ((unsigned char)all[end] & 0xC0) == 0x80) end--;
+        sendTo(it->second, proto::consoleFrame(all.substr(i, end - i)));
+        i = end;
+      }
+    }
   } else if (!playerId.empty()) {
     fprintf(stderr, "[console] %s -> %s\n", playerId.c_str(), all.c_str());
   }

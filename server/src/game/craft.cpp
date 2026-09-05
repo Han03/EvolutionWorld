@@ -15,38 +15,6 @@ static std::string readFileCraft(const std::string& path) {
   return ss.str();
 }
 
-// ---------- 内置配方表（炼金药水 + 材料闭环 + 铁匠装备；材料源自分解产出/怪物掉落）----------
-void CraftSystem::loadDefaults() {
-  recipes_.clear();
-  // addRecipe(recipeId, name, resultItemId, resultCount, goldCost, levelReq, hidden, materials)
-  auto addRecipe = [&](uint32_t id, const char* name, uint32_t resultItemId, uint32_t resultCount,
-                       uint32_t goldCost, int levelReq, bool hidden,
-                       std::initializer_list<CraftMaterial> mats) {
-    CraftRecipe r;
-    r.recipeId = id;
-    r.name = name;
-    r.npcTag = NPC_TAG_CRAFT;
-    r.resultItemId = resultItemId;
-    r.resultCount = resultCount;
-    r.goldCost = goldCost;
-    r.levelReq = levelReq;
-    r.hidden = hidden;
-    for (const auto& m : mats) r.materials.push_back(m);
-    recipes_.push_back(r);
-  };
-  // ---- 炼金药水（堆叠产出；材料源自怪物掉落 + 分解铁屑）----
-  addRecipe(1, "小血瓶×3", 2001, 3, 2, 1, false, { CraftMaterial{3001, 1} });                        // 狼牙 → 小血瓶
-  addRecipe(2, "大血瓶",   2002, 1, 5, 1, false, { CraftMaterial{3001, 2}, CraftMaterial{4001, 1} }); // 狼牙+铁屑 → 大血瓶
-  addRecipe(3, "大蓝瓶",   2102, 1, 5, 1, false, { CraftMaterial{3003, 2}, CraftMaterial{4001, 1} }); // 骷髅碎片+铁屑 → 大蓝瓶
-  // ---- 强化材料（闭环：分解产出精钢/魔晶 → 合成强化石/保护符）----
-  addRecipe(4, "强化石",   4006, 1, 20,  3, false, { CraftMaterial{4002, 3}, CraftMaterial{4003, 1} });            // 精钢+魔晶 → 强化石
-  addRecipe(5, "保护符",   4007, 1, 100, 8, false, { CraftMaterial{4004, 2}, CraftMaterial{4005, 1} });            // 龙鳞+星辰核心 → 保护符
-  // ---- 铁匠装备（实例产出；材料源自分解）----
-  addRecipe(6, "铁剑",     1502, 1, 30,  3, false, { CraftMaterial{4001, 5}, CraftMaterial{4002, 2} });            // 铁屑+精钢 → 铁剑
-  addRecipe(7, "锁子甲",   1102, 1, 40,  3, false, { CraftMaterial{4002, 4}, CraftMaterial{4001, 2} });            // 精钢+铁屑 → 锁子甲
-  addRecipe(8, "烈焰剑",   1503, 1, 150, 5, true,  { CraftMaterial{4003, 3}, CraftMaterial{4004, 2} });            // 隐藏配方：魔晶+龙鳞 → 烈焰剑
-}
-
 // ---------- 查询：recipeId → 配方 ----------
 const CraftRecipe* CraftSystem::recipe(uint32_t recipeId) const {
   for (const auto& r : recipes_) if (r.recipeId == recipeId) return &r;

@@ -1,4 +1,4 @@
-// entity.h - 实体定义（玩家/怪物/Boss/NPC/掉落物），预留扩展位
+// entity.h - 实体定义（玩家/怪物/精英/NPC/掉落物），预留扩展位
 #pragma once
 #include <string>
 #include <unordered_map>
@@ -18,11 +18,11 @@ struct Vec3 {
   double dist3D(const Vec3& o) const { double dx = x - o.x, dy = y - o.y, dz = z - o.z; return std::sqrt(dx*dx+dy*dy+dz*dz); }
 };
 enum class EntityKind { Player, Monster, Npc, Item };
-// Boss 行为状态（服务端权威，全区共享）
-enum BossState : uint8_t {
-  BS_IDLE = 0,    // 脱战/回血
-  BS_ENGAGE = 1,  // 有仇恨目标
-  BS_DEAD = 2,    // 死亡/复活计时
+// 精英行为状态（服务端权威，全区共享）
+enum EliteState : uint8_t {
+  ES_IDLE = 0,    // 脱战/回血
+  ES_ENGAGE = 1,  // 有仇恨目标
+  ES_DEAD = 2,    // 死亡/复活计时
 };
 struct Entity {
   std::string id;
@@ -36,11 +36,11 @@ struct Entity {
   bool dead = false;   // 死亡状态（玩家死亡后复活等待；怪物用 active=false 表达死亡）
   // 玩家扩展字段
   std::string username;
-  // 显示名（世界实体：怪物/Boss/NPC 用）
+  // 显示名（世界实体：怪物/精英/NPC 用）
   std::string name;
   // 怪物类型 key（wolf/goblin/skeleton/gargoyle，供属性/掉落表查询）
   std::string monsterType;
-  // 战斗/生命（世界怪物 & 世界 Boss 状态共享的基础，服务端权威）
+  // 战斗/生命（世界怪物 & 世界精英状态共享的基础，服务端权威）
   double hp = 100, maxHp = 100;
   double mp = 50, maxMp = 50;   // 蓝量（属性系统）
   double attack = 10;
@@ -72,7 +72,7 @@ struct Entity {
   // 技能系统（大型网游规模，数据驱动）
   std::unordered_set<uint32_t> learnedSkills;        // 已学习技能 ID
   std::unordered_map<uint32_t, uint64_t> skillCd;    // 技能冷却：skillId -> readyAtMs（服务端权威单调时钟）
-  std::vector<uint32_t> skillIds;                    // 运行时可用技能 ID（怪物由 MonsterDef 写入，Boss 硬编码）
+  std::vector<uint32_t> skillIds;                    // 运行时可用技能 ID（怪物由 MonsterDef 写入，精英硬编码）
   struct Buff {
     uint32_t skillId = 0;   // 来源技能
     uint8_t type = 0;       // BuffType（skills.h）
@@ -99,16 +99,16 @@ struct Entity {
   uint32_t shopId = 0;
   std::string npcId;          // NPC 唯一 ID（引用 NpcManager 中的 NpcDef，空=非 NPC 实体）
   uint32_t npcTag = 0;        // NPC 标签位标志（NpcTag 组合，客户端据此渲染交互菜单）
-  bool isBoss = false;          // 是否为世界 Boss（全局共享实体）
+  bool isElite = false;         // 是否为世界精英（全局共享实体）
   uint64_t lastAttackMs = 0;    // 攻击冷却（服务端单调时钟 ms）
   uint64_t lastDamageMs = 0;    // 最近受击时刻（脱战回血判定）
   uint64_t respawnAtMs = 0;     // 死亡后复活时刻（服务端单调时钟 ms）
-  // Boss 共享状态（单点权威，全区广播）
-  uint8_t bossState = BS_IDLE;  // BossState
-  uint8_t bossPhase = 1;
-  uint32_t bossTarget = 0;      // 当前仇恨目标 wid（0=无）
+  // 精英共享状态（单点权威，全区广播）
+  uint8_t eliteState = ES_IDLE;  // EliteState
+  uint8_t elitePhase = 1;
+  uint32_t eliteTarget = 0;      // 当前仇恨目标 wid（0=无）
   std::unordered_map<uint32_t, double> aggro;  // 仇恨表：玩家 wid -> 仇恨值
-  // AI 扩展字段（生物/NPC/Boss 通用状态机 + 大规模调度）
+  // AI 扩展字段（生物/NPC/精英通用状态机 + 大规模调度）
   struct {
     double targetVX = 0, targetVZ = 0;
     double homeX = 0, homeZ = 0;

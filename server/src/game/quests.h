@@ -6,7 +6,7 @@
 //  - 目标类型：击杀怪物 / 收集物品 / 到达坐标 / 对话 NPC / 护送（预留）
 //  - 状态机：UNAVAILABLE -> AVAILABLE -> ACTIVE -> COMPLETABLE -> COMPLETED
 //  - 服务端权威：进度/奖励/冷却全部由服务端校验
-//  - 数据驱动：内置默认任务 + 可选 JSON 覆盖（data/quests.json）
+//  - 数据驱动：任务定义完全由 data/quests.json 提供
 //  - 持久化：通过 Store 抽象层（MySQL + 内存兜底）
 #pragma once
 #include <cstdint>
@@ -94,8 +94,10 @@ struct QuestDef {
   QuestReward rewards;
   uint32_t dailyCooldownSec = 0;            // 日常任务重置冷却（秒）
   uint32_t repeatLimit = 0;                 // 可重复次数上限（0=无限）
-  uint32_t talkNpcWid = 0;                  // 提交 NPC 的 wid（0=任意 NPC 可提交）
-  uint32_t giverNpcWid = 0;                 // 发布任务 NPC 的 wid（0=任意 NPC 可接取）
+  uint32_t talkNpcWid = 0;                  // 提交 NPC 的 wid（0=任意 NPC 可提交，运行时解析）
+  uint32_t giverNpcWid = 0;                 // 发布任务 NPC 的 wid（0=任意 NPC 可接取，运行时解析）
+  std::string giverNpcId;                   // 发布 NPC 的稳定 ID（编辑器配置，运行时解析为 giverNpcWid）
+  std::string talkNpcId;                    // 提交 NPC 的稳定 ID（编辑器配置，运行时解析为 talkNpcWid）
   std::vector<uint32_t> nextQuestIds;       // 完成后自动解锁的后续任务 ID（链式任务）
   bool autoTrack = true;                    // 接受后自动追踪
   // 显示辅助
@@ -117,16 +119,16 @@ struct ActiveQuest {
 class QuestSystem {
 public:
   explicit QuestSystem(World& w);
-  void init();  // 加载默认任务 + JSON 覆盖
+  void init();  // 从 data/quests.json 加载任务定义
 
   // 任务模板查询
   const QuestDef* questDef(uint32_t id) const;
   const std::unordered_map<uint32_t, QuestDef>& quests() const { return quests_; }
 
   // 玩家操作（服务端权威校验，npcWid 用于 NPC 距离/绑定校验，0=跳过）
-  QuestResult acceptQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid = 0);
+  QuestResult acceptQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid = 0, const std::string& npcIdStr = "");
   QuestResult abandonQuest(const std::string& playerId, uint32_t questId);
-  QuestResult turnInQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid);
+  QuestResult turnInQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid, const std::string& npcIdStr = "");
 
   // 事件钩子（由 World 系统调用）
   void onMonsterKill(Entity& player, const std::string& monsterType);
@@ -138,7 +140,7 @@ public:
   void tick(double dt);
 
   // 网络帧（供 World/Netcode 调用）
-  std::string questListFrame(const Entity& p, uint32_t npcWid = 0) const;
+  std::string questListFrame(const Entity& p, uint32_t npcWid = 0, const std::string& npcIdStr = "") const;
   std::string questProgressFrame(const Entity& p) const;
   std::string questResultFrame(uint8_t op, uint8_t code, uint32_t questId) const;
   std::string questNotifyFrame(uint32_t questId, uint8_t objIndex,
@@ -148,8 +150,8 @@ public:
   std::string questChainFrame(uint32_t completedQuestId,
                               const std::vector<uint32_t>& nextIds) const;
 
-  // 可接任务列表（基于前置/等级/冷却；npcWid>0 时仅返回该 NPC 发布的任务）
-  std::vector<const QuestDef*> availableQuests(const Entity& p, uint32_t npcWid = 0) const;
+  // 可接任务列表（基于前置/等级/冷却；npcWid>0 时按 giverNpcWid/giverNpcId 过滤该 NPC 发布的任务）
+  std::vector<const QuestDef*> availableQuests(const Entity& p, uint32_t npcWid = 0, const std::string& npcIdStr = "") const;
 
   // 活跃任务中可提交的（目标全部完成）
   std::vector<const ActiveQuest*> completableQuests(const Entity& p) const;
@@ -179,15 +181,13 @@ private:
   std::unordered_map<uint32_t, QuestDef> quests_;
   std::unordered_set<std::string> questDirty_; // 需要补发任务进度的玩家
 
-  void loadDefaults();
   bool loadFromJson(const std::string& dir);
   bool checkPrerequisites(const Entity& p, const QuestDef& qd) const;
   bool isOnCooldown(const Entity& p, const QuestDef& qd, uint64_t nowMs) const;
   void updateProgress(Entity& p, uint32_t questId, uint8_t objIndex, uint32_t delta);
   void grantRewards(Entity& p, const QuestReward& rw);
   void checkCompletable(ActiveQuest& aq, const QuestDef& qd);
-  void addDefaultQuest(uint32_t id, const char* name, const char* desc,
-                       QuestCategory cat, int levelReq);
+
 };
 
 } // namespace ew

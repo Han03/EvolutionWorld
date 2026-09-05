@@ -249,12 +249,16 @@ async function main() {
     send(encodeCastSkill(1010, 0, ref.x, ref.z));
     await wait(() => evtCasting, 2000);
     check('铁壁守护进入前摇', !!evtCasting);
+    // 发送位置变化的输入模拟移动（seq 从 1 开始递增避免 stale_seq/seq_jump，每次移动 0.05m 在 anticheat 容差内）
+    let moveSeq = 1;
+    let curX = ref.x;
     const t0 = Date.now();
-    while (Date.now() - t0 < 1000) { send(encodeInput(1, 1, 0, false, ref.x, 0, ref.z)); await sleep(100); }
+    while (Date.now() - t0 < 1000) { curX += 0.05; send(encodeInput(moveSeq++, curX, 0, ref.z)); await sleep(100); }
+    ref.x = curX;
     await wait(() => evtSkill || evtCancel, 2500);
     check('不可打断：移动不打断(无 EVT_SKILL_CANCEL)', evtCancel === null, evtCancel ? `cancel=${evtCancel.x}` : '');
     check('不可打断：前摇仍结算(EVT_SKILL)', !!evtSkill, evtSkill ? `skill=${evtSkill.b}` : '');
-    send(encodeInput(2, 0, 0, false, ref.x, 0, ref.z));
+    send(encodeInput(moveSeq, ref.x, 0, ref.z));
     await sleep(300);
   }
 

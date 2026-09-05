@@ -21,7 +21,7 @@ export class NetworkClient {
     this.onSelf = null;      // 服务端后校验回退
     this.onKick = null;
     this.onDisconnect = null;
-    this.onBoss = null;      // 世界 Boss 全局共享状态（S2C_BOSS）
+    this.onElite = null;      // 世界精英全局共享状态（S2C_ELITE）
     this.onEvent = null;     // 战斗/世界共享事件（S2C_EVENT）
     this.onShop = null;      // 商店列表（S2C_SHOP）
     this.onInventory = null; // 背包/装备/金币（S2C_INVENTORY）
@@ -39,6 +39,7 @@ export class NetworkClient {
     this.onBuffs = null;     // 自身 Buff（S2C_BUFFS）
     this.onConsole = null;   // 控制台结果（S2C_CONSOLE）
     this.onTerrainDirty = null; // 地形数据已变更（S2C_TERRAIN_DIRTY）：需重拉 mask + 编辑层
+    this.onNpcDialogue = null; // NPC 对话文本（S2C_NPC_DIALOGUE）
     // 任务系统回调（S2C_QUEST_*，payload 为原始 Uint8Array，由 quests.js 解码）
     this.onQuestList = null;
     this.onQuestProgress = null;
@@ -184,8 +185,8 @@ export class NetworkClient {
           break;
         case MSG.S2C_PING:
           break;
-        case MSG.S2C_BOSS:
-          if (this.onBoss) this.onBoss(msg);
+        case MSG.S2C_ELITE:
+          if (this.onElite) this.onElite(msg);
           break;
         case MSG.S2C_EVENT:
           if (this.onEvent) this.onEvent(msg);
@@ -256,6 +257,9 @@ export class NetworkClient {
 case MSG.S2C_QUEST_CHAIN:
           if (this.onQuestChain) this.onQuestChain(payload);
           break;
+        case MSG.S2C_NPC_DIALOGUE:
+          if (this.onNpcDialogue) this.onNpcDialogue(msg);
+          break;
         // ---- 社交系统 S2C 分发 ----
         case MSG.S2C_FRIEND_REQUEST:
           if (this.onFriendRequest) this.onFriendRequest(msg);
@@ -312,7 +316,7 @@ case MSG.S2C_QUEST_CHAIN:
       this.onProtocol('c2s', { type: 'INPUT', seq: this.seq, x: pred.x, y: pred.y, z: pred.z });
     }
   }
-  /** 攻击世界实体（世界怪物/Boss） */
+  /** 攻击世界实体（世界怪物/精英） */
   sendAttack(targetWid, slot = 0) {
     if (!this.connected || !targetWid) return;
     this._send(encodeAttack(targetWid, slot));

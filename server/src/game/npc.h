@@ -4,7 +4,7 @@
 //  - NPC 按唯一 ID 管理：每个 NPC 定义有全局唯一 npcId（如 "merchant_001"）
 //  - 相同 npcId 不能同时出现在地图上（spawn 时校验，已存在则拒绝）
 //  - 类型标签决定功能：NpcTag 位标志组合，客户端据此渲染交互选项
-//  - 数据驱动：内置默认 NPC 花名册 + JSON 覆盖 + 编辑器热替换
+//  - 数据驱动：data/npcs.json 提供 NPC 定义 + 编辑器热替换
 //  - 通过 World 持有 unique_ptr 集成，接口清晰、可独立替换
 #pragma once
 #include <string>
@@ -23,7 +23,6 @@ enum NpcTag : uint32_t {
   NPC_TAG_SHOP       = 1 << 2,  // 商店（打开商品列表）
   NPC_TAG_BLACKSMITH = 1 << 3,  // 铁匠（装备强化/分解）
   NPC_TAG_TELEPORT   = 1 << 4,  // 传送（城市间传送）
-  NPC_TAG_DAILY      = 1 << 5,  // 日常任务（每日刷新可接）
   NPC_TAG_CRAFT      = 1 << 6,  // 合成（物品合成）
   NPC_TAG_BANK       = 1 << 7,  // 仓库（物品存储）
 };
@@ -37,13 +36,12 @@ inline const NpcTagInfo* npcTagTable() {
     { NPC_TAG_SHOP,       "商店",   "打开商品列表" },
     { NPC_TAG_BLACKSMITH, "铁匠",   "装备强化/分解" },
     { NPC_TAG_TELEPORT,   "传送",   "城市间传送" },
-    { NPC_TAG_DAILY,      "日常",   "每日可接任务" },
     { NPC_TAG_CRAFT,      "合成",   "物品合成" },
     { NPC_TAG_BANK,       "仓库",   "物品存储" },
   };
   return t;
 }
-inline int npcTagTableSize() { return 8; }
+inline int npcTagTableSize() { return 7; }
 
 // ---------- NPC 定义（按唯一 ID 管理，模板数据） ----------
 struct NpcDef {
@@ -64,8 +62,7 @@ public:
   NpcManager();
 
   // ---- 定义注册（数据层） ----
-  void loadDefaults();                              // 内置默认 NPC 花名册
-  bool loadFromJson(const std::string& dir);        // 可选外部 JSON 覆盖
+  bool loadFromJson(const std::string& dir);        // 从 data/npcs.json 加载 NPC 定义
   const NpcDef* npc(const std::string& npcId) const;// 按 ID 查定义
   const std::unordered_map<std::string, NpcDef>& npcs() const { return npcs_; }
 
@@ -81,7 +78,6 @@ public:
   static bool canShop(uint32_t t)    { return hasTag(t, NPC_TAG_SHOP); }
   static bool canQuest(uint32_t t)   { return hasTag(t, NPC_TAG_QUEST); }
   static bool canTeleport(uint32_t t){ return hasTag(t, NPC_TAG_TELEPORT); }
-  static bool canDaily(uint32_t t)   { return hasTag(t, NPC_TAG_DAILY); }
   static bool canCraft(uint32_t t)   { return hasTag(t, NPC_TAG_CRAFT); }
   static bool canBank(uint32_t t)    { return hasTag(t, NPC_TAG_BANK); }
   static bool canSmith(uint32_t t)   { return hasTag(t, NPC_TAG_BLACKSMITH); }
@@ -91,8 +87,6 @@ public:
   bool replaceNpcs(const Json& obj);
 
 private:
-  void addDefault(const char* npcId, const char* name, const char* desc, const char* model,
-                  uint32_t tag, int shopId, int level, double wander, const char* dialogue);
   std::unordered_map<std::string, NpcDef> npcs_;
   std::unordered_set<std::string> spawned_;   // 当前已在地图上的 npcId 集合
 };

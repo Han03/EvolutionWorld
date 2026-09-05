@@ -36,23 +36,23 @@ struct Config {
   int worldMonsterGroupMin = 3;            // 每群怪物数量下限
   int worldMonsterGroupMax = 6;            // 每群怪物数量上限
   double worldMonsterGroupSpacing = 14.0;  // 群锚点最小间距（米，避免怪物扎堆重叠）
-  // ---- 世界怪物 & 世界 Boss（状态共享）----
-  int bossCount = 3;                 // 世界 Boss 数量（全区共享实体）
-  float bossHp = 500.0f;             // Boss 生命
-  float bossAttack = 18.0f;          // Boss 攻击力
-  float bossAttackRange = 2.5f;      // 近战攻击范围
-  float bossAggroRange = 18.0f;      // 进入仇恨的侦测范围
-  float bossAttackCdSec = 0.9f;      // Boss 普攻间隔（秒）
-  float bossRespawnSec = 30.0f;      // Boss 死亡复活（秒）
-  float bossRegenPerSec = 4.0f;      // 脱战回血/秒
+  // ---- 世界怪物 & 世界精英（状态共享）----
+  int eliteCount = 3;                 // 世界精英数量（全区共享实体）
+  float eliteHp = 500.0f;             // 精英生命
+  float eliteAttack = 18.0f;          // 精英攻击力
+  float eliteAttackRange = 2.5f;      // 近战攻击范围
+  float eliteAggroRange = 18.0f;      // 进入仇恨的侦测范围
+  float eliteAttackCdSec = 0.9f;      // 精英普攻间隔（秒）
+  float eliteRespawnSec = 30.0f;      // 精英死亡复活（秒）
+  float eliteRegenPerSec = 4.0f;      // 脱战回血/秒
   float monsterRespawnSec = 10.0f;   // 普通怪物死亡复活（秒）
   float playerRespawnSec = 8.0f;     // 玩家死亡复活（秒）
   float playerAttackRange = 3.2f;    // 玩家攻击判定范围
   float playerAttackCdSec = 0.5f;    // 玩家攻击冷却（秒）
   float playerRegenPerSec = 3.0f;    // 玩家脱战回血/秒
   float playerMpRegenPerSec = 1.5f;  // 玩家脱战回蓝/秒
-  double bossDefense = 12.0;         // 世界 Boss 防御力
-  double bossMp = 200.0;             // 世界 Boss 蓝量
+  double eliteDefense = 12.0;         // 世界精英防御力
+  double eliteMp = 200.0;             // 世界精英蓝量
 
   // ---- AI（大型网游规模：状态机 + 时间片/距离分级调度）----
   float monsterAggroRange = 10.0f;   // 怪物仇恨侦测范围
@@ -64,8 +64,8 @@ struct Config {
   float monsterPatrolArrive = 1.0f;  // 巡逻到达 waypoint 判定距离（米）
   float monsterRecoverRegenPerSec = 5.0f;  // 恢复态回血速率（HP/秒）
   float monsterRecoverSpeedMul = 2.5f;     // 恢复态移动速度倍率（相对基础速度）
-  float monsterRecoverChaseThreshold = 5.0f; // 追击超时阈值（秒）：仇恨态连续追击超过此时长触发恢复态
-  float bossChaseSpeed = 3.0f;       // Boss 追击速度（m/s）
+  float monsterRecoverChaseThreshold = 15.0f; // 追击超时阈值（秒）：仇恨态连续追击超过此时长触发恢复态（被攻击时重置）
+  float eliteChaseSpeed = 3.0f;       // 精英追击速度（m/s）
   // AI LOD 分级：距最近玩家 <aiLodNearM 每 tick、<aiLodMidM 每 2 tick、其余每 aiLodFarStride tick
   float aiLodNearM = 25.0f;
   float aiLodMidM = 50.0f;

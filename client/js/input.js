@@ -146,8 +146,6 @@ export class InputState {
 
   // ═══════════ 消费 API（转发到 KeybindManager） ═══════════
 
-  /** 消费攻击信号（J） */
-  takeAttack() { return this.keybinds.poll('ATTACK'); }
   /** 消费 NPC 交互信号（G） */
   takeInteract() { return this.keybinds.poll('INTERACT'); }
   /** 消费打开商店信号（B，已废弃） */
@@ -172,5 +170,16 @@ export class InputState {
       if (this.keybinds.poll('SKILL_' + i)) return i;
     }
     return 0;
+  }
+
+  /** 清除移动目标（NPC 交互时停止移动） */
+  clearMovement() {
+    this.clickTarget = null;
+    this.pathfinder.clear();
+    this._mouseHeld = false;
+    if (this._rippleInterval) {
+      clearInterval(this._rippleInterval);
+      this._rippleInterval = null;
+    }
   }
 }

@@ -34,7 +34,7 @@ struct WarehouseData {
   std::vector<WarehouseSlot> slots;  // 已占用格子（紧凑存储，size ≤ unlocked）
 };
 
-// ---------- 仓库配置（全局，内置默认 + JSON 覆盖 + 编辑器热替换）----------
+// ---------- 仓库配置（全局，data/warehouse.json + 编辑器热替换）----------
 struct WarehouseConfig {
   uint32_t initialSlots = 30;      // 初始格子数（1 页）
   uint32_t slotsPerPage = 30;      // 每页格子数（扩展每次 +1 页）
@@ -64,8 +64,7 @@ enum WarehouseCode : uint8_t {
 // ---------- 仓库系统（配置 + 无状态操作逻辑，玩家数据以 WarehouseData& 传入）----------
 class WarehouseSystem {
 public:
-  void loadDefaults();                          // 内置默认配置
-  bool loadFromJson(const std::string& dir);    // 可选 warehouse.json 覆盖
+  bool loadFromJson(const std::string& dir);    // 从 data/warehouse.json 加载配置
   std::string configToJson() const;             // 序列化配置（客户端 /api/gamedata、编辑器用）
   bool replaceConfig(const Json& obj);          // 热替换（编辑器保存）
   const WarehouseConfig& config() const { return cfg_; }

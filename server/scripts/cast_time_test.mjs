@@ -147,16 +147,16 @@ async function main() {
   send(encodeCastSkill(1002, 0, ref.x, ref.z));
   await wait(() => evtCasting, 800); // 等待前摇开始
   evtSkill = null;
-  // 立即发送移动输入（向前移动）→ 触发移动打断
-  send(encodeInput(1, 1, 0, false, ref.x + 1, 0, ref.z));
+  // 立即发送移动输入（位置变化 1m）→ 触发移动打断
+  send(encodeInput(1, ref.x + 1, 0, ref.z));
   await wait(() => evtCancel, 1500);
   check('前摇被移动打断 EVT_SKILL_CANCEL', !!evtCancel, evtCancel ? `reason=${evtCancel.x} skill=${evtCancel.b}` : '');
   // 打断后不再结算：等待 >castTime 仍无 EVT_SKILL、怪物不掉血
   await wait(() => evtSkill, 900);
   check('打断后未结算(无 EVT_SKILL)', evtSkill === null, evtSkill ? `有:skill=${evtSkill.b}` : '');
   check('打断后怪物未掉血', monDamage === 0, `damage=${monDamage}`);
-  // 停住（发送归零输入），等技能冷却恢复再测完整施放
-  send(encodeInput(2, 0, 0, false, ref.x, 0, ref.z));
+  // 停住（发送当前位置），等技能冷却恢复再测完整施放
+  send(encodeInput(2, ref.x, 0, ref.z));
   await sleep(700);
 
   // ---- 测试4：完整等待前摇 → 结算 EVT_SKILL + 施放时间判定 ----

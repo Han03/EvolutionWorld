@@ -30,7 +30,7 @@ export const MSG = {
   S2C_HELLO: 0x81, S2C_SNAPSHOT: 0x82, S2C_ENTER: 0x83,
   S2C_LEAVE: 0x84, S2C_UPDATE: 0x85, S2C_SELF: 0x86,
   S2C_EVENT: 0x87, S2C_PING: 0x88, S2C_KICK: 0x89, S2C_ERROR: 0x8A,
-  S2C_BOSS: 0x8B,
+  S2C_ELITE: 0x8B,
   S2C_SHOP: 0x8C, S2C_INVENTORY: 0x8D, S2C_LOOT: 0x8E, S2C_STATS: 0x8F,
   S2C_SKILLS: 0x90, S2C_SKILL_CAST: 0x91, S2C_BUFFS: 0x92, S2C_CONSOLE: 0x93,
   // 地形数据已变更（零 payload）：服务端保存编辑层或重执行世界初始化后广播，
@@ -39,6 +39,7 @@ export const MSG = {
   // 任务系统 S2C
   S2C_QUEST_LIST: 0xD0, S2C_QUEST_PROGRESS: 0xD1, S2C_QUEST_RESULT: 0xD2,
   S2C_QUEST_COMPLETE: 0xD3, S2C_QUEST_NOTIFY: 0xD4, S2C_QUEST_CHAIN: 0xD5,
+  S2C_NPC_DIALOGUE: 0xD6, // NPC 对话文本 (str: dialogue)
   // 社交系统 S2C
   S2C_FRIEND_REQUEST: 0xA0, S2C_FRIEND_LIST: 0xA1, S2C_FRIEND_STATUS: 0xA2,
   S2C_FRIEND_RESULT: 0xA3,
@@ -51,15 +52,15 @@ export const MSG = {
 };
 // 世界共享事件类型（S2C_EVENT 首字节）
 export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7 };
-// Boss 状态（S2C_BOSS.state）
-export const BOSS_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
+// 精英状态（S2C_ELITE.state）
+export const ELITE_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
 export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04, INTENT: 0x08 };
 export const KIND = { PLAYER: 1, MONSTER: 2, NPC: 3, ITEM: 4 };
 export const ST = { MOVING: 0x01, GROUNDED: 0x02 };
 // NPC 标签位标志（与服务端 npc.h NpcTag 对齐；可组合，客户端据此决定交互菜单）
 export const NPC_TAG = {
   BASIC: 1, QUEST: 2, SHOP: 4, BLACKSMITH: 8,
-  TELEPORT: 16, DAILY: 32, CRAFT: 64, BANK: 128,
+  TELEPORT: 16, CRAFT: 64, BANK: 128,
 };
 // 聊天频道
 export const CHAT = { PRIVATE: 0, FRIEND: 1, GUILD: 2, WORLD: 3, TEAM: 4, SYSTEM: 5 };
@@ -311,8 +312,9 @@ export function decodeEntityFull(r, refX, refY, refZ) {
   } else {
     name = r.str();
   }
-  // AI 意图块（怪物/NPC/Boss，与服务端 writeEntityFull 对应）：半径 + aiState + 目标速度 + 速度倍率
+  // AI 意图块（怪物/NPC/精英，与服务端 writeEntityFull 对应）：半径 + aiState + 目标速度 + 速度倍率
   let radius = 0, aiState = 0, tx = 0, tz = 0, speedMult = 100;
+  let hp = 0, maxHp = 0;
   let npcId = '', npcTag = 0;
   if (kind === KIND.MONSTER || kind === KIND.NPC) {
     radius = dq(r.u16());
@@ -320,6 +322,11 @@ export function decodeEntityFull(r, refX, refY, refZ) {
     tx = dq(r.i16());
     tz = dq(r.i16());
     speedMult = r.u8();
+    // 怪物生命值（服务端 writeEntityFull 对齐）
+    if (kind === KIND.MONSTER) {
+      hp = r.u16();
+      maxHp = r.u16();
+    }
   }
   // NPC 插件：NPC 实体额外携带 npcId + npcTag（客户端据此渲染交互菜单）
   if (kind === KIND.NPC) {
@@ -333,6 +340,7 @@ export function decodeEntityFull(r, refX, refY, refZ) {
     name, itemId, gold,
     dropInstId, dropEnhance,
     radius, aiState, tx, tz, speedMult,
+    hp, maxHp,
     npcId, npcTag,
   };
 }
@@ -398,6 +406,9 @@ export function parseS2C(type, payload, refX, refY, refZ) {
           u.tx = dq(r.i16());
           u.tz = dq(r.i16());
           u.speedMult = r.u8();
+          // 怪物生命值（服务端 update INTENT 块对齐）
+          u.hp = r.u16();
+          u.maxHp = r.u16();
         }
         updates.push(u);
       }
@@ -424,7 +435,7 @@ export function parseS2C(type, payload, refX, refY, refZ) {
       const ts = r.u32();
       return { type, ts };
     }
-    case MSG.S2C_BOSS: {
+    case MSG.S2C_ELITE: {
       const wid = r.u32();
       const state = r.u8();
       const phase = r.u8();
@@ -600,6 +611,10 @@ export function parseS2C(type, payload, refX, refY, refZ) {
     case MSG.S2C_QUEST_NOTIFY:
       // 任务消息由 quests.js 独立解码（需要 Reader 实例），此处返回 type 占位
       return { type };
+    case MSG.S2C_NPC_DIALOGUE: {
+      const dialogue = r.str();
+      return { type, dialogue };
+    }
     // ---- 社交系统 S2C 解码 ----
     case MSG.S2C_FRIEND_REQUEST: {
       const from = r.str();

@@ -145,13 +145,18 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
     w.str(e.username);
   } else {
     w.str(e.name.empty() ? (e.kind == EntityKind::Monster ? "Monster" : "NPC") : e.name);
-    // AI 意图块（怪物/NPC/Boss）：半径 + aiState + 目标速度 + 速度倍率
+    // AI 意图块（怪物/NPC/精英）：半径 + aiState + 目标速度 + 速度倍率
     // 客户端据此做确定性外推（与服务端同款物理），位置/瞬时速度仍走上方字段
     w.u16((uint16_t)std::lround(e.radius * 100.0)); // 0.01m
     w.u8(e.ai.aiState);
     w.i16(qVel(e.ai.targetVX));
     w.i16(qVel(e.ai.targetVZ));
     w.u8((uint8_t)std::lround(e.moveScale() * 100.0)); // 0-100%
+    // 怪物生命值（客户端仇恨血条渲染）
+    if (e.kind == EntityKind::Monster) {
+      w.u16((uint16_t)std::lround(e.hp));
+      w.u16((uint16_t)std::lround(e.maxHp));
+    }
     // NPC 插件：NPC 实体额外广播 npcId + npcTag（客户端据此渲染交互菜单）
     if (e.kind == EntityKind::Npc) {
       w.str(e.npcId);
@@ -232,6 +237,10 @@ std::string update(const std::vector<uint32_t>& wids,
       w.i16(qVel(e.ai.targetVX));
       w.i16(qVel(e.ai.targetVZ));
       w.u8((uint8_t)std::lround(e.moveScale() * 100.0));
+      // 生命值（与 writeEntityFull 对齐；客户端 parseS2C UPDATE 分支无条件读取，
+      // 因此 Monster/NPC 均须写入，否则 NPC INTENT 变化时客户端 short read）
+      w.u16((uint16_t)std::lround(e.hp));
+      w.u16((uint16_t)std::lround(e.maxHp));
     }
   }
   return frame(S2C_UPDATE, w.data());
@@ -441,20 +450,20 @@ std::string terrainDirtyFrame() {
 }
 
 // ---------- C2S 解码 ----------
-// 世界 Boss 全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
-std::string bossState(const Entity& boss) {
+// 世界精英全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
+std::string eliteState(const Entity& elite) {
   Writer w;
-  w.u32((uint32_t)boss.wid);
-  w.u8(boss.bossState);
-  w.u8(boss.bossPhase);
-  w.f32((float)boss.hp);
-  w.f32((float)boss.maxHp);
-  w.i32((int32_t)boss.bossTarget);
-  w.i32(qAbs(boss.pos.x));
-  w.i16(qAbs(boss.pos.y));
-  w.i32(qAbs(boss.pos.z));
-  w.str(boss.name.empty() ? "WorldBoss" : boss.name);
-  return frame(S2C_BOSS, w.data());
+  w.u32((uint32_t)elite.wid);
+  w.u8(elite.eliteState);
+  w.u8(elite.elitePhase);
+  w.f32((float)elite.hp);
+  w.f32((float)elite.maxHp);
+  w.i32((int32_t)elite.eliteTarget);
+  w.i32(qAbs(elite.pos.x));
+  w.i16(qAbs(elite.pos.y));
+  w.i32(qAbs(elite.pos.z));
+  w.str(elite.name.empty() ? "WorldElite" : elite.name);
+  return frame(S2C_ELITE, w.data());
 }
 // 战斗/世界共享事件帧
 std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z) {

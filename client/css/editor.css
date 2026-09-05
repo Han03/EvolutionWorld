@@ -16,20 +16,40 @@
 .editor-link { color: #8fd3ff; text-decoration: none; font-size: 13px; }
 .editor-link:hover { text-decoration: underline; }
 /* 顶栏“退出登录”按钮复用 .editor-link 观感：清除默认背景/边框 */
-button.editor-link { background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: #8fd3ff; cursor: pointer; }
+button.editor-link { background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: #8fd3ff; cursor: var(--cursor-pointer); }
 .editor-conn { margin-left: auto; font-size: 12px; color: #7fd77f; }
 
 .editor-body { flex: 1; display: flex; min-height: 0; }
 
 .editor-tools {
-  width: 250px; flex: none;
-  overflow-y: auto;
-  padding: 12px;
+  width: 350px; flex: none;
   background: #f5f6f8;
   border-right: 1px solid #d8dae0;
-  display: flex; flex-direction: column; gap: 12px;
+  display: flex; flex-direction: column;
 }
+.tools-top {
+  flex: none; padding: 10px 12px 8px;
+  border-bottom: 1px solid #d0d2d8;
+  background: #ecedf1;
+}
+.top-row { display: flex; align-items: center; gap: 8px; }
+.top-label { font-size: 12px; font-weight: 600; color: #555; flex: none; white-space: nowrap; }
+.mode-select { flex: 1; font-size: 13px; padding: 4px 6px; border: 1px solid #c8cad0; border-radius: 4px; background: #fff; color: #333; }
+.top-tip { font-size: 11px; color: #888; line-height: 1.5; margin-top: 4px; }
+.top-nav { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: #555; }
+.top-nav input[type="range"] { flex: 1; min-width: 0; }
+.top-nav b { min-width: 24px; text-align: right; color: #2f6fed; font-size: 12px; }
+.tools-middle { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.tools-bottom {
+  flex: none; padding: 8px 12px 10px;
+  border-top: 1px solid #d0d2d8;
+  background: #ecedf1;
+}
+.bottom-status { font-size: 11px; color: #777; line-height: 1.5; margin-bottom: 6px; }
+.bottom-actions { display: flex; gap: 5px; }
+.bottom-actions .btn { flex: 1 1 0; font-size: 12px; white-space: nowrap; padding: 5px 0; }
 .tool-group { background: #fff; border: 1px solid #e0e2e8; border-radius: 8px; padding: 10px; }
+.tool-group > .btn { width: 100%; box-sizing: border-box; }
 .tool-label { font-size: 12px; font-weight: 700; color: #555; margin-bottom: 6px; letter-spacing: 0.3px; }
 .tool-row { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #333; margin: 4px 0; min-width: 0; }
 .tool-row input[type="radio"] { accent-color: #2f6fed; }
@@ -37,11 +57,6 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 .tool-row select { flex: 1; font-size: 13px; }
 .tool-name { flex: 0 0 88px; color: #666; }
 .tool-row b { min-width: 42px; text-align: right; color: #2f6fed; }
-.tool-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.tool-actions .btn { flex: 1 1 auto; font-size: 13px; }
-.tool-status { font-size: 12px; color: #666; line-height: 1.6; }
-.tool-info { font-size: 12px; color: #777; line-height: 1.7; }
-
 .editor-canvas-wrap { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #87bfe8; }
 .editor-canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .editor-coord {
@@ -51,25 +66,34 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
   pointer-events: none;
 }
 
-/* ---- 世界编辑器：模式切换 / 出生点面板 / 图例 ---- */
+#panel-terrain { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- 世界编辑器：出生点面板 / 图例 ---- */
 .tool-tip { color: #888; font-size: 12px; line-height: 1.7; margin-top: 4px; }
 .tool-row label { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #333; }
 #panel-spawn { display: flex; flex-direction: column; gap: 12px; }
 .hidden { display: none !important; }
 
 /* 出生点列表 */
-.spawn-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.spawn-list-group { min-height: 400px; display: flex; flex-direction: column; }
+.spawn-search {
+  width: 100%; box-sizing: border-box; font-size: 12px;
+  padding: 5px 8px; border: 1px solid #d8dae0; border-radius: 5px;
+  background: #fff; color: #333; margin-bottom: 6px;
+}
+.spawn-search:focus { outline: none; border-color: #2f6fed; box-shadow: 0 0 0 2px rgba(47,111,237,0.15); }
+.spawn-list { display: flex; flex-direction: column; gap: 3px; flex: 1; overflow-y: auto; }
 .spawn-item {
   display: flex; align-items: center; gap: 5px;
   font-size: 12px; color: #333;
-  padding: 3px 5px; border-radius: 5px; cursor: pointer;
+  padding: 3px 5px; border-radius: 5px; cursor: var(--cursor-pointer);
   background: #fafbfc; border: 1px solid #e6e8ee;
 }
 .spawn-item.sel { background: #e8f0ff; border-color: #2f6fed; }
 .sp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .sp-txt { flex: 0 0 auto; }
 .sp-pos { flex: 1; color: #777; font-family: monospace; }
-.sp-del { flex: none; border: none; background: none; color: #c33; cursor: pointer; font-size: 12px; padding: 0 3px; }
+.sp-del { flex: none; border: none; background: none; color: #c33; cursor: var(--cursor-pointer); font-size: 12px; padding: 0 3px; }
 .sp-del:hover { color: #900; }
 
 /* 高度色带图例 */
@@ -87,15 +111,40 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 }
 .legend-scale { display: flex; justify-content: space-between; }
 
+/* 配置列表搜索框 */
+.cfg-list-search {
+  width: 100%; box-sizing: border-box; font-size: 12px;
+  padding: 5px 8px; border: 1px solid #d8dae0; border-radius: 5px;
+  background: #fff; color: #333; margin-bottom: 6px;
+  cursor: var(--cursor-default);
+}
+.cfg-list-search:focus { outline: none; border-color: #2f6fed; box-shadow: 0 0 0 2px rgba(47,111,237,0.15); }
+
+/* 收起/展开卡片头部 */
+.collapse-head {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: var(--cursor-pointer); user-select: none;
+}
+.collapse-head .collapse-arrow {
+  display: inline-block; width: 16px; font-size: 11px; color: #888;
+  transition: transform .15s;
+}
+.collapse-head .collapse-arrow.open { transform: rotate(90deg); }
+.collapse-body { overflow: hidden; }
+
 /* ---- 配置面板（物品/生物）：白卡片 + 蓝色主调，与现有一致 ---- */
-.mode-row { flex-wrap: wrap; row-gap: 6px; }
 #panel-item, #panel-creature, #panel-npc, #panel-quest { display: flex; flex-direction: column; gap: 12px; }
+.npc-tag-group { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 0 4px 68px; }
+.npc-tag-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #333; cursor: var(--cursor-pointer); white-space: nowrap; }
+.npc-tag-item input[type="checkbox"] { accent-color: #2f6fed; }
+.npc-cfg-section { border-left: 3px solid #2f6fed; padding-left: 8px; margin: 4px 0 4px 68px; transition: opacity .15s; }
+.npc-cfg-section.hidden { display: none; }
 #panel-enhance, #panel-decompose, #panel-craft, #panel-shop { display: flex; flex-direction: column; gap: 12px; }
 .cfg-list { max-height: 168px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
 .cfg-item {
   display: flex; align-items: center; gap: 6px;
   font-size: 12px; color: #333;
-  padding: 4px 6px; border-radius: 5px; cursor: pointer;
+  padding: 4px 6px; border-radius: 5px; cursor: var(--cursor-pointer);
   background: #fafbfc; border: 1px solid #e6e8ee;
 }
 .cfg-item.sel { background: #e8f0ff; border-color: #2f6fed; }
@@ -120,12 +169,12 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 .icon-presets { display: flex; flex-wrap: wrap; gap: 3px; margin: 2px 0 2px 68px; }
 .icon-presets button {
   font-size: 14px; line-height: 1; padding: 3px 4px;
-  border: 1px solid #e0e2e8; border-radius: 4px; background: #fff; cursor: pointer;
+  border: 1px solid #e0e2e8; border-radius: 4px; background: #fff; cursor: var(--cursor-pointer);
 }
 .icon-presets button:hover { border-color: #2f6fed; background: #e8f0ff; }
 /* 掉落子表 */
 .drop-row { display: flex; align-items: center; gap: 5px; margin: 3px 0; min-width: 0; }
-.drop-row select { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
+.drop-row select { flex: 1 1 0; min-width: 80px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .drop-row input[type="number"] { flex: 0 0 56px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .drop-row .drop-pct { flex: none; color: #888; font-size: 11px; }
 /* 任务目标子表 */
@@ -134,6 +183,56 @@ button.editor-link { background: none; border: 0; padding: 0; font: inherit; fon
 .quest-obj-row input[type="text"] { flex: 1 1 60px; min-width: 0; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 .quest-obj-row input[type="number"] { flex: 0 0 48px; font-size: 12px; padding: 3px 4px; border: 1px solid #d8dae0; border-radius: 4px; }
 /* 经济配置子块（分解品质档 / 商店条目）：分组边框 */
-.de-rule { border: 1px solid #e6e8ee; border-radius: 6px; padding: 5px; margin: 4px 0; background: #fcfcfd; }
-.de-rule .drop-row { margin: 3px 0; }
+.de-rule { border: 1px solid #e0e2e8; border-radius: 6px; padding: 8px; margin: 6px 0; background: #fcfcfd; }
+.de-rar-select { width: 100%; font-size: 13px; padding: 4px 6px; border: 1px solid #d8dae0; border-radius: 4px; background: #fff; }
+.de-mat-card { border: 1px solid #e6e8ee; border-radius: 5px; padding: 6px; margin: 6px 0 4px; background: #fff; }
+.de-mat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.de-mat-title { font-size: 11px; font-weight: 600; color: #2f6fed; }
+.de-mat-card .cfg-field > label { flex: 0 0 40px; font-size: 11px; }
 .de-mat-add { font-size: 11px; padding: 2px 6px; margin-top: 3px; flex: 0 0 auto; }
+
+/* 强化等级卡片 */
+.en-level-card { border: 1px solid #e0e2e8; border-radius: 6px; padding: 8px; margin: 4px 0; background: #fcfcfd; }
+.en-level-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #eee; cursor: var(--cursor-pointer); }
+.en-level-title { font-size: 12px; font-weight: 700; color: #2f6fed; }
+.en-level-card .cfg-field > label { flex: 0 0 50px; font-size: 11px; }
+.en-level-card .en-level-body.hidden { display: none; }
+
+/* ---- 新建实体模态框 ---- */
+.editor-modal-mask {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,0.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.editor-modal {
+  background: #fff; border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+  width: 340px; max-width: 90vw; overflow: hidden;
+}
+.editor-modal-head {
+  font-size: 14px; font-weight: 700; color: #333;
+  padding: 14px 18px 10px; border-bottom: 1px solid #eee;
+}
+.editor-modal-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.editor-modal-body label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #555; }
+.editor-modal-body label span { flex: 0 0 60px; color: #666; }
+.editor-modal-body input, .editor-modal-body select {
+  flex: 1; font-size: 13px; padding: 5px 8px;
+  border: 1px solid #d8dae0; border-radius: 5px; background: #fff; color: #333;
+}
+.editor-modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 18px 14px;
+}
+.editor-modal-foot .btn { padding: 6px 18px; font-size: 13px; }
+
+/* 编辑器全局光标 */
+#editor-app { cursor: var(--cursor-default); }
+#editor-app button, #editor-app .cfg-item, #editor-app .spawn-item,
+#editor-app .npc-tag-item, #editor-app .icon-presets button,
+#editor-app .editor-link, #editor-app .en-level-head,
+#editor-app .collapse-head, #editor-app label {
+  cursor: var(--cursor-pointer);
+}
+#editor-app input, #editor-app select, #editor-app textarea {
+  cursor: var(--cursor-default);
+}

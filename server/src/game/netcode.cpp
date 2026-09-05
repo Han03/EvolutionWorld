@@ -21,8 +21,8 @@ std::string Netcode::helloFor(const Entity& player) {
   v.seen.clear();
   v.last.clear();
   v.forceSnap = false;
-  // 加入即一致：HELLO 后附当前世界 Boss 全局共享状态
-  return proto::hello(cfg_, player) + w_.bossFrame(true);
+  // 加入即一致：HELLO 后附当前世界精英全局共享状态
+  return proto::hello(cfg_, player) + w_.eliteFrame(true);
 }
 void Netcode::resetPlayer(const std::string& playerId) {
   views_.erase(playerId);
@@ -34,10 +34,10 @@ void Netcode::requestResync(const std::string& playerId) {
 }
 const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
   out_.clear();
-  // 世界共享状态：提取本 tick 事件 + Boss 状态帧（变化去重）
+  // 世界共享状态：提取本 tick 事件 + 精英状态帧（变化去重）
   auto sharedEvents = w_.takeSharedEvents();
-  // Boss 全局共享状态帧（所有玩家都收到，不论距离——世界 Boss 是全区公共信息）
-  std::string bossSuffix = w_.bossFrame(false);
+  // 精英全局共享状态帧（所有玩家都收到，不论距离——世界精英是全区公共信息）
+  std::string eliteSuffix = w_.eliteFrame(false);
   for (const auto& pid : w_.players()) {
     const Entity* player = w_.findEntity(pid);
     if (!player) continue;
@@ -98,15 +98,19 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       if (!last.has || ax != last.ax || az != last.az || ay != last.ay) mask |= proto::M_POS;
       if (!last.has || avx != last.avx || avz != last.avz) mask |= proto::M_VEL;
       if (!last.has || st != last.state) mask |= proto::M_STATE;
-      // AI 移动意图（怪物/NPC/Boss）：客户端确定性外推的"移动意图"信号，变化才广播
+      // AI 移动意图（怪物/NPC/精英）：客户端确定性外推的“移动意图”信号，变化才广播
       if (e->kind == EntityKind::Monster || e->kind == EntityKind::Npc) {
         const int16_t itx = proto::qVel(e->ai.targetVX);
         const int16_t itz = proto::qVel(e->ai.targetVZ);
         const uint8_t ist = e->ai.aiState;
         const uint8_t imult = (uint8_t)std::lround(e->moveScale() * 100.0);
-        if (!last.has || ist != last.aiState || itx != last.itx || itz != last.itz || imult != last.imult) {
+        const uint16_t ihp = (uint16_t)std::lround(e->hp);
+        const uint16_t imhp = (uint16_t)std::lround(e->maxHp);
+        if (!last.has || ist != last.aiState || itx != last.itx || itz != last.itz || imult != last.imult
+            || ihp != last.hp || imhp != last.maxHp) {
           mask |= proto::M_INTENT;
           last.aiState = ist; last.itx = itx; last.itz = itz; last.imult = imult;
+          last.hp = ihp; last.maxHp = imhp;
         }
       }
       if (mask) {
@@ -125,8 +129,8 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       v.lastSnapTick = tick;
       v.forceSnap = false;
     }
-    // 视野内事件 + Boss 全局状态（Boss 是全区公共信息，不受距离限制）
-    buf += evtBuf + bossSuffix;
+    // 视野内事件 + 精英全局状态（精英是全区公共信息，不受距离限制）
+    buf += evtBuf + eliteSuffix;
     // 玩家自身属性/资源变化（战斗掉血/回血/回蓝）：补发 S2C_STATS
     if (w_.statsDirty().count(player->id)) buf += proto::statsFrame(*player);
     // 背包/金币变化（控制台/调试发放）：补发 S2C_INVENTORY

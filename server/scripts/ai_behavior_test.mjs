@@ -103,7 +103,7 @@ async function main() {
   });
   // 静止输入保活（玩家站桩，怪物主动扑上来）；anticheat off 后位置声明不被校验
   let ticks = 0;
-  const step = setInterval(() => { ws.send(encodeInput(ticks, 0, 0, false, myRef.x, myRef.y, myRef.z)); ticks++; }, 50);
+  const step = setInterval(() => { ws.send(encodeInput(ticks, myRef.x, myRef.y, myRef.z)); ticks++; }, 50);
 
   // 健壮退出：先停输入循环 + 复位防作弊，等 WS 真正 onclose（带超时兜底）再退出，
   // 避免仍在高频收帧时 process.exit() 触发 libuv UV_HANDLE_CLOSING 断言崩溃。

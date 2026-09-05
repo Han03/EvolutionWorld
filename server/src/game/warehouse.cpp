@@ -16,11 +16,6 @@ static std::string readFileWarehouse(const std::string& path) {
   return ss.str();
 }
 
-// ---------- 内置默认配置 ----------
-void WarehouseSystem::loadDefaults() {
-  cfg_ = WarehouseConfig();   // 初始30格 / 每页30 / 最大150 / 扩展1000×1.5^n / 存金上限1亿
-}
-
 // ---------- 首次使用初始化（幂等）----------
 void WarehouseSystem::ensureInit(WarehouseData& wh) const {
   if (wh.unlocked == 0) wh.unlocked = cfg_.initialSlots;

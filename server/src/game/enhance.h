@@ -1,7 +1,7 @@
 // enhance.h - 装备强化 + 分解系统（铁匠域：+0~+15 强化 / 品质分档分解产出）
 //
 // 设计要点（插件模式，由 EconomySystem 聚合、World 持有 unique_ptr）：
-//  - 数据驱动：内置 15 级消耗/成功率表 + enhance.json 覆盖 + 编辑器热替换（replaceConfig）
+//  - 数据驱动：data/enhance.json 提供强化表 + 编辑器热替换（replaceConfig）
 //  - 确定性随机：成功率判定使用服务端 Mulberry32 RNG，可复现；测试用 forceOutcome 旁路
 //  - 装备实例：强化作用于 ItemInstance.enhance（0..maxLevel）；失败按 failDegrade 降级，保护符可防降
 //  - 属性加成：recomputeStats 时按 ItemDef 加成 ×(1 + enhance × attrPerLevel) 叠加（见 world.cpp）
@@ -81,8 +81,7 @@ struct DecomposeOutput {
 // ---------- 强化系统（插件：配置表 + 核心强化逻辑） ----------
 class EnhanceSystem {
 public:
-  void loadDefaults();                          // 内置 15 级消耗/成功率表
-  bool loadFromJson(const std::string& dir);    // 可选 enhance.json 覆盖
+  bool loadFromJson(const std::string& dir);    // 从 data/enhance.json 加载配置
   std::string configToJson() const;             // 序列化（客户端 /api/gamedata、编辑器用）
   bool replaceConfig(const Json& obj);          // 热替换（编辑器保存）
   bool replaceDecomposeConfig(const Json& obj); // 分解配置热替换（编辑器分解面板，格式同 decomposeConfigToJson）

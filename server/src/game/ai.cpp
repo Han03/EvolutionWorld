@@ -121,8 +121,8 @@ static const SkillDef* pickMonsterSkill(World& w, Entity& e, Entity& target, uin
   return fallback;
 }
 
-// 选择 Boss AOE 技能（target=AOE，冷却好可用）
-static const SkillDef* pickBossAoeSkill(World& w, Entity& e, uint64_t nowMs) {
+// 选择精英 AOE 技能（target=AOE，冷却好可用）
+static const SkillDef* pickEliteAoeSkill(World& w, Entity& e, uint64_t nowMs) {
   for (uint32_t sid : e.skillIds) {
     const SkillDef* sd = w.data().skill(sid);
     if (!sd || sd->target != SkillTarget::AOE) continue;
@@ -139,7 +139,7 @@ static const SkillDef* pickBossAoeSkill(World& w, Entity& e, uint64_t nowMs) {
 // 游走态：沿确定性 waypoint 环巡逻
 // 仇恨态-追击(CHASE)：被攻击或玩家进入仇恨范围 → 记录当前 waypoint → 追击目标
 // 仇恨态-战斗(ATTACK)：目标进入攻击范围 → 攻击/施法；离开范围 → 回到追击
-// 恢复态(RECOVER)：仇恨态连续追击 >5s 未中断 → 无敌+回血+加速归位 → 到达记录点后回到游走态
+// 恢复态(RECOVER)：仇恨态连续追击 >15s 未中断 → 无敌+回血+加速归位 → 到达记录点后回到游走态（被攻击则重置计时）
 void tickMonsterAi(World& w, Entity& e, double dt) {
   const auto& cfg = w.config();
   uint64_t nowMs = w.logicNowMs();
@@ -338,47 +338,47 @@ void tickNpcAi(World& w, Entity& e, double dt) {
   }
 }
 
-// ---------------- 世界 Boss 状态机（全区共享） ----------------
-void tickBossAi(World& w, Entity& e, double dt) {
+// ---------------- 世界精英状态机（全区共享） ----------------
+void tickEliteAi(World& w, Entity& e, double dt) {
   const auto& cfg = w.config();
   uint64_t nowMs = w.logicNowMs();
   // DEAD：复活计时（全局推进，不依赖视野）
-  if (e.bossState == BS_DEAD) {
+  if (e.eliteState == ES_DEAD) {
     if (nowMs >= e.respawnAtMs) {
       e.hp = e.maxHp;
-      e.bossState = BS_IDLE;
-      e.bossPhase = 1;
-      e.bossTarget = 0;
+      e.eliteState = ES_IDLE;
+      e.elitePhase = 1;
+      e.eliteTarget = 0;
       e.aggro.clear();
       e.pos.x = e.ai.homeX;
       e.pos.z = e.ai.homeZ;
       e.pos.y = groundFootY(e.pos.x, e.pos.z, e.radius);
       e.vel = {0, 0, 0};
       w.physics().step(e, dt);
-      w.addAliveBoss(1);
+      w.addAliveElite(1);
       w.pushEvent(proto::EVT_RESPAWN, e.wid, 0, 0, 0);
-      w.markBossDirty();
+      w.markEliteDirty();
     }
     return;
   }
   // 眩晕：无法移动/攻击（霸体可免疫挂载）
-  const bool bossStunned = e.hasBuff((uint8_t)BuffType::STUN);
+  const bool eliteStunned = e.hasBuff((uint8_t)BuffType::STUN);
   // 感知：清理失效仇恨
   for (auto it = e.aggro.begin(); it != e.aggro.end();) {
     Entity* pl = w.findByWid(it->first);
     if (!pl || pl->kind != EntityKind::Player || !pl->active || pl->hp <= 0) it = e.aggro.erase(it);
     else ++it;
   }
-  if (bossStunned) {
+  if (eliteStunned) {
     e.ai.targetVX = 0;
     e.ai.targetVZ = 0;
     // IDLE 脱战回血不受眩晕影响
-    if (e.bossState == BS_IDLE && e.hp < e.maxHp) {
-      e.hp = std::min(e.maxHp, e.hp + cfg.bossRegenPerSec * dt);
+    if (e.eliteState == ES_IDLE && e.hp < e.maxHp) {
+      e.hp = std::min(e.maxHp, e.hp + cfg.eliteRegenPerSec * dt);
     }
     return;
   }
-  // 前摇结算：Boss 施放中的技能到期后结算
+  // 前摇结算：精英施放中的技能到期后结算
   if (e.castingSkillId != 0) {
     const SkillDef* csd = w.data().skill(e.castingSkillId);
     if (csd && nowMs >= e.castStartMs + (uint64_t)csd->castTimeMs) {
@@ -399,41 +399,41 @@ void tickBossAi(World& w, Entity& e, double dt) {
     }
   }
   // IDLE：脱战回血 + 侦测仇恨
-  if (e.bossState == BS_IDLE) {
+  if (e.eliteState == ES_IDLE) {
     if (e.hp < e.maxHp) {
-      e.hp = std::min(e.maxHp, e.hp + cfg.bossRegenPerSec * dt);
-      w.markBossDirty();
+      e.hp = std::min(e.maxHp, e.hp + cfg.eliteRegenPerSec * dt);
+      w.markEliteDirty();
     }
     for (const auto& pid : w.players()) {
       const Entity* pl = w.findEntity(pid);
       if (!pl || pl->hp <= 0) continue;
-      if (pl->pos.dist2D(e.pos) <= cfg.bossAggroRange) {
+      if (pl->pos.dist2D(e.pos) <= cfg.eliteAggroRange) {
         e.aggro[pl->wid] += 10.0 * dt;
-        e.bossState = BS_ENGAGE;
-        w.markBossDirty();
+        e.eliteState = ES_ENGAGE;
+        w.markEliteDirty();
       }
     }
   }
   Entity* target = pickAggroTarget(w, e);
   if (!target) {
-    if (e.bossState != BS_IDLE) { e.bossState = BS_IDLE; w.markBossDirty(); }
-    e.bossTarget = 0;
+    if (e.eliteState != ES_IDLE) { e.eliteState = ES_IDLE; w.markEliteDirty(); }
+    e.eliteTarget = 0;
     e.ai.targetVX = e.ai.targetVZ = 0;
     return;
   }
-  if (e.bossTarget != target->wid) { e.bossTarget = target->wid; w.markBossDirty(); }
-  if (e.bossState != BS_ENGAGE) { e.bossState = BS_ENGAGE; w.markBossDirty(); }
+  if (e.eliteTarget != target->wid) { e.eliteTarget = target->wid; w.markEliteDirty(); }
+  if (e.eliteState != ES_ENGAGE) { e.eliteState = ES_ENGAGE; w.markEliteDirty(); }
   // 阶段切换（按血量比例：<=65% P2，<=35% P3）
   uint8_t newPhase = (e.hp / e.maxHp <= 0.35) ? 3 : ((e.hp / e.maxHp <= 0.65) ? 2 : 1);
-  if (newPhase != e.bossPhase) { e.bossPhase = newPhase; w.markBossDirty(); }
+  if (newPhase != e.elitePhase) { e.elitePhase = newPhase; w.markEliteDirty(); }
   double dist = e.pos.dist2D(target->pos);
-  if (dist > cfg.bossAttackRange) {
+  if (dist > cfg.eliteAttackRange) {
     e.ai.aiState = AS_CHASE;
-    moveToward(e, target->pos, slowedSpeed(e, cfg.bossChaseSpeed), cfg.bossAttackRange);
+    moveToward(e, target->pos, slowedSpeed(e, cfg.eliteChaseSpeed), cfg.eliteAttackRange);
   } else {
     e.ai.aiState = AS_ATTACK;
     e.ai.targetVX = e.ai.targetVZ = 0;
-    if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.bossAttackCdSec * 1000.0)) {
+    if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.eliteAttackCdSec * 1000.0)) {
       // 普攻（接入技能系统，选第一个非 AOE 技能）
       const SkillDef* atkSkill = nullptr;
       for (uint32_t sid : e.skillIds) {
@@ -452,7 +452,7 @@ void tickBossAi(World& w, Entity& e, double dt) {
         e.aggro[target->wid] -= target->lastDamageMs == nowMs ? 0 : 0; // 仇恨衰减由 applySkillToTarget 内的 aggro 增长平衡
       }
       // 范围技能（AOE，独立冷却，有前摇则进入施放状态）
-      const SkillDef* aoeSkill = pickBossAoeSkill(w, e, nowMs);
+      const SkillDef* aoeSkill = pickEliteAoeSkill(w, e, nowMs);
       if (aoeSkill) {
         e.skillCd[aoeSkill->id] = nowMs + (uint64_t)aoeSkill->cooldownMs;
         if (aoeSkill->castTimeMs > 0) {

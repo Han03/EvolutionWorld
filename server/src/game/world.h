@@ -44,6 +44,9 @@ public:
   // 生成连通可通行 mask + 主城 + 分组生物投放（写入 terrain mask 与 spawns_，不刷实体）。
   // 内存模式每次启动调用；数据库模式仅在无存档时调用。调用后需 seedWorld()/reseedCreatures()。
   bool runWorldInit();
+  // 当前世界种子（可变；reinit 时更新以生成不同地形）
+  uint32_t seed() const { return currentSeed_; }
+  void setSeed(uint32_t s) { currentSeed_ = s; }
   // 世界数据持久化（数据库模式）：把 mask + 出生点保存到 / 从 Store 还原（还原不刷实体）。
   bool saveWorldToStore(Store& s);
   bool loadWorldFromStore(Store& s);
@@ -52,7 +55,7 @@ public:
   SpawnConfig& spawnsMut() { return spawns_; }
   // 应用新出生点配置（fromJson → 持久化 data/spawns.json → 热重载世界生物）
   bool applySpawns(const std::string& json, const std::string& dataDir);
-  // 热重载：清空现有种子生物（m_*/n_*/boss_*）并按当前出生点配置重建
+  // 热重载：清空现有种子生物（m_*/n_*/elite_*）并按当前出生点配置重建
   void reseedCreatures();
   // 实体管理
   Entity* spawnPlayer(const std::string& username, Vec3* spawnHint = nullptr);
@@ -111,6 +114,7 @@ public:
   bool applyDecompose(const std::string& json, const std::string& dataDir);
   bool applyCraft(const std::string& json, const std::string& dataDir);
   bool applyShop(const std::string& json, const std::string& dataDir);
+  bool applySkills(const std::string& json, const std::string& dataDir);
   // 玩家攻击世界实体（服务端权威校验 + 伤害/仇恨/死亡/复活/掉落）
   bool playerAttack(const std::string& playerId, uint32_t targetWid, uint8_t slot);
   // 拾取地面掉落物（金币/物品进背包）
@@ -175,7 +179,7 @@ public:
   void resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz);
   // 打断施放：reason=0 被替换 / 1 移动 / 2 受击；受击打断受 castCancelOnHit 约束
   void cancelCast(Entity& e, uint8_t reason);
-  // 实体受击：若是施放中的玩家且技能允许受击打断 → 打断（普攻/技能/Boss AOE 共用）
+  // 实体受击：若是施放中的玩家且技能允许受击打断 → 打断（普攻/技能/精英 AOE 共用）
   void cancelCastOnHit(Entity& e);
   // 挂载/移除 Buff（同技能同类型刷新，不同类型并存）
   void applyBuff(Entity& e, uint32_t skillId, uint8_t type, double value, double durSec);
@@ -195,7 +199,7 @@ public:
   // ---- 测试/调试控制标志（控制台命令切换；默认全 false=正常玩法）----
   // 全局生效（影响世界内所有玩家/怪物），供自动化测试确定性构造场景，替代不可预测操作。
   struct TestFlags {
-    bool monstersPaused = false;    // 冻结全部怪物/Boss 的 AI、移动与施放（站桩测试）
+    bool monstersPaused = false;    // 冻结全部怪物/精英的 AI、移动与施放（站桩测试）
     bool noSkillCost = false;       // 技能/普攻无蓝耗、无冷却（重复测试同一技能）
     bool antiCheatBypass = false;   // 关闭防作弊频率/序号/轨迹校验（输入直接接受）
     int enhanceForce = 0;           // 强化结果旁路：0=正常 RNG / 1=强制成功 / 2=强制失败
@@ -209,7 +213,7 @@ public:
   bool teleportPlayer(const std::string& playerId, double x, double z);
   // 强制击杀实体（触发掉落/死亡/复活逻辑）
   bool killEntity(const std::string& playerId, uint32_t wid);
-  // 复活（普通怪物复活 / Boss 复活）
+  // 复活（普通怪物复活 / 精英复活）
   bool respawnEntity(const std::string& id);
   // 全图怪物复活
   void respawnAllMonsters();
@@ -232,8 +236,8 @@ public:
   void saveInstIdCounter();   // 玩家存档时回写当前水位
   // 生成地面掉落物（控制台测试命令）
   void spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold);
-  // 世界 Boss 状态摘要（控制台查看）
-  Json bossesStatus() const;
+  // 世界精英状态摘要（控制台查看）
+  Json elitesStatus() const;
   // 视野内/全图实体摘要（控制台查看，limit 限制数量）
   Json entitiesStatus(double px, double pz, double range, int limit) const;
   // 取走本 tick 产生的共享事件（netcode 全区广播用，调用后清空）
@@ -245,17 +249,17 @@ public:
     respawnedThisTick_.clear();
     return out;
   }
-  // 构建世界 Boss 全局共享状态帧（force=true 强制；false 且无变化则返回空）
-  std::string bossFrame(bool force);
-  // 存活 Boss 数量
-  uint32_t aliveBossCount() const { return aliveBoss_; }
-  // 所有世界 Boss 实体（调试/传送用）
-  std::vector<const Entity*> bosses() const;
+  // 构建世界精英全局共享状态帧（force=true 强制；false 且无变化则返回空）
+  std::string eliteFrame(bool force);
+  // 存活精英数量
+  uint32_t aliveEliteCount() const { return aliveElite_; }
+  // 所有世界精英实体（调试/传送用）
+  std::vector<const Entity*> elites() const;
   // 世界共享状态辅助（供系统/网络层调用）
   void pushEvent(uint8_t type, uint32_t wid, uint32_t b, int32_t x, int32_t z);
-  void markBossDirty() { bossDirty_ = true; }
-  void addAliveBoss(int d) { aliveBoss_ = (uint32_t)((int)aliveBoss_ + d); }
-  // 玩家死亡统一处理（hp=0+死亡标记+复活计时+EVT_DEATH 广播），供普攻/技能/Boss/反伤复用
+  void markEliteDirty() { eliteDirty_ = true; }
+  void addAliveElite(int d) { aliveElite_ = (uint32_t)((int)aliveElite_ + d); }
+  // 玩家死亡统一处理（hp=0+死亡标记+复活计时+EVT_DEATH 广播），供普攻/技能/精英/反伤复用
   void killPlayer(Entity& p, Entity* killer);
   // 通用技能效果施加：伤害/Buff/击退/死亡/吸血（玩家→怪物、怪物→玩家 均可用）
   void applySkillToTarget(Entity& caster, Entity& target, const SkillDef& sd, double variance);
@@ -300,15 +304,16 @@ private:
   void spawnDropInst(double x, double z, const ItemInstance& inst);
   // 应用怪物类型配置属性（type 见 GameData 默认/编辑器配置）
   void applyMonsterStats(Entity& m, const std::string& type);
-  // 目标死亡统一处理（Boss 复活/普通怪物失活+复活+掉落），供普攻/技能复用
+  // 目标死亡统一处理（精英复活/普通怪物失活+复活+掉落），供普攻/技能复用
   void onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs);
   // 击退：沿 from→target 方向把 target 位移最多 dist 米（逐步圆盘检测，撞墙即止），
   // 落回地表（groundFootY）；霸体/无敌免疫；并触发受击打断
   void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
-  void spawnBossAt(double homeX, double homeZ, const std::string& name);
+  void spawnEliteAt(double homeX, double homeZ, const std::string& name);
   const Config& cfg_;
+  uint32_t currentSeed_;   // 当前世界种子（reinit 时可更新）
   SpawnConfig spawns_;   // 生物出生点配置（默认确定性生成，可 JSON 覆盖/编辑器修改）
   GameData data_;
   Physics physics_;
@@ -319,7 +324,7 @@ private:
   std::unordered_set<std::string> players_;
   std::unordered_map<uint32_t, std::string> widToId_;
   std::vector<std::pair<int, std::pair<std::string, SystemFn>>> systems_;
-  // 世界共享状态（Boss 全局广播 + 战斗事件队列）
+  // 世界共享状态（精英全局广播 + 战斗事件队列）
   std::vector<SharedEvent> sharedEvents_;
   // 本 tick 刚复活的玩家（需补发校正）
   std::vector<std::string> respawnedThisTick_;
@@ -332,9 +337,9 @@ private:
   std::unordered_set<std::string> buffsDirty_;
   // 需要补发 S2C_QUEST_PROGRESS 的玩家（任务进度/状态变化）
   std::unordered_set<std::string> questDirty_;
-  std::string bossFrame_;
-  bool bossDirty_ = true;
-  uint32_t aliveBoss_ = 0;
+  std::string eliteFrame_;
+  bool eliteDirty_ = true;
+  uint32_t aliveElite_ = 0;
   uint64_t tick_ = 0;
   int64_t entitySeq_ = 0;
   int64_t wireSeq_ = 0;

@@ -113,7 +113,7 @@ DEST="${DEST%/}"
 # 运行时数据文件：部署时不得覆盖（由服务端在线编辑/落盘产生）
 RUNTIME_DATA_FILES="terrain_edit.json"
 # 纯配置文件：仓库里存在则同步过去（服务端有内置兜底，缺失不影响功能）
-CONFIG_DATA_FILES="items.json monsters.json shop.json skills.json"
+CONFIG_DATA_FILES="items.json monsters.json shop.json skills.json npcs.json quests.json enhance.json craft.json warehouse.json player.json"
 
 preflight_src() {
   [ -d "$SRC" ] || fail "source dir not found: $SRC"

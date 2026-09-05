@@ -1,7 +1,7 @@
 // craft.h - 物品合成系统（配方域：材料 → 产出，按 NPC 标签 + 等级 + 隐藏过滤）
 //
 // 设计要点（插件模式，由 EconomySystem 聚合、World 持有）：
-//  - 数据驱动：内置配方表 + craft.json 覆盖 + 编辑器热替换（replaceConfig）
+//  - 数据驱动：data/craft.json 提供配方 + 编辑器热替换（replaceConfig）
 //  - 闭环：分解产出的材料(4001-4005)/怪物掉落(3001-3004) → 合成消耗 → 产出药水/装备/材料
 //  - 过滤：availableRecipes(npcTagMask, playerLevel) 按 NPC 标签 + 等级 + 隐藏筛选（列表展示）
 //  - 权威：doCraft 服务端校验等级/材料/金币并扣除；装备产出走实例（instId 由 world 分配）
@@ -52,8 +52,7 @@ struct CraftOutput {
 // ---------- 合成系统（插件：配方表 + 核心合成逻辑）----------
 class CraftSystem {
 public:
-  void loadDefaults();                          // 内置配方表
-  bool loadFromJson(const std::string& dir);    // 可选 craft.json 覆盖
+  bool loadFromJson(const std::string& dir);    // 从 data/craft.json 加载配方
   std::string configToJson() const;             // 序列化（客户端 /api/gamedata、编辑器用）
   bool replaceConfig(const Json& obj);          // 热替换（编辑器保存）
 

@@ -50,7 +50,6 @@ QuestObjType QuestDef::objTypeFromStr(const std::string& s) {
 QuestSystem::QuestSystem(World& w) : world_(w) {}
 
 void QuestSystem::init() {
-  loadDefaults();
   loadFromJson(world_.config().dataDir);
   fprintf(stderr, "[quests] 初始化完成: %zu 个任务模板\n", quests_.size());
 }
@@ -58,123 +57,6 @@ void QuestSystem::init() {
 const QuestDef* QuestSystem::questDef(uint32_t id) const {
   auto it = quests_.find(id);
   return it == quests_.end() ? nullptr : &it->second;
-}
-
-// ---------- 默认任务数据 ----------
-void QuestSystem::addDefaultQuest(uint32_t id, const char* name, const char* desc,
-                                   QuestCategory cat, int levelReq) {
-  QuestDef q;
-  q.id = id; q.name = name; q.desc = desc;
-  q.category = cat; q.levelReq = levelReq;
-  quests_[id] = q;
-}
-
-void QuestSystem::loadDefaults() {
-  // 1. 主线：初入世界 - 与任意NPC对话 → 击杀5只狼 → 与任意NPC对话报告
-  //    链式：完成后解锁 1002「荒原威胁」
-  {
-    addDefaultQuest(1001, "初入世界", "你来到了这片陌生的大陆。先与当地人交谈，了解这片世界的情况，然后消灭附近的狼群威胁。",
-                    QuestCategory::MAIN, 1);
-    auto& q = quests_[1001];
-    QuestObjective o1; o1.index = 0; o1.type = QuestObjType::TALK_NPC;
-    o1.desc = "与村民交谈"; o1.required = 1; o1.targetId = 0;
-    q.objectives.push_back(o1);
-    QuestObjective o2; o2.index = 1; o2.type = QuestObjType::KILL_MONSTER;
-    o2.targetKey = "wolf"; o2.desc = "击杀灰狼"; o2.required = 5;
-    q.objectives.push_back(o2);
-    QuestObjective o3; o3.index = 2; o3.type = QuestObjType::TALK_NPC;
-    o3.desc = "向村民报告"; o3.required = 1; o3.targetId = 0;
-    q.objectives.push_back(o3);
-    q.rewards.gold = 50;
-    q.rewards.items.push_back({1501, 1}); // 铁剑
-    q.nextQuestIds.push_back(1002);       // 链式：解锁「荒原威胁」
-  }
-  // 2. 支线：采集药草 - 收集3个草药
-  {
-    addDefaultQuest(2001, "采集药草", "村里的药师需要一些草药来制作绷带。收集草药并交付。",
-                    QuestCategory::SIDE, 1);
-    auto& q = quests_[2001];
-    QuestObjective o; o.index = 0; o.type = QuestObjType::COLLECT_ITEM;
-    o.targetId = 3001; o.targetKey = "3001"; o.desc = "收集草药"; o.required = 3;
-    q.objectives.push_back(o);
-    q.rewards.gold = 20;
-    q.rewards.items.push_back({2001, 3}); // 小血瓶 x3
-  }
-  // 3. 支线：探索遗迹 - 到达指定坐标
-  {
-    addDefaultQuest(2002, "探索遗迹", "据说大陆中央有一处古老遗迹，前去探索并回报。",
-                    QuestCategory::SIDE, 1);
-    auto& q = quests_[2002];
-    QuestObjective o; o.index = 0; o.type = QuestObjType::REACH_LOCATION;
-    o.targetX = 60; o.targetZ = 60; o.radius = 8.0;
-    o.desc = "到达古老遗迹"; o.required = 1;
-    q.objectives.push_back(o);
-    q.rewards.gold = 30;
-  }
-  // 4. 日常：猎魔修行 - 击杀10只任意怪物
-  {
-    addDefaultQuest(3001, "猎魔修行", "通过战斗磨炼自己。击杀任意怪物10只。",
-                    QuestCategory::DAILY, 1);
-    auto& q = quests_[3001];
-    QuestObjective o; o.index = 0; o.type = QuestObjType::KILL_MONSTER;
-    o.targetKey = "*"; o.desc = "击杀任意怪物"; o.required = 10;
-    q.objectives.push_back(o);
-    q.rewards.gold = 30;
-    q.dailyCooldownSec = 86400; // 24h
-  }
-  // 5. 支线：商人的委托 - 与NPC对话 → 收集物品
-  {
-    addDefaultQuest(2003, "商人的委托", "旅行商人需要一批物资。先与他交谈了解详情。",
-                    QuestCategory::SIDE, 3);
-    auto& q = quests_[2003];
-    QuestObjective o1; o1.index = 0; o1.type = QuestObjType::TALK_NPC;
-    o1.desc = "与旅行商人交谈"; o1.required = 1;
-    q.objectives.push_back(o1);
-    QuestObjective o2; o2.index = 1; o2.type = QuestObjType::COLLECT_ITEM;
-    o2.targetId = 3001; o2.targetKey = "3001"; o2.desc = "收集草药"; o2.required = 5;
-    q.objectives.push_back(o2);
-    QuestObjective o3; o3.index = 2; o3.type = QuestObjType::TALK_NPC;
-    o3.desc = "向旅行商人交付"; o3.required = 1;
-    q.objectives.push_back(o3);
-    q.rewards.gold = 40;
-    q.rewards.items.push_back({2002, 2}); // 中血瓶 x2
-  }
-  // 6. 主线：荒原威胁 - 前置：1001 → 击杀Boss → 链式：解锁 2004「勇者试炼」
-  {
-    addDefaultQuest(1002, "荒原威胁", "荒原深处的巨兽开始频繁出没，威胁到城镇安全。前往消灭它！",
-                    QuestCategory::MAIN, 5);
-    auto& q = quests_[1002];
-    q.prerequisites.push_back(1001);
-    QuestObjective o; o.index = 0; o.type = QuestObjType::KILL_MONSTER;
-    o.targetKey = "gargoyle"; o.desc = "击杀荒原巨兽"; o.required = 1;
-    q.objectives.push_back(o);
-    q.rewards.gold = 200;
-    q.rewards.skills.push_back(1003); // 解锁技能
-    q.nextQuestIds.push_back(2004);   // 链式：解锁「勇者试炼」
-  }
-  // 7. 日常：矿材收集 - 收集5个矿石
-  {
-    addDefaultQuest(3002, "矿材收集", "铁匠需要矿石来打造装备。帮忙收集一些。",
-                    QuestCategory::DAILY, 2);
-    auto& q = quests_[3002];
-    QuestObjective o; o.index = 0; o.type = QuestObjType::COLLECT_ITEM;
-    o.targetId = 3002; o.targetKey = "3002"; o.desc = "收集矿石"; o.required = 5;
-    q.objectives.push_back(o);
-    q.rewards.gold = 25;
-    q.dailyCooldownSec = 86400;
-  }
-  // 8. 支线：勇者试炼 - 前置：完成主线1 → 击杀精英怪
-  {
-    addDefaultQuest(2004, "勇者试炼", "证明你的实力。击败荒原上的石像鬼。",
-                    QuestCategory::SIDE, 5);
-    auto& q = quests_[2004];
-    q.prerequisites.push_back(1001);
-    QuestObjective o; o.index = 0; o.type = QuestObjType::KILL_MONSTER;
-    o.targetKey = "gargoyle"; o.desc = "击败石像鬼"; o.required = 1;
-    q.objectives.push_back(o);
-    q.rewards.gold = 100;
-    q.rewards.items.push_back({1502, 1}); // 皮甲
-  }
 }
 
 bool QuestSystem::loadFromJson(const std::string& dir) {
@@ -232,8 +114,15 @@ bool QuestSystem::loadFromJson(const std::string& dir) {
       }
       q.dailyCooldownSec = (uint32_t)(j.has("dailyCd") ? j.at("dailyCd").asInt() : 0);
       q.repeatLimit = (uint32_t)(j.has("repeatLimit") ? j.at("repeatLimit").asInt() : 0);
-      q.talkNpcWid = (uint32_t)(j.has("npcWid") ? j.at("npcWid").asInt() : 0);
-      q.giverNpcWid = (uint32_t)(j.has("giverNpc") ? j.at("giverNpc").asInt() : 0);
+      // 提交 NPC：优先读 talkNpc（npcId 字符串），兼容旧 npcWid（数字 wid）
+      if (j.has("talkNpc")) q.talkNpcId = j.at("talkNpc").asString();
+      if (j.has("npcWid")) q.talkNpcWid = (uint32_t)j.at("npcWid").asInt();
+      // 发布 NPC：优先读 giverNpc（npcId 字符串），兼容旧 giverNpc（数字 wid）
+      if (j.has("giverNpc")) {
+        const auto& gv = j.at("giverNpc");
+        if (gv.type() == Json::Type::String) q.giverNpcId = gv.asString();
+        else q.giverNpcWid = (uint32_t)gv.asInt();
+      }
       if (j.has("nextQuests") && j.at("nextQuests").type() == Json::Type::Array) {
         for (const auto& nq : j.at("nextQuests").asArray())
           q.nextQuestIds.push_back((uint32_t)nq.asInt());
@@ -315,8 +204,8 @@ std::string QuestSystem::questsToJson() const {
     j["rewards"] = rw;
     j["dailyCd"] = (int64_t)q.dailyCooldownSec;
     j["repeatLimit"] = (int64_t)q.repeatLimit;
-    j["npcWid"] = (int64_t)q.talkNpcWid;
-    j["giverNpc"] = (int64_t)q.giverNpcWid;
+    j["giverNpc"] = q.giverNpcId;  // 稳定 npcId 字符串
+    j["talkNpc"] = q.talkNpcId;    // 稳定 npcId 字符串
     Json next = Json::array();
     for (uint32_t nq : q.nextQuestIds) next.push_back((int64_t)nq);
     j["nextQuests"] = next;
@@ -374,8 +263,13 @@ bool QuestSystem::replaceQuests(const Json& arr) {
     }
     q.dailyCooldownSec = (uint32_t)(j.has("dailyCd") ? j.at("dailyCd").asInt() : 0);
     q.repeatLimit = (uint32_t)(j.has("repeatLimit") ? j.at("repeatLimit").asInt() : 0);
-    q.talkNpcWid = (uint32_t)(j.has("npcWid") ? j.at("npcWid").asInt() : 0);
-    q.giverNpcWid = (uint32_t)(j.has("giverNpc") ? j.at("giverNpc").asInt() : 0);
+    if (j.has("talkNpc")) q.talkNpcId = j.at("talkNpc").asString();
+    if (j.has("npcWid")) q.talkNpcWid = (uint32_t)j.at("npcWid").asInt();
+    if (j.has("giverNpc")) {
+      const auto& gv = j.at("giverNpc");
+      if (gv.type() == Json::Type::String) q.giverNpcId = gv.asString();
+      else q.giverNpcWid = (uint32_t)gv.asInt();
+    }
     if (j.has("nextQuests") && j.at("nextQuests").type() == Json::Type::Array) {
       for (const auto& nq : j.at("nextQuests").asArray())
         q.nextQuestIds.push_back((uint32_t)nq.asInt());
@@ -404,7 +298,7 @@ bool QuestSystem::isOnCooldown(const Entity& p, const QuestDef& qd, uint64_t now
 }
 
 // ---------- 玩家操作 ----------
-QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid) {
+QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid, const std::string& npcIdStr) {
   Entity* p = world_.findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return QUEST_ERR_NOT_FOUND;
   const QuestDef* qd = questDef(questId);
@@ -424,13 +318,16 @@ QuestResult QuestSystem::acceptQuest(const std::string& playerId, uint32_t quest
   if (isCompleted(*p, questId) && qd->category == QuestCategory::MAIN) return QUEST_ERR_NOT_REPEATABLE;
   if (isCompleted(*p, questId) && qd->category == QuestCategory::SIDE && qd->repeatLimit == 0)
     return QUEST_ERR_NOT_REPEATABLE;
-  // NPC 绑定校验：giverNpcWid > 0 时，必须在发布者 NPC 附近接取
-  if (qd->giverNpcWid > 0) {
+  // NPC 绑定校验：优先按 giverNpcId（稳定 ID），兼容 giverNpcWid（运行时 wid）
+  if (!npcIdStr.empty() && !qd->giverNpcId.empty()) {
+    if (qd->giverNpcId != npcIdStr) return QUEST_ERR_NOT_GIVER;
+    Entity* npc = world_.findByWid(npcWid);
+    if (npc && p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NOT_GIVER;
+  } else if (qd->giverNpcWid > 0) {
     Entity* npc = world_.findByWid(qd->giverNpcWid);
     if (!npc || npc->kind != EntityKind::Npc) return QUEST_ERR_NOT_GIVER;
     if (p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NOT_GIVER;
   } else if (npcWid > 0) {
-    // giverNpcWid=0 时，如果客户端传入了 npcWid，做通用距离校验
     Entity* npc = world_.findByWid(npcWid);
     if (!npc || npc->kind != EntityKind::Npc) return QUEST_ERR_NPC_RANGE;
     if (p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NPC_RANGE;
@@ -462,7 +359,7 @@ QuestResult QuestSystem::abandonQuest(const std::string& playerId, uint32_t ques
   return QUEST_OK;
 }
 
-QuestResult QuestSystem::turnInQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid) {
+QuestResult QuestSystem::turnInQuest(const std::string& playerId, uint32_t questId, uint32_t npcWid, const std::string& npcIdStr) {
   Entity* p = world_.findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return QUEST_ERR_NOT_FOUND;
   const QuestDef* qd = questDef(questId);
@@ -471,8 +368,13 @@ QuestResult QuestSystem::turnInQuest(const std::string& playerId, uint32_t quest
   if (!aq) return QUEST_ERR_NOT_ACTIVE;
   // 必须可提交
   if (aq->status != 1) return QUEST_ERR_NOT_COMPLETABLE;
-  // NPC 距离校验（talkNpcWid > 0 时）
-  if (qd->talkNpcWid > 0 && npcWid > 0) {
+  // NPC 绑定校验：优先按 talkNpcId（稳定 ID），兼容 talkNpcWid（运行时 wid）
+  if (!npcIdStr.empty() && !qd->talkNpcId.empty()) {
+    if (qd->talkNpcId != npcIdStr) return QUEST_ERR_NOT_GIVER;
+    // 距离校验
+    Entity* npc = world_.findByWid(npcWid);
+    if (npc && p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NPC_RANGE;
+  } else if (qd->talkNpcWid > 0 && npcWid > 0) {
     Entity* npc = world_.findByWid(npcWid);
     if (!npc || npc->kind != EntityKind::Npc) return QUEST_ERR_NPC_RANGE;
     if (p->pos.dist2D(npc->pos) > world_.config().questTalkRangeM) return QUEST_ERR_NPC_RANGE;
@@ -634,7 +536,7 @@ bool QuestSystem::isCompleted(const Entity& p, uint32_t questId) const {
   return p.completedQuests.count(questId) > 0;
 }
 
-std::vector<const QuestDef*> QuestSystem::availableQuests(const Entity& p, uint32_t npcWid) const {
+std::vector<const QuestDef*> QuestSystem::availableQuests(const Entity& p, uint32_t npcWid, const std::string& npcIdStr) const {
   std::vector<const QuestDef*> out;
   uint64_t nowMs = world_.logicNowMs();
   for (const auto& [id, qd] : quests_) {
@@ -647,8 +549,18 @@ std::vector<const QuestDef*> QuestSystem::availableQuests(const Entity& p, uint3
       if (isOnCooldown(p, qd, nowMs)) continue;
     }
     if (!checkPrerequisites(p, qd)) continue;
-    // NPC 过滤：npcWid > 0 时仅返回该 NPC 发布的任务
-    if (npcWid > 0 && qd.giverNpcWid != 0 && qd.giverNpcWid != npcWid) continue;
+    // NPC 过滤：按 giverNpcId（稳定ID）或 giverNpcWid（运行时 wid）匹配
+    // 无 NPC 绑定的任务（giverNpcId 空且 giverNpcWid=0）= 任务日志面板任务，NPC 对话中不显示
+    if (npcWid > 0 || !npcIdStr.empty()) {
+      if (qd.giverNpcId.empty() && qd.giverNpcWid == 0) continue; // 面板任务，跳过
+      bool isGiver = false;
+      if (!npcIdStr.empty() && !qd.giverNpcId.empty()) {
+        isGiver = (qd.giverNpcId == npcIdStr);
+      } else if (npcWid > 0 && qd.giverNpcWid > 0) {
+        isGiver = (qd.giverNpcWid == npcWid);
+      }
+      if (!isGiver) continue;
+    }
     out.push_back(&qd);
   }
   // 按分类+ID 排序（主线优先）
@@ -667,8 +579,8 @@ std::vector<const ActiveQuest*> QuestSystem::completableQuests(const Entity& p) 
 }
 
 // ---------- 网络帧 ----------
-std::string QuestSystem::questListFrame(const Entity& p, uint32_t npcWid) const {
-  auto avail = availableQuests(p, npcWid);
+std::string QuestSystem::questListFrame(const Entity& p, uint32_t npcWid, const std::string& npcIdStr) const {
+  auto avail = availableQuests(p, npcWid, npcIdStr);
   proto::Writer w;
   w.u16((uint16_t)avail.size());
   for (const QuestDef* qd : avail) {

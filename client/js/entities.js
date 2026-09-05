@@ -4,7 +4,7 @@
  *
  * 怪物同步（消除 rubber-banding，重构后）：
  *  - 服务端广播「移动意图」（aiState + 目标速度 + 速度倍率）+ 权威位置/瞬时速度；
- *  - 客户端对每个怪物/NPC/Boss 维护一份与服务端同款物理的确定性推演（sim，复用 predict.js stepSim），
+ *  - 客户端对每个怪物/NPC/精英维护一份与服务端同款物理的确定性推演（sim，复用 predict.js stepSim），
  *    收到意图后按 20Hz 步进外推，不再用指数衰减朝最新位置追赶；
  *  - 渲染走「快照插值」：hist 存最近 4 个推演快照，渲染时钟落后一拍（renderClock ≤ simTime-1），
  *    在两份快照间线性插值平滑输出 60fps——吸收速度量化抖动；
@@ -68,7 +68,7 @@ export class EntityViewManager {
     v.dyingAt = performance.now();
     v.dieY = v.y; // 记录死亡时高度，用于下沉动画
   }
-  /** 复活：清除死亡动画状态（恢复可见；Boss/其他玩家复活时服务端广播） */
+  /** 复活：清除死亡动画状态（恢复可见；精英/其他玩家复活时服务端广播） */
   applyRespawn(wid) {
     const v = this.views.get(wid);
     if (!v) return;
@@ -82,7 +82,7 @@ export class EntityViewManager {
       const v = this.views.get(u.wid);
       if (!v) continue;
       if (this._isAi(v)) {
-        // —— AI 实体（怪物/NPC/Boss）：确定性外推 + 权威校正 ——
+        // —— AI 实体（怪物/NPC/精英）：确定性外推 + 权威校正 ——
         if (u.mask & MASK.POS) {
           const vx = (u.mask & MASK.VEL) ? u.vx : undefined;
           const vz = (u.mask & MASK.VEL) ? u.vz : undefined;
@@ -94,6 +94,8 @@ export class EntityViewManager {
           v.intent.tx = u.tx;
           v.intent.tz = u.tz;
           v.intent.mult = u.speedMult !== undefined ? u.speedMult : 100;
+          // 怪物生命值（服务端 INTENT 块对齐）
+          if (u.hp !== undefined) { v.hp = u.hp; v.maxHp = u.maxHp; }
         }
         if (u.state !== undefined) v.state = u.state;
       } else {
@@ -119,8 +121,8 @@ export class EntityViewManager {
       if (!seen.has(wid)) this.views.delete(wid);
     }
   }
-  /** 世界 Boss 全局共享帧（S2C_BOSS）：位置作为另一路权威校正（与实体 UPDATE 一致） */
-  applyBossPos(wid, x, y, z) {
+  /** 世界精英全局共享帧（S2C_ELITE）：位置作为另一路权威校正（与实体 UPDATE 一致） */
+  applyElitePos(wid, x, y, z) {
     const v = this.views.get(wid);
     if (!v || !this._isAi(v)) return;
     this._authoritativePos(v, x, y, z, undefined, undefined);
@@ -163,6 +165,11 @@ export class EntityViewManager {
         tz: e.tz !== undefined ? e.tz : (e.vz || 0),
         mult: e.speedMult !== undefined ? e.speedMult : 100,
       };
+      // 怪物生命值（仇恨血条渲染）
+      if (e.kind === KIND.MONSTER) {
+        v.hp = e.hp || 0;
+        v.maxHp = e.maxHp || 0;
+      }
       v.hist = [{ t: 0, x: e.x, y: e.y, z: e.z }];
       v.simTime = 0;
       v.renderClock = 0;
@@ -188,6 +195,13 @@ export class EntityViewManager {
         v.intent.mult = e.speedMult !== undefined ? e.speedMult : 100;
       }
       if (e.radius) v.sim.radius = e.radius;
+      // 怪物生命值（快照校准）
+      if (e.hp !== undefined) { v.hp = e.hp; v.maxHp = e.maxHp; }
+      // NPC 插件：同步 npcId + npcTag（编辑器保存后热生效）
+      if (v.kind === 'npc') {
+        if (e.npcId !== undefined) v.npcId = e.npcId;
+        if (e.npcTag !== undefined) v.npcTag = e.npcTag;
+      }
     } else {
       v.tx = e.x; v.ty = e.y; v.tz = e.z;
       if (e.radius) v.radius = e.radius;
@@ -318,11 +332,17 @@ export class EntityViewManager {
       if (v.wid === this.selfWid) continue;
       active.add(v.wid);
       let o = pool.get(v.wid);
-      if (!o) { o = { wid: 0, kind: '', name: '', x: 0, y: 0, z: 0, state: 0, radius: 0.5, dying: false, dyingAt: 0, dieY: 0 }; pool.set(v.wid, o); }
+      if (!o) { o = { wid: 0, kind: '', name: '', x: 0, y: 0, z: 0, state: 0, radius: 0.5, dying: false, dyingAt: 0, dieY: 0, aiState: 0, hp: 0, maxHp: 0, npcId: '', npcTag: 0 }; pool.set(v.wid, o); }
       o.wid = v.wid; o.kind = v.kind; o.name = v.name;
       o.x = v.x; o.y = v.y; o.z = v.z; o.state = v.state;
       o.radius = this._isAi(v) ? v.sim.radius : (v.radius || 0.5);  // 真实半径：物理层实体阻挡用
       o.dying = v.dying || false; o.dyingAt = v.dyingAt || 0; o.dieY = v.dieY || v.y;
+      // AI 状态 + 生命值（仇恨血条渲染）
+      o.aiState = this._isAi(v) ? (v.intent.state || 0) : 0;
+      o.hp = v.hp || 0;
+      o.maxHp = v.maxHp || 0;
+      // NPC 插件：交互菜单需要 npcTag + npcId
+      if (v.kind === 'npc') { o.npcId = v.npcId || ''; o.npcTag = v.npcTag || 0; }
       arr[idx++] = o;
     }
     arr.length = idx;

@@ -1,4 +1,4 @@
-// items.cpp - 物品/属性/商店/配置系统实现（内置默认数据 + JSON 覆盖）
+// items.cpp - 物品/属性/商店/配置系统实现（data/*.json 加载 + 编辑器热替换）
 #include "items.h"
 #include <cstdio>
 #include <fstream>
@@ -88,242 +88,7 @@ const SkillDef* GameData::skill(uint32_t id) const {
   return it == skills_.end() ? nullptr : &it->second;
 }
 
-// ---------- 内置默认数据（兜底；可在 data/*.json 覆盖） ----------
-void GameData::addDefaultItem(uint32_t id, const char* name, const char* desc, const char* icon,
-                              ItemType type, EquipSlot slot, double hp, double mp, double atk, double def,
-                              double rHp, double rMp, uint32_t price, uint32_t stack) {
-  ItemDef d;
-  d.id = id; d.name = name; d.desc = desc; d.icon = icon;
-  d.type = type; d.slot = slot;
-  d.hpBonus = hp; d.mpBonus = mp; d.attackBonus = atk; d.defenseBonus = def;
-  d.restoreHp = rHp; d.restoreMp = rMp;
-  d.price = price; d.stackMax = stack;
-  items_[id] = d;
-}
-void GameData::addDefaultMonster(const char* type, const char* name, int level, double hp, double mp,
-                                 double atk, double def, uint32_t gMin, uint32_t gMax) {
-  MonsterDef d;
-  d.type = type; d.name = name; d.level = level;
-  d.hp = hp; d.mp = mp; d.attack = atk; d.defense = def;
-  d.goldMin = gMin; d.goldMax = gMax;
-  monsters_[type] = d;
-}
-void GameData::addDefaultSkill(uint32_t id, const char* name, const char* desc, const char* icon,
-                               SkillTarget target, SkillEffect effect, double mana, uint32_t cdMs,
-                               double range, double radius, double dmgMul, double flatDmg, double heal,
-                               BuffType buffType, double buffValue, double buffDur, double lifesteal,
-                               uint16_t castTimeMs, bool cancelOnMove, bool cancelOnHit,
-                               double knockback, bool superArmor) {
-  SkillDef s;
-  s.id = id; s.name = name; s.desc = desc; s.icon = icon;
-  s.target = target; s.effect = effect;
-  s.manaCost = mana; s.cooldownMs = cdMs;
-  s.range = range; s.radius = radius;
-  s.dmgMul = dmgMul; s.flatDmg = flatDmg; s.heal = heal;
-  s.buffType = buffType; s.buffValue = buffValue; s.buffDurSec = buffDur;
-  s.lifesteal = lifesteal;
-  s.castTimeMs = castTimeMs;
-  s.castCancelOnMove = cancelOnMove;
-  s.castCancelOnHit = cancelOnHit;
-  s.knockback = knockback;
-  s.superArmor = superArmor;
-  skills_[id] = s;
-}
-void GameData::loadDefaults() {
-  // ---- 装备：6 槽位各 2 档（新手/精良） ----
-  // 头盔
-  addDefaultItem(1001, "皮帽", "轻便的皮质头盔，+1 防御", "helm1", ItemType::EQUIP, EquipSlot::HELM, 0, 0, 0, 1, 0, 0, 8);
-  addDefaultItem(1002, "铁盔", "精钢锻造的头盔，+3 防御 +10 生命", "helm2", ItemType::EQUIP, EquipSlot::HELM, 10, 0, 0, 3, 0, 0, 30);
-  // 上衣
-  addDefaultItem(1101, "布衣", "普通布质上衣，+1 防御", "chest1", ItemType::EQUIP, EquipSlot::CHEST, 0, 0, 0, 1, 0, 0, 10);
-  addDefaultItem(1102, "锁子甲", "精良锁子甲，+3 防御 +15 生命", "chest2", ItemType::EQUIP, EquipSlot::CHEST, 15, 0, 0, 3, 0, 0, 35);
-  // 裤子
-  addDefaultItem(1201, "皮裤", "轻便皮裤，+1 防御", "pants1", ItemType::EQUIP, EquipSlot::PANTS, 0, 0, 0, 1, 0, 0, 9);
-  addDefaultItem(1202, "钢裤", "精钢护腿，+2 防御 +5 生命", "pants2", ItemType::EQUIP, EquipSlot::PANTS, 5, 0, 0, 2, 0, 0, 28);
-  // 手套
-  addDefaultItem(1301, "皮手套", "灵活皮手套，+1 攻击", "gloves1", ItemType::EQUIP, EquipSlot::GLOVES, 0, 0, 1, 0, 0, 0, 9);
-  addDefaultItem(1302, "钢手套", "精钢护手，+2 攻击 +5 生命", "gloves2", ItemType::EQUIP, EquipSlot::GLOVES, 5, 0, 2, 0, 0, 0, 28);
-  // 鞋子
-  addDefaultItem(1401, "皮靴", "轻快皮靴，+1 防御", "boots1", ItemType::EQUIP, EquipSlot::BOOTS, 0, 0, 0, 1, 0, 0, 8);
-  addDefaultItem(1402, "钢靴", "精钢战靴，+2 防御 +5 生命", "boots2", ItemType::EQUIP, EquipSlot::BOOTS, 5, 0, 0, 2, 0, 0, 26);
-  // 武器
-  addDefaultItem(1501, "青铜剑", "新手青铜剑，+2 攻击", "weapon1", ItemType::EQUIP, EquipSlot::WEAPON, 0, 0, 2, 0, 0, 0, 12);
-  addDefaultItem(1502, "铁剑", "锋利的铁剑，+5 攻击", "weapon2", ItemType::EQUIP, EquipSlot::WEAPON, 0, 0, 5, 0, 0, 0, 40);
-  addDefaultItem(1503, "烈焰剑", "附魔烈焰之剑，+9 攻击 +10 生命", "weapon3", ItemType::EQUIP, EquipSlot::WEAPON, 10, 0, 9, 0, 0, 0, 120);
-
-  // ---- 消耗品 ----
-  addDefaultItem(2001, "小血瓶", "恢复 30 点生命", "hp1", ItemType::CONSUMABLE, EquipSlot::WEAPON, 0, 0, 0, 0, 30, 0, 5, 20);
-  addDefaultItem(2002, "大血瓶", "恢复 80 点生命", "hp2", ItemType::CONSUMABLE, EquipSlot::WEAPON, 0, 0, 0, 0, 80, 0, 15, 20);
-  addDefaultItem(2101, "小蓝瓶", "恢复 30 点法力", "mp1", ItemType::CONSUMABLE, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 30, 5, 20);
-  addDefaultItem(2102, "大蓝瓶", "恢复 80 点法力", "mp2", ItemType::CONSUMABLE, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 80, 15, 20);
-
-  // ---- 任务道具（怪物掉落，可卖钱/留作任务） ----
-  addDefaultItem(3001, "狼牙", "野狼的獠牙，可卖钱", "fang", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 4, 50);
-  addDefaultItem(3002, "哥布林徽记", "哥布林首领的徽记", "badge", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 8, 50);
-  addDefaultItem(3003, "骷髅碎片", "骷髅兵的骨片，蕴含魔力", "bone", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 12, 50);
-  addDefaultItem(3004, "石像鬼之核", "石像鬼的能量核心，稀有", "core", ItemType::QUEST, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 25, 50);
-
-  // ---- 材料（强化/分解/合成用；不可穿戴、可堆叠、可交易）----
-  // 分解产出材料（按品质分档 4001-4005；亦为阶段4合成原料）
-  addDefaultItem(4001, "铁屑", "分解普通装备得到的碎料", "iron", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 3, 99);
-  addDefaultItem(4002, "精钢碎片", "分解优秀装备得到的材料", "steel", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 8, 99);
-  addDefaultItem(4003, "魔晶", "分解稀有装备凝聚的魔力结晶", "crystal", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 20, 99);
-  addDefaultItem(4004, "龙鳞", "分解史诗装备获得的珍贵材料", "scale", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 50, 99);
-  addDefaultItem(4005, "星辰核心", "分解传说装备得到的稀世之物", "starcore", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 120, 99);
-  // 强化石：每次强化按等级消耗若干；保护符：强化失败时消耗 1 个可防止装备降级。
-  addDefaultItem(4006, "强化石", "装备强化的必需材料，等级越高消耗越多", "estone", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 50, 99);
-  addDefaultItem(4007, "保护符", "强化失败时防止装备降级（仅 +6 起可用）", "protect", ItemType::MATERIAL, EquipSlot::WEAPON, 0, 0, 0, 0, 0, 0, 200, 99);
-
-  // ---- 品质/需求等级示例（其余默认 rarity=0 / levelReq=1） ----
-  items_[1002].rarity = 1; items_[1002].levelReq = 2;  // 铁盔
-  items_[1102].rarity = 1; items_[1102].levelReq = 2;  // 锁子甲
-  items_[1502].rarity = 1; items_[1502].levelReq = 3;  // 铁剑
-  items_[1503].rarity = 2; items_[1503].levelReq = 5;  // 烈焰剑
-
-  // ---- 怪物：由内向外难度梯度 ----
-  addDefaultMonster("wolf", "野狼", 1, 45, 10, 7, 1, 2, 5);
-  monsters_["wolf"].desc = "游荡在近郊的饥饿野狼，成群出没";
-  monsters_["wolf"].expReward = 25; monsters_["wolf"].moveSpeed = 1.7;
-  monsters_["wolf"].drops = {{3001, 0.35}, {2001, 0.10}, {1001, 0.03}};
-  monsters_["wolf"].skillIds = {2001};
-  addDefaultMonster("goblin", "哥布林", 2, 70, 20, 10, 3, 4, 9);
-  monsters_["goblin"].desc = "狡诈的绿皮掠夺者，随身携带赃物";
-  monsters_["goblin"].expReward = 45; monsters_["goblin"].moveSpeed = 1.5;
-  monsters_["goblin"].drops = {{3002, 0.30}, {2001, 0.15}, {1501, 0.05}, {1101, 0.03}};
-  monsters_["goblin"].skillIds = {2002};
-
-  // NPC 默认数据已迁移到 NpcManager::loadDefaults()（见 npc.cpp）
-
-  addDefaultMonster("skeleton", "骷髅兵", 3, 95, 30, 13, 5, 6, 14);
-  monsters_["skeleton"].desc = "被亡灵法术复苏的枯骨士兵";
-  monsters_["skeleton"].expReward = 70; monsters_["skeleton"].moveSpeed = 1.3;
-  monsters_["skeleton"].drops = {{3003, 0.28}, {2002, 0.08}, {1502, 0.05}, {1002, 0.03}, {1202, 0.03}};
-  monsters_["skeleton"].skillIds = {2003};
-  addDefaultMonster("gargoyle", "石像鬼", 5, 150, 50, 17, 8, 10, 24);
-  monsters_["gargoyle"].desc = "边境石柱上苏醒的魔法石像，坚硬凶猛";
-  monsters_["gargoyle"].expReward = 120; monsters_["gargoyle"].moveSpeed = 1.2;
-  monsters_["gargoyle"].drops = {{3004, 0.20}, {2002, 0.12}, {1503, 0.04}, {1102, 0.04}, {1302, 0.03}};
-  monsters_["gargoyle"].skillIds = {2004};
-
-  // ---- 商店：一个商店 NPC 出售全部物品 ----
-  // ShopEntry 字段序：{itemId, price, discountPrice, stock, buyLimit, category, refreshType, sellPrice}
-  //   discountPrice>0 时优先结算（划线原价）；buyLimit>0 按玩家累计限购，refreshType 周期重置（1每日/2每周）；
-  //   category 0自动(按物品类型)/1装备/2消耗品/3材料/4特殊；sellPrice=0 时回收价按 ItemDef.price×默认回收率。
-  ShopDef shop;
-  shop.shopId = 1;
-  shop.name = "全能杂货铺";
-  shop.desc = "主城杂货商人，出售装备/消耗品，含每日特惠与每周限购";
-  shop.entries = {
-    {1001, 8, 0}, {1002, 30, 0}, {1101, 10, 0}, {1102, 35, 0},
-    {1201, 9, 0}, {1202, 28, 0}, {1301, 9, 0}, {1302, 28, 0},
-    {1401, 8, 0}, {1402, 26, 0}, {1501, 12, 0},
-    {1502, 40, 0, 0, 2, 1, 2, 20},   // 铁剑：每周限购 2 件（装备分类），回收价 20
-    {1503, 120, 0},
-    {2001, 5, 3, 0, 5, 2, 1, 2},     // 小血瓶：每日特惠 3 金（原价 5），每日限购 5（消耗品），回收价 2
-    {2002, 15, 0}, {2101, 5, 0}, {2102, 15, 0},
-  };
-  shops_[1] = shop;
-  // ---- 技能表（大型网游规模：单目标/AOE/治疗/Buff，数据驱动） ----
-  // 1000 普通攻击：基础近战攻击（瞬发，零耗蓝，玩家默认习得）
-  addDefaultSkill(1000, "普通攻击", "基础近战攻击，造成 100% 攻击伤害", "atk",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 500, 3.2, 0, 1.0, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 200);  // 前摇 0.2s，冷却 0.5s
-  // 1001 冲刺斩：单目标物理伤害（起始技）
-  addDefaultSkill(1001, "冲刺斩", "迅猛突进的一击，造成 220% 攻击伤害", "s1",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 8, 3000, 3.5, 0, 2.2, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 0);  // 瞬发
-  // 1002 烈焰冲击：区域火伤（起始技）
-  addDefaultSkill(1002, "烈焰冲击", "向目标区域喷吐烈焰，对 4m 内敌人造成 150% 攻击伤害", "s2",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 15, 6000, 8, 4, 1.5, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 600);  // 前摇 0.6s
-  // 1003 治疗之光：恢复自身生命（起始技）
-  addDefaultSkill(1003, "治疗之光", "凝聚圣光治疗自身，恢复 60 点生命", "s3",
-                  SkillTarget::SELF, SkillEffect::HEAL, 15, 8000, 0, 0, 0, 0, 60,
-                  BuffType::NONE, 0, 0, 0, 500);  // 前摇 0.5s
-  // 1004 冰霜新星：区域伤害 + 减速
-  addDefaultSkill(1004, "冰霜新星", "冰霜爆发，对 4m 内敌人造成 120% 伤害并减速 40%（3 秒）", "s4",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 18, 10000, 8, 4, 1.2, 0, 0,
-                  BuffType::MOVE_SLOW, 0.4, 3.0, 0, 800);  // 前摇 0.8s
-  // 1005 战吼：自身攻击增益
-  addDefaultSkill(1005, "战吼", "咆哮鼓舞，攻击力 +8（10 秒）", "s5",
-                  SkillTarget::SELF, SkillEffect::BUFF, 10, 12000, 0, 0, 0, 0, 0,
-                  BuffType::ATK, 8, 10.0, 0, 400);  // 前摇 0.4s
-  // 1006 雷霆一击：单目标高伤害
-  addDefaultSkill(1006, "雷霆一击", "召唤雷电轰击单体，造成 300% 攻击伤害", "s6",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 25, 12000, 4.5, 0, 3.0, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 1000);  // 前摇 1.0s
-  // 1007 吸血打击：单目标伤害 + 吸血
-  addDefaultSkill(1007, "吸血打击", "吸取目标生命，造成 180% 伤害并恢复 35% 伤害量", "s7",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 12, 6000, 3.5, 0, 1.8, 0, 0,
-                  BuffType::NONE, 0, 0, 0.35, 300);  // 前摇 0.3s
-  // 1008 荆棘护体：反弹伤害 Buff
-  addDefaultSkill(1008, "荆棘护体", "周身环绕荆棘，受到伤害时反弹 20%（8 秒）", "s8",
-                  SkillTarget::SELF, SkillEffect::BUFF, 12, 15000, 0, 0, 0, 0, 0,
-                  BuffType::THORNS, 0.2, 8.0, 0, 600);  // 前摇 0.6s
-  // ---- 大型网游扩展：控制/减益/增益/击退 ----
-  // 1010 铁壁守护：不可打断 + 霸体 + 防御增益（免疫眩晕/击退，前摇期间移动/受击均不打断）
-  addDefaultSkill(1010, "铁壁守护", "摆出铁壁架势，防御 +15 并进入霸体（免疫眩晕/击退，施放不可打断），持续 8 秒", "s10",
-                  SkillTarget::SELF, SkillEffect::BUFF, 15, 18000, 0, 0, 0, 0, 0,
-                  BuffType::DEF, 15, 8.0, 0, 800, false, false, 0, true);  // 前摇 0.8s，不可打断+霸体
-  // 1011 撕裂：范围伤害 + 流血 DoT（每秒 10 点，5 秒）
-  addDefaultSkill(1011, "撕裂", "撕开目标的伤口，造成 130% 伤害并使其流血（每秒 10 点，5 秒）", "s11",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 14, 9000, 8, 4, 1.3, 0, 0,
-                  BuffType::BLEED, 10, 5.0, 0, 700);  // 前摇 0.7s
-  // 1012 破甲斩：范围伤害 + 减防（防御 -12，6 秒）
-  addDefaultSkill(1012, "破甲斩", "重击破开护甲，造成 140% 伤害并降低目标防御 12 点（6 秒）", "s12",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 15, 10000, 7, 3, 1.4, 0, 0,
-                  BuffType::DEF_DOWN, -12, 6.0, 0, 600);  // 前摇 0.6s
-  // 1013 虚弱咒印：范围减攻（攻击 -8，8 秒）
-  addDefaultSkill(1013, "虚弱咒印", "施加虚弱诅咒，使目标攻击力 -8（8 秒）", "s13",
-                  SkillTarget::AOE, SkillEffect::BUFF, 12, 12000, 8, 4, 0, 0, 0,
-                  BuffType::ATK_DOWN, -8, 8.0, 0, 500);  // 前摇 0.5s
-  // 1014 震荡波：范围伤害 + 眩晕（2 秒）
-  addDefaultSkill(1014, "震荡波", "冲击波震击目标，造成 100% 伤害并眩晕 2 秒", "s14",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 18, 14000, 7, 3.5, 1.0, 0, 0,
-                  BuffType::STUN, 1, 2.0, 0, 800);  // 前摇 0.8s
-  // 1015 疾风步：加速（移速 +50%，8 秒）
-  addDefaultSkill(1015, "疾风步", "脚下生风，移动速度 +50%（8 秒）", "s15",
-                  SkillTarget::SELF, SkillEffect::BUFF, 8, 12000, 0, 0, 0, 0, 0,
-                  BuffType::SPEED, 0.5, 8.0, 0, 300);  // 前摇 0.3s
-  // 1016 猛击：范围伤害 + 击退 6m
-  addDefaultSkill(1016, "猛击", "巨力挥击，造成 180% 伤害并击退目标 6 米", "s16",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 16, 10000, 6, 3, 1.8, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 500, true, true, 6.0);  // 前摇 0.5s，击退 6m
-  // 1017 生命涌动：持续回血（每秒 25 点，8 秒）
-  addDefaultSkill(1017, "生命涌动", "生命之力涌动，每秒恢复 25 点生命（8 秒）", "s17",
-                  SkillTarget::SELF, SkillEffect::BUFF, 14, 16000, 0, 0, 0, 0, 0,
-                  BuffType::REGEN, 25, 8.0, 0, 400);  // 前摇 0.4s
-  // ---- 怪物专属技能（ID 2000+，不与玩家技能冲突）----
-  // 2001 撕咬：野狼普攻，附带流血 DoT
-  addDefaultSkill(2001, "撕咬", "野狼凶猛撕咬，造成 100% 伤害并使其流血（每秒 8 点，3 秒）", "m_atk1",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 3.0, 1.0, 0, 0,
-                  BuffType::BLEED, 8, 3.0, 0, 400);  // 前摇 0.4s，范围 3m
-  // 2002 利爪挥击：哥布林普攻，附带减速
-  addDefaultSkill(2002, "利爪挥击", "哥布林挥动利爪，造成 100% 伤害并减速 20%（2 秒）", "m_atk2",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1000, 3.0, 3.0, 1.0, 0, 0,
-                  BuffType::MOVE_SLOW, 0.2, 2.0, 0, 500);  // 前摇 0.5s，范围 3m
-  // 2003 骨刺投掷：骷髅兵普攻，远程附带减防
-  addDefaultSkill(2003, "骨刺投掷", "投掷尖锐骨刺，造成 90% 伤害并降低目标防御 3 点（4 秒）", "m_atk3",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1200, 5.0, 5.0, 0.9, 0, 0,
-                  BuffType::DEF_DOWN, -3, 4.0, 0, 600);  // 前摇 0.6s，范围 5m
-  // 2004 石像冲击：石像鬼普攻，高伤附带击退
-  addDefaultSkill(2004, "石像冲击", "石像鬼重击目标，造成 120% 伤害并击退 2 米", "m_atk4",
-                  SkillTarget::ENEMY, SkillEffect::DAMAGE, 0, 1500, 3.0, 3.0, 1.2, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 700, false, false, 2.0);  // 前摇 0.7s，范围 3m
-  // ---- Boss 专属技能（ID 2100+）----
-  // 2100 地裂冲击：Boss AOE，范围伤害 + 击退（前摇 1.5s 蓄力提示）
-  addDefaultSkill(2100, "地裂冲击", "巨兽踏裂大地，对 6m 内敌人造成 80% 伤害并击退 3 米", "b_s1",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 0, 8000, 0, 6, 0.8, 0, 0,
-                  BuffType::NONE, 0, 0, 0, 1500, false, false, 3.0);
-  // 2101 暗影波动：Boss AOE，范围伤害 + 减速（前摇 2s 蓄力提示）
-  addDefaultSkill(2101, "暗影波动", "释放暗影波动，对 8m 内敌人造成 60% 伤害并减速 35%（4 秒）", "b_s2",
-                  SkillTarget::AOE, SkillEffect::DAMAGE, 0, 10000, 0, 8, 0.6, 0, 0,
-                  BuffType::MOVE_SLOW, 0.35, 4.0, 0, 2000, false, false, 0);
-  // 新玩家自动习得：普通攻击 / 冲刺斩 / 烈焰冲击 / 治疗之光（开箱即测）
-  starterSkills_ = {1000, 1001, 1002, 1003};
-}
-
-// ---------- JSON 覆盖加载 ----------
+// ---------- JSON 配置加载 ----------
 static std::string readFile(const std::string& path) {
   std::ifstream f(path, std::ios::binary);
   if (!f) return "";
@@ -381,8 +146,9 @@ static MonsterDef parseMonsterDef(const std::string& type, const Json& j) {
       if (sid) d.skillIds.push_back(sid);
     }
   }
-  // Boss 扩展字段（has() 守卫，旧 JSON 无此字段时保持默认 false）
-  if (j.has("isBoss")) d.isBoss = j.at("isBoss").asBool();
+  // 精英扩展字段（has() 守卫，旧 JSON 无此字段时保持默认 false；兼容旧档 "isBoss"）
+  if (j.has("isElite")) d.isElite = j.at("isElite").asBool();
+  else if (j.has("isBoss")) d.isElite = j.at("isBoss").asBool();
   if (j.has("aggroRange")) d.aggroRange = j.at("aggroRange").asNumber();
   if (j.has("chaseSpeed")) d.chaseSpeed = j.at("chaseSpeed").asNumber();
   if (j.has("attackRange")) d.attackRange = j.at("attackRange").asNumber();
@@ -466,45 +232,78 @@ bool GameData::loadFromJson(const std::string& dir) {
       }
     }
   }
-  // skills.json
+  // skills.json（支持对象格式 {skills:[], starterSkills:[]} 和旧数组格式）
   {
     std::string content = readFile(dir + sep + "skills.json");
     if (!content.empty()) {
       try {
-        Json arr = Json::parse(content);
-        if (arr.type() == Json::Type::Array) {
-          for (const auto& j : arr.asArray()) {
-            SkillDef s;
-            s.id = (uint32_t)j.at("id").asInt();
-            if (s.id == 0) continue;
-            s.name = j.at("name").asString();
-            s.desc = j.at("desc").asString();
-            s.icon = j.at("icon").asString();
-            s.target = SkillDef::targetFromStr(j.at("target").asString());
-            s.effect = SkillDef::effectFromStr(j.at("effect").asString());
-            s.manaCost = j.at("mana").asNumber();
-            s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
-            s.range = j.at("range").asNumber();
-            s.radius = j.at("radius").asNumber();
-            s.dmgMul = j.at("dmgMul").asNumber();
-            s.flatDmg = j.at("flatDmg").asNumber();
-            s.heal = j.at("heal").asNumber();
-            s.buffType = SkillDef::buffFromStr(j.at("buffType").asString());
-            s.buffValue = j.at("buffValue").asNumber();
-            s.buffDurSec = j.at("buffDur").asNumber();
-            s.lifesteal = j.at("lifesteal").asNumber();
-            s.castTimeMs = (uint16_t)(j.has("castTimeMs") ? j.at("castTimeMs").asInt() : 0);
-            s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
-            s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
-            s.knockback = j.has("knockback") ? j.at("knockback").asNumber() : 0;
-            s.superArmor = j.has("superArmor") && j.at("superArmor").asInt() != 0;
-            skills_[s.id] = s;
+        Json root = Json::parse(content);
+        Json::Array skillArr;
+        if (root.type() == Json::Type::Array) {
+          skillArr = root.asArray();   // 旧格式：纯数组
+        } else if (root.type() == Json::Type::Object) {
+          if (root.has("skills") && root.at("skills").type() == Json::Type::Array)
+            skillArr = root.at("skills").asArray();
+          // 起始技能（新玩家自动习得）
+          if (root.has("starterSkills") && root.at("starterSkills").type() == Json::Type::Array) {
+            starterSkills_.clear();
+            for (const auto& sj : root.at("starterSkills").asArray())
+              starterSkills_.push_back((uint32_t)sj.asInt());
           }
-          any = true;
-          fprintf(stderr, "[gamedata] 加载 skills.json: %zu 个技能\n", skills_.size());
         }
+        for (const auto& j : skillArr) {
+          SkillDef s;
+          s.id = (uint32_t)j.at("id").asInt();
+          if (s.id == 0) continue;
+          s.name = j.at("name").asString();
+          s.desc = j.at("desc").asString();
+          s.icon = j.at("icon").asString();
+          s.target = SkillDef::targetFromStr(j.at("target").asString());
+          s.effect = SkillDef::effectFromStr(j.at("effect").asString());
+          s.manaCost = j.at("mana").asNumber();
+          s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
+          s.range = j.at("range").asNumber();
+          s.radius = j.at("radius").asNumber();
+          s.dmgMul = j.at("dmgMul").asNumber();
+          s.flatDmg = j.at("flatDmg").asNumber();
+          s.heal = j.at("heal").asNumber();
+          s.buffType = SkillDef::buffFromStr(j.at("buffType").asString());
+          s.buffValue = j.at("buffValue").asNumber();
+          s.buffDurSec = j.at("buffDur").asNumber();
+          s.lifesteal = j.at("lifesteal").asNumber();
+          s.castTimeMs = (uint16_t)(j.has("castTimeMs") ? j.at("castTimeMs").asInt() : 0);
+          s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
+          s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
+          s.knockback = j.has("knockback") ? j.at("knockback").asNumber() : 0;
+          s.superArmor = j.has("superArmor") && j.at("superArmor").asInt() != 0;
+          skills_[s.id] = s;
+        }
+        any = true;
+        fprintf(stderr, "[gamedata] 加载 skills.json: %zu 个技能, %zu 起始技能\n", skills_.size(), starterSkills_.size());
       } catch (const std::exception& e) {
         fprintf(stderr, "[gamedata] skills.json 解析失败（用默认）: %s\n", e.what());
+      }
+    }
+  }
+  // player.json（玩家基础属性）
+  {
+    std::string content = readFile(dir + sep + "player.json");
+    if (!content.empty()) {
+      try {
+        Json obj = Json::parse(content);
+        if (obj.type() == Json::Type::Object) {
+          if (obj.has("hp")) playerDefaults_.hp = obj.at("hp").asNumber();
+          if (obj.has("mp")) playerDefaults_.mp = obj.at("mp").asNumber();
+          if (obj.has("attack")) playerDefaults_.attack = obj.at("attack").asNumber();
+          if (obj.has("defense")) playerDefaults_.defense = obj.at("defense").asNumber();
+          if (obj.has("level")) playerDefaults_.level = (int)obj.at("level").asInt();
+          if (obj.has("radius")) playerDefaults_.radius = obj.at("radius").asNumber();
+          any = true;
+          fprintf(stderr, "[gamedata] 加载 player.json: HP=%.0f MP=%.0f ATK=%.0f DEF=%.0f Lv=%d\n",
+                  playerDefaults_.hp, playerDefaults_.mp, playerDefaults_.attack, playerDefaults_.defense, playerDefaults_.level);
+        }
+      } catch (const std::exception& e) {
+        fprintf(stderr, "[gamedata] player.json 解析失败（用默认）: %s\n", e.what());
       }
     }
   }
@@ -567,9 +366,9 @@ std::string GameData::monstersToJson() const {
     Json sk = Json::array();
     for (uint32_t sid : d.skillIds) sk.push_back(Json((int64_t)sid));
     j["skillIds"] = sk;
-    // Boss 扩展字段（仅 isBoss=true 时输出，向后兼容）
-    if (d.isBoss) {
-      j["isBoss"] = true;
+    // 精英扩展字段（仅 isElite=true 时输出）
+    if (d.isElite) {
+      j["isElite"] = true;
       j["aggroRange"] = d.aggroRange;
       j["chaseSpeed"] = d.chaseSpeed;
       j["attackRange"] = d.attackRange;
@@ -659,6 +458,125 @@ bool GameData::replaceShops(const Json& obj) {
     next[d.shopId] = d;
   }
   shops_ = std::move(next);
+  return true;
+}
+
+// ---------- 技能序列化 / 热替换（世界编辑器技能配置用） ----------
+// BuffType → JSON 字符串（与 SkillDef::buffFromStr 互逆）
+static const char* buffToString(BuffType b) {
+  switch (b) {
+    case BuffType::ATK: return "atk";
+    case BuffType::DEF: return "def";
+    case BuffType::MOVE_SLOW: return "move_slow";
+    case BuffType::REGEN: return "regen";
+    case BuffType::THORNS: return "thorns";
+    case BuffType::BLEED: return "bleed";
+    case BuffType::DEF_DOWN: return "def_down";
+    case BuffType::ATK_DOWN: return "atk_down";
+    case BuffType::STUN: return "stun";
+    case BuffType::SUPER_ARMOR: return "super_armor";
+    case BuffType::SPEED: return "speed";
+    default: return "none";
+  }
+}
+static const char* targetToString(SkillTarget t) {
+  switch (t) {
+    case SkillTarget::SELF: return "self";
+    case SkillTarget::ENEMY: return "enemy";
+    case SkillTarget::AOE: return "aoe";
+    default: return "self";
+  }
+}
+static const char* effectToString(SkillEffect e) {
+  switch (e) {
+    case SkillEffect::DAMAGE: return "damage";
+    case SkillEffect::HEAL: return "heal";
+    case SkillEffect::BUFF: return "buff";
+    default: return "none";
+  }
+}
+
+std::string GameData::skillsToJson() const {
+  // 按 ID 排序输出
+  std::vector<uint32_t> ids;
+  ids.reserve(skills_.size());
+  for (const auto& [id, d] : skills_) { (void)d; ids.push_back(id); }
+  std::sort(ids.begin(), ids.end());
+  Json arr = Json::array();
+  for (uint32_t id : ids) {
+    const SkillDef& d = skills_.at(id);
+    Json j = Json::object();
+    j["id"] = (int64_t)d.id;
+    j["name"] = d.name;
+    j["desc"] = d.desc;
+    j["icon"] = d.icon;
+    j["target"] = targetToString(d.target);
+    j["effect"] = effectToString(d.effect);
+    j["mana"] = d.manaCost;
+    j["cooldownMs"] = (int64_t)d.cooldownMs;
+    j["range"] = d.range;
+    j["radius"] = d.radius;
+    j["dmgMul"] = d.dmgMul;
+    j["flatDmg"] = d.flatDmg;
+    j["heal"] = d.heal;
+    j["buffType"] = buffToString(d.buffType);
+    j["buffValue"] = d.buffValue;
+    j["buffDur"] = d.buffDurSec;
+    j["lifesteal"] = d.lifesteal;
+    j["castTimeMs"] = (int64_t)d.castTimeMs;
+    j["cancelOnMove"] = d.castCancelOnMove ? 1 : 0;
+    j["cancelOnHit"] = d.castCancelOnHit ? 1 : 0;
+    j["knockback"] = d.knockback;
+    j["superArmor"] = d.superArmor ? 1 : 0;
+    arr.push_back(j);
+  }
+  Json root = Json::object();
+  Json ss = Json::array();
+  for (uint32_t sid : starterSkills_) ss.push_back(Json((int64_t)sid));
+  root["starterSkills"] = ss;
+  root["skills"] = arr;
+  return root.dump();
+}
+
+bool GameData::replaceSkills(const Json& obj) {
+  if (obj.type() != Json::Type::Object) return false;
+  std::unordered_map<uint32_t, SkillDef> next;
+  if (obj.has("skills") && obj.at("skills").type() == Json::Type::Array) {
+    for (const auto& j : obj.at("skills").asArray()) {
+      SkillDef s;
+      s.id = (uint32_t)j.at("id").asInt();
+      if (s.id == 0) continue;
+      s.name = j.at("name").asString();
+      s.desc = j.at("desc").asString();
+      s.icon = j.at("icon").asString();
+      s.target = SkillDef::targetFromStr(j.at("target").asString());
+      s.effect = SkillDef::effectFromStr(j.at("effect").asString());
+      s.manaCost = j.at("mana").asNumber();
+      s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
+      s.range = j.at("range").asNumber();
+      s.radius = j.at("radius").asNumber();
+      s.dmgMul = j.at("dmgMul").asNumber();
+      s.flatDmg = j.at("flatDmg").asNumber();
+      s.heal = j.at("heal").asNumber();
+      s.buffType = SkillDef::buffFromStr(j.at("buffType").asString());
+      s.buffValue = j.at("buffValue").asNumber();
+      s.buffDurSec = j.at("buffDur").asNumber();
+      s.lifesteal = j.at("lifesteal").asNumber();
+      s.castTimeMs = (uint16_t)(j.has("castTimeMs") ? j.at("castTimeMs").asInt() : 0);
+      s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
+      s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
+      s.knockback = j.has("knockback") ? j.at("knockback").asNumber() : 0;
+      s.superArmor = j.has("superArmor") && j.at("superArmor").asInt() != 0;
+      next[s.id] = s;
+    }
+  }
+  skills_ = std::move(next);
+  // 起始技能
+  if (obj.has("starterSkills") && obj.at("starterSkills").type() == Json::Type::Array) {
+    starterSkills_.clear();
+    for (const auto& sj : obj.at("starterSkills").asArray())
+      starterSkills_.push_back((uint32_t)sj.asInt());
+  }
   return true;
 }
 
