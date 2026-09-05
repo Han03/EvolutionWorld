@@ -15,6 +15,10 @@
  * 刷新页面后由 boot.js 检测 enabled 自动恢复运行，任务进度以服务端为准。
  */
 
+// 确定性物理/地形（与服务端逐位一致，用于空洞绕行与走位）
+import { circleBlocked } from './predict.js';
+import { terrainBlocked } from './terrain.js';
+
 // ---------------------------------------------------------------------------
 // 内部状态
 // ---------------------------------------------------------------------------
@@ -51,6 +55,12 @@ const S_ = {
   _combatNoDmg: 0,      // 连续无伤害攻击次数
   _skipWids: new Map(), // wid -> 跳过截止时间（幽灵怪/异常目标容错）
   _pickupTries: new Map(), // 掉落物 wid -> 连续拾取次数（拾取无响应容错）
+
+  // 走位攻击 / 空洞绕行
+  _kiteUntil: 0,        // 攻击后走位窗口截止时间（期间横向移动躲避怪物攻击）
+  _kiteSide: 1,         // 走位绕圈方向（交替）
+  _moveSnap: null,      // 卡住检测：上次位置快照 {x,z,at}
+  _moveCtx: '',         // 卡住检测：当前移动上下文（区分目标）
 
   // 阶段统计
   stats: {
@@ -225,16 +235,31 @@ export function tick(now) {
   const selfPos = S.predictor.predicted();
   const self = { x: selfPos.x, z: selfPos.z };
 
-  // ── 1. 战斗中：攻击循环 ──
+  // ── 1. 战斗中：攻击循环（走位攻击：攻击 → 冷却期横向绕圈，低血拉开） ──
   if (S_.attackWid) {
     const v = S.entities.views.get(S_.attackWid);
     if (!v || v.dying || (v.hp !== undefined && v.hp <= 0)) {
       stopCombat(); // 目标死亡/消失
     } else {
+      const now = performance.now();
       const d = Math.hypot(v.x - self.x, v.z - self.z);
+      const lowHp = lowHpNow();
       if (d > CFG.ATK_RANGE + 0.8) {
-        // 目标太远：追上去
-        S.input.clickTarget = { x: v.x, z: v.z };
+        // 太远：低血先拉开（喝血瓶回血），否则追上去
+        if (lowHp) kiteStep(v, true);
+        else {
+          const r = goto(v.x, v.z, 'chase');
+          if (!r.ok) { // 目标不可达/无路（空洞隔开）→ 放弃换目标
+            log(`⚠️ 目标 wid=${S_.attackWid} 不可达（${r.reason}），放弃`);
+            S_._skipWids.set(S_.attackWid, performance.now() + 30000);
+            stopCombat();
+            S_.questDirty = true;
+            return;
+          }
+        }
+      } else if (now < S_.kiteUntil) {
+        // 攻击冷却中：走位躲避（绕圈；低血径向拉开）
+        kiteStep(v, lowHp);
       } else {
         S.input.clickTarget = null;
         // 幽灵容错：hp 长时间无变化（服务端已失活但视图残留）→ 放弃换目标
@@ -459,7 +484,11 @@ function advanceGoal(now) {
       const npc = nearestNpc(g.npcWid);
       if (!npc) { log('⚠️ 视野内无 NPC，先探索寻找'); failGoal(); return; }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
-      if (d > CFG.NPC_RANGE) { S.input.clickTarget = { x: npc.x, z: npc.z }; return; }
+      if (d > CFG.NPC_RANGE) {
+        const r = goto(npc.x, npc.z, 'npc');
+        if (!r.ok) { log('⚠️ 任务 NPC 不可达，放弃该子目标'); failGoal(); }
+        return;
+      }
       S.input.clickTarget = null;
       // 已到 NPC 旁：执行操作
       if (g.type === 'accept') {
@@ -483,7 +512,11 @@ function advanceGoal(now) {
 
     case 'reach': {
       const d = Math.hypot(g.x - self.x, g.z - self.z);
-      if (d > CFG.MOVE_REACH) { S.input.clickTarget = { x: g.x, z: g.z }; return; }
+      if (d > CFG.MOVE_REACH) {
+        const r = goto(g.x, g.z, 'reach');
+        if (!r.ok) { log(`⚠️ 目标区域 (${g.x.toFixed(0)},${g.z.toFixed(0)}) 不可达，放弃该子目标`); failGoal(); }
+        return;
+      }
       S.input.clickTarget = null;
       log(`📍 到达目标区域 (${g.x.toFixed(0)},${g.z.toFixed(0)})，等待任务判定`);
       finishGoal();
@@ -493,7 +526,11 @@ function advanceGoal(now) {
 
     case 'explore': {
       const d = Math.hypot(g.x - self.x, g.z - self.z);
-      if (d > CFG.MOVE_REACH) { S.input.clickTarget = { x: g.x, z: g.z }; return; }
+      if (d > CFG.MOVE_REACH) {
+        const r = goto(g.x, g.z, 'explore');
+        if (!r.ok) { finishGoal(); return; } // 探索点不可达 → 换方向
+        return;
+      }
       S.input.clickTarget = null;
       finishGoal();
       return;
@@ -505,12 +542,25 @@ function advanceGoal(now) {
       if (!target) {
         // 目标怪不在视野：去最近可能的区域（杀任意怪/探索）
         const any = nearestMonster();
-        if (any) { S.input.clickTarget = { x: any.x, z: any.z }; return; }
+        if (any) {
+          const r = goto(any.x, any.z, 'hunt');
+          if (!r.ok) { finishGoal(); }
+          return;
+        }
         finishGoal(); // 无怪，交给刷怪探索
         return;
       }
       const d = Math.hypot(target.x - self.x, target.z - self.z);
-      if (d > CFG.ATK_RANGE + 0.8) { S.input.clickTarget = { x: target.x, z: target.z }; return; }
+      if (d > CFG.ATK_RANGE + 0.8) {
+        const r = goto(target.x, target.z, 'kill');
+        if (!r.ok) {
+          log(`⚠️ 目标怪不可达（${r.reason}），换目标`);
+          S_._skipWids.set(target.wid, performance.now() + 30000);
+          S_.questDirty = true;
+          return;
+        }
+        return;
+      }
       S.input.clickTarget = null;
       beginCombat(target.wid);
       combatAttack(target);
@@ -522,7 +572,15 @@ function advanceGoal(now) {
       const drop = nearestDrop(g.itemId);
       if (drop) {
         const d = Math.hypot(drop.x - self.x, drop.z - self.z);
-        if (d > CFG.PICKUP_RANGE) { S.input.clickTarget = { x: drop.x, z: drop.z }; return; }
+        if (d > CFG.PICKUP_RANGE) {
+          const r = goto(drop.x, drop.z, 'pick');
+          if (!r.ok) {
+            S.entities.views.delete(drop.wid); // 掉落物不可达（空洞隔开）→ 本地剔除
+            S_._pickupTries.set(drop.wid, 99);
+            return;
+          }
+          return;
+        }
         S.input.clickTarget = null;
         net.sendPickup(drop.wid);
         S_._pickupTries.set(drop.wid, (S_._pickupTries.get(drop.wid) || 0) + 1);
@@ -538,7 +596,11 @@ function advanceGoal(now) {
       const target = pickDropMonster(g.itemId);
       if (target) {
         const d = Math.hypot(target.x - self.x, target.z - self.z);
-        if (d > CFG.ATK_RANGE + 0.8) { S.input.clickTarget = { x: target.x, z: target.z }; return; }
+        if (d > CFG.ATK_RANGE + 0.8) {
+          const r = goto(target.x, target.z, 'kill');
+          if (!r.ok) { S_._skipWids.set(target.wid, performance.now() + 30000); return; }
+          return;
+        }
         S.input.clickTarget = null;
         beginCombat(target.wid);
         combatAttack(target);
@@ -546,7 +608,11 @@ function advanceGoal(now) {
       }
       // 3) 无对应怪 → 兜底刷怪
       const any = nearestMonster();
-      if (any) { S.input.clickTarget = { x: any.x, z: any.z }; return; }
+      if (any) {
+        const r = goto(any.x, any.z, 'hunt');
+        if (!r.ok) { finishGoal(); }
+        return;
+      }
       finishGoal();
       return;
     }
@@ -557,7 +623,11 @@ function advanceGoal(now) {
       const npc = nearestNpcByTag(NPC_TAG_SHOP);
       if (!npc) { log('⚠️ 未找到商店 NPC'); failGoal(); return; }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
-      if (d > CFG.NPC_RANGE) { S.input.clickTarget = { x: npc.x, z: npc.z }; return; }
+      if (d > CFG.NPC_RANGE) {
+        const r = goto(npc.x, npc.z, 'npc');
+        if (!r.ok) { log('⚠️ 商店 NPC 不可达，放弃购买'); failGoal(); }
+        return;
+      }
       S.input.clickTarget = null;
       if (!S.shopData) { net.sendShopOpen(npc.wid); return; }
       const price = shopPrice(g.itemId);
@@ -581,7 +651,11 @@ function advanceGoal(now) {
       const npc = nearestNpcByTag(NPC_TAG_BLACKSMITH);
       if (!npc) { log('⚠️ 未找到铁匠 NPC'); failGoal(); return; }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
-      if (d > CFG.NPC_RANGE) { S.input.clickTarget = { x: npc.x, z: npc.z }; return; }
+      if (d > CFG.NPC_RANGE) {
+        const r = goto(npc.x, npc.z, 'npc');
+        if (!r.ok) { log('⚠️ 铁匠 NPC 不可达，放弃强化'); failGoal(); }
+        return;
+      }
       S.input.clickTarget = null;
       net.sendEnhance(g.instId, false);
       log(`🔨 强化装备 ${itemName(g.itemId)} +${g.level}`);
@@ -593,7 +667,11 @@ function advanceGoal(now) {
       const npc = nearestNpcByTag(NPC_TAG_CRAFT);
       if (!npc) { log('⚠️ 未找到合成 NPC'); failGoal(); return; }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
-      if (d > CFG.NPC_RANGE) { S.input.clickTarget = { x: npc.x, z: npc.z }; return; }
+      if (d > CFG.NPC_RANGE) {
+        const r = goto(npc.x, npc.z, 'npc');
+        if (!r.ok) { log('⚠️ 合成 NPC 不可达，放弃合成'); failGoal(); }
+        return;
+      }
       S.input.clickTarget = null;
       net.sendCraft(g.recipeId, g.count || 1);
       S_._lastSupplyAt = performance.now();
@@ -606,6 +684,99 @@ function advanceGoal(now) {
       return;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 移动辅助（空洞绕行 + 卡住检测）
+// 游戏为路径地图（大量空洞/不可达区）：直线点击寻路会卡在空洞边缘，
+// 这里统一封装：目标可达性校验 → 前方探点 → 左右扫描绕障 → 卡住兜底。
+// ---------------------------------------------------------------------------
+function goto(tx, tz, ctx = 'move') {
+  const S = S_.S;
+  const self = S.predictor.predicted();
+  const now = performance.now();
+
+  // 1) 目标点本身不可达（空洞/深水/悬崖）→ 放弃，调用方换目标
+  if (terrainBlocked(tx, tz)) return { ok: false, reason: 'target-blocked' };
+
+  const d = Math.hypot(tx - self.x, tz - self.z);
+  if (d < 0.6) { S.input.clickTarget = null; return { ok: true, done: true }; }
+
+  const ux = (tx - self.x) / d, uz = (tz - self.z) / d;
+
+  // 2) 卡住检测：3.5s 内位移 < 0.4m → 尝试绕障，绕不动则判定卡死
+  if (!S_._moveSnap || S_._moveCtx !== ctx) {
+    S_._moveSnap = { x: self.x, z: self.z, at: now }; S_._moveCtx = ctx;
+  } else {
+    const moved = Math.hypot(self.x - S_._moveSnap.x, self.z - S_._moveSnap.z);
+    if (moved > 0.4) { S_._moveSnap = { x: self.x, z: self.z, at: now }; }
+    else if (now - S_._moveSnap.at > 3500) {
+      S_._moveSnap = { x: self.x, z: self.z, at: now };
+      const off = findClearOffset(self.x, self.z, ux, uz);
+      if (off) { S.input.clickTarget = { x: self.x + off.x * 4, z: self.z + off.z * 4 }; return { ok: true, detour: true }; }
+      return { ok: false, reason: 'stuck' };
+    }
+  }
+
+  // 3) 前方 2.2m 探点被挡（空洞/悬崖）→ 左右扫描绕障
+  if (circleBlocked(self.x + ux * 2.2, self.z + uz * 2.2, 0.5)) {
+    const off = findClearOffset(self.x, self.z, ux, uz);
+    if (off) { S.input.clickTarget = { x: self.x + off.x * 4, z: self.z + off.z * 4 }; return { ok: true, detour: true }; }
+    return { ok: false, reason: 'no-route' };
+  }
+
+  // 4) 通畅 → 直线前往
+  S.input.clickTarget = { x: tx, z: tz };
+  return { ok: true };
+}
+
+/** 左右扫描（15°~90°）找第一个前方 2.2m 不被挡的方向向量 */
+function findClearOffset(x, z, ux, uz) {
+  for (const deg of [15, 30, 45, 60, 75, 90]) {
+    const a = deg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    for (const s of [1, -1]) {
+      const rx = ux * ca - s * uz * sa;
+      const rz = s * ux * sa + uz * ca;
+      if (!circleBlocked(x + rx * 2.2, z + rz * 2.2, 0.5)) return { x: rx, z: rz };
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// 战斗走位（kiting）：攻击后横向绕圈移动，避免站着被怪打死
+// ---------------------------------------------------------------------------
+function lowHpNow() {
+  const S = S_.S, st = S.playerStats || {};
+  return !!(st.maxHp && st.hp / st.maxHp < 0.35);
+}
+
+function kiteStep(v, radial) {
+  const S = S_.S;
+  const self = S.predictor.predicted();
+  const dx = v.x - self.x, dz = v.z - self.z;
+  const dist = Math.hypot(dx, dz) || 1;
+  const ux = dx / dist, uz = dz / dist;
+  let tx, tz;
+  if (radial) {
+    // 低血：径向远离怪物（逃跑拉开）
+    tx = self.x + ux * 3.2; tz = self.z + uz * 3.2;
+  } else {
+    // 绕圈：垂直攻击方向横移（保持可攻击距离附近打转）
+    S_._kiteSide = -S_._kiteSide;
+    tx = self.x - uz * 1.7 * S_._kiteSide;
+    tz = self.z + ux * 1.7 * S_._kiteSide;
+    if (circleBlocked(tx, tz, 0.5)) {
+      tx = self.x + uz * 1.7 * S_._kiteSide;
+      tz = self.z - ux * 1.7 * S_._kiteSide;
+    }
+  }
+  if (circleBlocked(tx, tz, 0.5)) {
+    // 双向都挡 → 径向退，仍挡则原地
+    tx = self.x - ux * 2.2; tz = self.z - uz * 2.2;
+    if (circleBlocked(tx, tz, 0.5)) { S.input.clickTarget = null; return; }
+  }
+  S.input.clickTarget = { x: tx, z: tz };
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +801,8 @@ function combatAttack(v) {
   if (now - S_.lastAttackAt >= CFG.ATK_CD_MS) {
     net.sendAttack(v.wid, 0);
     S_.lastAttackAt = now;
+    // 攻击后进入走位窗口：冷却期间横向绕圈躲避怪物攻击，不站着对打
+    S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
   }
   // 技能为辅（仅在目标血量较高、冷却好时补充，不阻塞普攻）
   const skill = bestOffensiveSkill();
@@ -726,6 +899,7 @@ function nearestMonster() {
     if (v.kind !== 'monster' || v.dying) continue;
     if (v.hp !== undefined && v.hp <= 0) continue;
     if (S_._skipWids.has(v.wid) && S_._skipWids.get(v.wid) > performance.now()) continue;
+    if (terrainBlocked(v.x, v.z)) continue; // 不可达（空洞隔开）→ 不选
     const d = Math.hypot(v.x - self.x, v.z - self.z);
     if (d < bd) { bd = d; best = v; }
   }
@@ -750,6 +924,7 @@ function pickKillTarget(key) {
     if (v.hp !== undefined && v.hp <= 0) continue;
     if (S_._skipWids.has(v.wid) && S_._skipWids.get(v.wid) > performance.now()) continue;
     if (nameSet.size && !nameSet.has(v.name)) continue; // 指定类型才打
+    if (terrainBlocked(v.x, v.z)) continue; // 目标站在空洞/不可达区（路径隔开）→ 不选
     const d = Math.hypot(v.x - self.x, v.z - self.z);
     if (d < bd) { bd = d; best = v; }
   }
