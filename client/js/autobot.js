@@ -106,7 +106,8 @@ const CFG = {
   HEAL_SKILL_AT: 0.55,      // 血量低于 55% 时优先使用治疗/回血技能（免费，先于血瓶）
   BUFF_REFRESH_MS: 20000,   // 自身增益技能（攻击/防御/移速等）刷新间隔
   COMBAT_SAFE_MIN: 2.2,     // 与目标距离低于该值立即径向拉开（避免贴身受伤）
-  COMBAT_KEEP_DIST: 3.6,    // 战斗走位保持的目标距离（打得到且不易被近战贴身）
+  COMBAT_KEEP_DIST: 3.2,    // 战斗走位保持的目标距离（普攻射程 5m 打得到，怪近战 1.6m 打不到）
+  STUCK_MS: 1200,           // 想动但位移≈0 持续该时长 → 判定卡住并脱困
   SKILL_CD_TOL_MS: 150,     // 技能冷却就绪判定容忍（服务端 cdMs 精确到秒的余量）
   GOAL_TIMEOUT_MS: 45000,  // 子目标超时
   GRIND_EXPLORE_M: 40,     // 无怪时探索距离
@@ -262,7 +263,33 @@ export function tick(now) {
   const selfPos = S.predictor.predicted();
   const self = { x: selfPos.x, z: selfPos.z };
 
-  // ── 0.5 顺手拾取：范围内掉落物（任意状态不 goto，不中断当前目标） ──
+  // ── 0.5 卡住脱困：有移动意图但位移≈0 持续超阈值 → 换向/放弃目标，避免原地挨打 ──
+  if (S.input && S.input.clickTarget) {
+    const dp = S_._lastSelfPos ? Math.hypot(self.x - S_._lastSelfPos.x, self.z - S_._lastSelfPos.z) : 1;
+    S_._lastSelfPos = { x: self.x, z: self.z };
+    if (dp < 0.04) {
+      if (!S_._stuckSince) S_._stuckSince = now;
+      else if (now - S_._stuckSince > CFG.STUCK_MS) {
+        S_._stuckSince = 0;
+        log('⚠️ 检测到卡住，强制脱困');
+        if (S_.attackWid) {
+          // 战斗中：强拉脱离威胁 + 放弃该目标（换目标继续打）
+          const v = S.entities.views.get(S_.attackWid);
+          if (v) fleeFrom(v, 8);
+          S_._skipWids.set(S_.attackWid, performance.now() + 30000);
+          stopCombat();
+          S_.questDirty = true;
+        } else {
+          // 行走中：8 方向大距离扫描找可走点（脱窄缝/障碍），仍无则停下等下一次规划
+          const p = findEscapePoint(self, 1, 0, 4);
+          S.input.clickTarget = p || null;
+        }
+        return;
+      }
+    } else S_._stuckSince = 0;
+  }
+
+  // ── 0.5b 顺手拾取：范围内掉落物（任意状态不 goto，不中断当前目标） ──
   if (tryPickupNearby(self, false)) return;
 
   // ── 1. 战斗中：攻击循环（走位攻击：攻击 → 冷却期横向绕圈，低血拉开） ──
@@ -291,6 +318,14 @@ export function tick(now) {
       } else if (d < CFG.COMBAT_SAFE_MIN) {
         // 贴身保护：过近立即径向拉开，维持安全距离（避免站着被怪贴身打）
         kiteStep(v, true);
+        if (!S.input.clickTarget) {
+          // 贴身且无路可退（被地形夹住）→ 强制大距离逃跑并放弃该目标，避免原地挨打
+          fleeFrom(v, 10);
+          S_._skipWids.set(S_.attackWid, performance.now() + 30000);
+          stopCombat();
+          S_.questDirty = true;
+          return;
+        }
       } else if (now < S_.kiteUntil) {
         if (now < S_._castLockUntil) {
           // 移动打断技能的前摇锁定：原地等前摇结算
@@ -460,7 +495,7 @@ function pickMaintenanceAction(now) {
 
   // a) 血量偏低且血瓶不足 → 补给（补给失败冷却期内跳过，避免反复跑商店）
   const hpPots = invCount(potionOf('hp'));
-  if (hpPots < CFG.HP_POTION_KEEP && now < S_._supplyFailAt) {
+  if (hpPots < CFG.HP_POTION_KEEP && now >= S_._supplyFailAt) {
     if (now - S_._lastSupplyAt > 2000) {
       const buy = findShopEntryFor('hp');
       if (buy) return { type: 'buyConsumable', itemId: buy.itemId, count: CFG.HP_POTION_KEEP - hpPots };
@@ -469,7 +504,7 @@ function pickMaintenanceAction(now) {
     }
   }
   const mpPots = invCount(potionOf('mp'));
-  if (mpPots < CFG.MP_POTION_KEEP && now < S_._supplyFailAt) {
+  if (mpPots < CFG.MP_POTION_KEEP && now >= S_._supplyFailAt) {
     if (now - S_._lastSupplyAt > 2000) {
       const buy = findShopEntryFor('mp');
       if (buy) return { type: 'buyConsumable', itemId: buy.itemId, count: CFG.MP_POTION_KEEP - mpPots };
@@ -872,7 +907,7 @@ function handleLowHp(now) {
   }
   // 2b) 无血瓶 → 前往商店补给 / 合成血瓶（交给 goal 流程执行；补给失败冷却期内原地警戒）
   if (!S_.goal || (S_.goal.type !== 'buyConsumable' && S_.goal.type !== 'craftConsumable')) {
-    const buy = now < S_._supplyFailAt ? findShopEntryFor('hp') : null;
+    const buy = now >= S_._supplyFailAt ? findShopEntryFor('hp') : null;
     const craft = findCraftFor('hp');
     if (buy) {
       setGoal({ type: 'buyConsumable', itemId: buy.itemId, count: CFG.HP_POTION_KEEP });
@@ -947,28 +982,38 @@ function kiteStep(v, radial) {
   const ux = dx / dist, uz = dz / dist;
   let tx, tz;
   if (radial) {
-    // 低血/贴身：径向远离怪物；落点被挡则旋转角度绕行（避免卡墙/卡怪原地挨打）
-    const p = findEscapePoint(self, ux, uz, 3.2);
-    if (!p) { S.input.clickTarget = null; return; }
-    tx = p.x; tz = p.z;
-  } else if (dist < 2.6) {
-    // 偏近（未到贴身线但已进入威胁区）：先径向退到安全距离，再绕圈
-    const p = findEscapePoint(self, ux, uz, 3.0);
+    // 低血/贴身：径向远离怪物（方向=怪物反方向）；落点被挡则旋转角度绕行（避免卡墙/卡怪原地挨打）
+    const p = findEscapePoint(self, -ux, -uz, 3.2);
     if (!p) { S.input.clickTarget = null; return; }
     tx = p.x; tz = p.z;
   } else {
-    // 绕圈：垂直攻击方向横移（保持可攻击距离附近打转）
-    S_._kiteSide = -S_._kiteSide;
-    tx = self.x - uz * 1.7 * S_._kiteSide;
-    tz = self.z + ux * 1.7 * S_._kiteSide;
-    if (circleBlocked(tx, tz, 0.5)) {
-      tx = self.x + uz * 1.7 * S_._kiteSide;
-      tz = self.z - ux * 1.7 * S_._kiteSide;
+    // 风筝走位：始终往怪物反方向移动，维持 COMBAT_KEEP_DIST 安全距离
+    // 怪逼近 → 径向退到目标距离；拉开太远 → 微进保持射程；合适 → 小幅横移
+    const keep = CFG.COMBAT_KEEP_DIST;
+    if (dist < keep - 0.3) {
+      // 怪过近 → 往怪物反方向退（退到 keep 距离）
+      const p = findEscapePoint(self, -ux, -uz, Math.min(keep - dist + 0.6, 3.0));
+      if (!p) { S.input.clickTarget = null; return; }
+      tx = p.x; tz = p.z;
+    } else if (dist > keep + 0.8) {
+      // 拉开太远 → 朝怪微进（保持普攻/技能射程）
+      const p = findEscapePoint(self, ux, uz, 1.2);
+      if (!p) { S.input.clickTarget = null; return; }
+      tx = p.x; tz = p.z;
+    } else {
+      // 距离合适 → 小幅横移（不贴近也不远离，保持环形走位）
+      S_._kiteSide = -S_._kiteSide;
+      tx = self.x - uz * 1.0 * S_._kiteSide;
+      tz = self.z + ux * 1.0 * S_._kiteSide;
+      if (circleBlocked(tx, tz, 0.5)) {
+        tx = self.x + uz * 1.0 * S_._kiteSide;
+        tz = self.z - ux * 1.0 * S_._kiteSide;
+      }
     }
   }
   if (circleBlocked(tx, tz, 0.5)) {
-    // 兜底：角度扫描找可走点，仍无 → 原地
-    const p = findEscapePoint(self, ux, uz, 2.2);
+    // 兜底：角度扫描（远离怪方向优先）找可走点，仍无 → 原地
+    const p = findEscapePoint(self, -ux, -uz, 2.2);
     if (!p) { S.input.clickTarget = null; return; }
     tx = p.x; tz = p.z;
   }
@@ -1594,7 +1639,7 @@ function bestOffensiveSkill(mp, dist) {
     if (kind !== 'damage' && kind !== 'debuff') continue; // 只要伤害/减益
     const score = skillOffenseScore(s);
     if (score <= 0) continue;
-    if ((s.mana || 0) > mp) continue;                                  // 蓝量不足不用
+    if ((s.mana || 0) > 0 && s.mana > mp) continue;                  // 蓝量不足不用（蓝耗 0 的技能不耗蓝可用）
     if (!skillReady(s)) continue;                                      // 冷却未就绪
     if (dist !== undefined) {
       const reach = Math.max(s.range || 5, CFG.ATK_RANGE);             // 施法距离元数据
