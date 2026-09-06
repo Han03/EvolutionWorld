@@ -75,14 +75,47 @@ bool generateWorld(World& w, const Config& cfg) {
     }
   };
 
-  // 沿两点连线标记窄路（等间距圆盘拼接）
-  auto markRoad = [&](double x1, double z1, double x2, double z2, double halfW) {
+  // 谐波形变岛屿：r(θ)=R·(1+A1·sin(3θ+φ1)+A2·sin(5θ+φ2))
+  // 海岸线不规则（海湾/半岛），摆脱正圆盘
+  auto markIsland = [&](double cx, double cz, double R) {
+    double A1 = 0.08 + rng.next() * 0.14;
+    double A2 = 0.08 + rng.next() * 0.14;
+    double f1 = rng.next() * kTwoPi;
+    double f2 = rng.next() * kTwoPi;
+    double scan = R * 1.35 + 2.0;
+    int x0 = std::max(0, (int)std::floor(cx - scan) + OFF);
+    int x1 = std::min(N - 1, (int)std::floor(cx + scan) + OFF);
+    int z0 = std::max(0, (int)std::floor(cz - scan) + OFF);
+    int z1 = std::min(N - 1, (int)std::floor(cz + scan) + OFF);
+    for (int gz = z0; gz <= z1; gz++) {
+      for (int gx = x0; gx <= x1; gx++) {
+        double dx = cellX(gx) - cx, dz = cellZ(gz) - cz;
+        double rr = std::hypot(dx, dz);
+        if (rr <= 1e-6) { grown[(size_t)gz * N + gx] = 1; continue; }
+        double th = std::atan2(dz, dx);
+        double rad = R * (1.0 + A1 * std::sin(3.0 * th + f1)
+                            + A2 * std::sin(5.0 * th + f2));
+        if (rr <= rad) grown[(size_t)gz * N + gx] = 1;
+      }
+    }
+  };
+
+  // 自然陆地连接（沙洲/大陆桥）：宽度渐变（中点鼓起 1.9×）+ 正弦弯曲 + 边缘抖动
+  // 替代人工等宽直路，视觉为"大陆+半岛+沙洲"
+  auto markIsthmus = [&](double x1, double z1, double x2, double z2, double w0) {
     double dx = x2 - x1, dz = z2 - z1;
     double len = std::hypot(dx, dz);
-    int steps = std::max(1, (int)std::ceil(len / (halfW * 0.8)));
+    if (len < 0.5) return;
+    double A = std::min(30.0, len * cfg.worldSandbarBend);   // 弯曲幅度
+    double ph = rng.next() * kTwoPi;
+    double px = -dz / len, pz = dx / len;
+    int steps = std::max(6, (int)std::ceil(len / 3.0));
     for (int s = 0; s <= steps; s++) {
       double t = (double)s / (double)steps;
-      markDisc(x1 + dx * t, z1 + dz * t, halfW);
+      double w = w0 * (1.0 + 0.9 * std::sin(M_PI * t));          // 中点鼓包
+      w *= (1.0 + 0.2 * std::sin(5.0 * M_PI * t + ph));          // 边缘不规则
+      double bend = A * std::sin(M_PI * t + ph);
+      markDisc(x1 + dx * t + px * bend, z1 + dz * t + pz * bend, w);
     }
   };
 
@@ -100,31 +133,31 @@ bool generateWorld(World& w, const Config& cfg) {
   const int ringSlots = std::max(1, numLarge - 1);       // 除中心岛外的大岛数
 
   // 基础环距 + 随机拉伸（1.0~1.4x，岛屿越远越分散）
+  const double R0 = cityR * 1.4;            // 主岛基准半径（放大：70m，中心岛在其上浮动）
   double baseRingDist;
   if (ringSlots <= 1) {
-    baseRingDist = cityR * 2.0 + kGap;
+    baseRingDist = R0 * 2.0 + kGap;
   } else {
-    baseRingDist = (cityR + kGap / 2.0) / std::sin(M_PI / ringSlots);
+    baseRingDist = (R0 + kGap / 2.0) / std::sin(M_PI / ringSlots);
   }
   double ringDistMul = 1.0 + rng.next() * 0.4;   // 1.0~1.4
   double ringDist = baseRingDist * ringDistMul;
-  // 大岛最大半径：不小于 cityR（岛必须能承载城市）
-  double rLargeMax = cityR + 10.0;  // 额外 10m 边缘空间
 
   std::vector<Island> islands;
   islands.reserve(numLarge + numSmall);
 
-  // 1a) 中心岛（城市 0，位于原点）
+  // 1a) 中心岛（城市 0，位于原点，放大 1.4~1.6×cityR）
   {
     Island center;
     center.cx = 0; center.cz = 0;
-    center.r = cityR + rng.next() * 4.0;
+    center.r = R0 + rng.next() * (cityR * 0.2);   // 70~80m
     center.cityIdx = 0;
     islands.push_back(center);
   }
 
   // 1b) 环形大岛：等角度分布 + 轻微角度抖动 + 每岛距离随机浮动
   //     城市 1..X-1 依次分配给第 1..X-1 个大岛（全部保证放置成功）
+  //     环岛相对主岛衰减（0.68~0.90×R0），呈中心大外圈小的群岛形态
   double angJitter = kTwoPi / ringSlots * 0.15;   // 角度抖动量（±15% 间距）
   for (int i = 0; i < ringSlots; i++) {
     double ang = (double)i / (double)ringSlots * kTwoPi
@@ -132,8 +165,9 @@ bool generateWorld(World& w, const Config& cfg) {
     double distJitter = 1.0 + (rng.next() - 0.5) * 0.15;   // ±7.5% 距离浮动
     double cx = std::cos(ang) * ringDist * distJitter;
     double cz = std::sin(ang) * ringDist * distJitter;
-    // 半径在 [cityR, rLargeMax] 内随机（≥cityR 保证岛能承载城市）
-    double r = cityR + rng.next() * (rLargeMax - cityR);
+    // 半径：相对主岛衰减（≥cityR 保证岛能承载城市）
+    double r = R0 * (0.68 + rng.next() * 0.22);
+    if (r < cityR) r = cityR;
 
     Island isle;
     isle.cx = cx; isle.cz = cz; isle.r = r;
@@ -153,7 +187,7 @@ bool generateWorld(World& w, const Config& cfg) {
       if (attempt > 0) r = std::max(sMinR, r * 0.7);
       for (int t = 0; t < 20 && !placed; t++) {
         double ang = rng.next() * kTwoPi;
-        double dist = 25.0 + rng.next() * 90.0;
+        double dist = 40.0 + rng.next() * 200.0;   // 放大世界：小岛散布范围（40~240m）
         double cx = std::cos(ang) * dist;
         double cz = std::sin(ang) * dist;
         bool overlap = false;
@@ -206,9 +240,8 @@ bool generateWorld(World& w, const Config& cfg) {
   }
   for (const auto& e : edgesByDist) {
     if (connected[e.a][e.b]) continue;
-    if (e.dist > ringDist * 1.6) continue;
-    int extra = (int)(rng.next() * 3);
-    for (int k = 0; k < extra; k++) roadPairs.push_back({e.a, e.b});
+    if (e.dist > ringDist * 1.2) continue;    // 冗余沙洲仅限较近岛屿（自然群岛不织密网）
+    if (rng.next() < 0.35) roadPairs.push_back({e.a, e.b});   // 35% 概率加 1 条
   }
 
   // ================================================================
@@ -221,10 +254,27 @@ bool generateWorld(World& w, const Config& cfg) {
     boundMinZ = std::min(boundMinZ, z - r);
     boundMaxZ = std::max(boundMaxZ, z + r);
   };
+  // 任务"到达"目标：提前收集坐标并预留网格范围（防 reach 区超界被裁剪）
+  struct ReachPt { double x, z, r; };
+  std::vector<ReachPt> reachPts;
+  for (const auto& kv : w.quests().quests()) {
+    const QuestDef& qdef = kv.second;
+    for (const auto& obj : qdef.objectives) {
+      if (obj.type != QuestObjType::REACH_LOCATION) continue;
+      if (obj.targetX == 0.0 && obj.targetZ == 0.0) continue;
+      double pad = std::max(obj.radius * 1.5, cfg.worldQuestReachPadM);
+      reachPts.push_back({obj.targetX, obj.targetZ, pad});
+      expandBound(obj.targetX, obj.targetZ, pad + 2.0);
+    }
+  }
   for (const auto& isle : islands) expandBound(isle.cx, isle.cz, isle.r + 2.0);
   for (const auto& rp : roadPairs) {
     expandBound(islands[rp.first].cx, islands[rp.first].cz, roadW + 2.0);
     expandBound(islands[rp.second].cx, islands[rp.second].cz, roadW + 2.0);
+    // 沙洲中点宽度达 1.9×半宽，网格范围需按沙洲最大宽预留
+    double sMaxW = cfg.worldSandbarMinW * 1.9 + 2.0;
+    expandBound(islands[rp.first].cx, islands[rp.first].cz, sMaxW);
+    expandBound(islands[rp.second].cx, islands[rp.second].cz, sMaxW);
   }
   const int pad = 10;
   OFF = (int)std::floor(-std::min(boundMinX, boundMinZ)) + pad;
@@ -236,15 +286,40 @@ bool generateWorld(World& w, const Config& cfg) {
   fprintf(stderr, "[worldinit] 动态网格: %dx%d (off=%d), 覆盖 [%.0f,%.0f]x[%.0f,%.0f]\n",
           N, N, OFF, (double)(-OFF), (double)(N - OFF), (double)(-OFF), (double)(N - OFF));
 
-  // 标记所有岛屿为可通行
+  // 标记所有岛屿为可通行（谐波不规则海岸）
   for (const auto& isle : islands) {
-    markDisc(isle.cx, isle.cz, isle.r);
+    markIsland(isle.cx, isle.cz, isle.r);
   }
-  // 标记道路
+  // 自然陆地连接：沙洲/大陆桥（MST 拓扑不变，全连通）
   for (const auto& rp : roadPairs) {
     const Island& a = islands[rp.first];
     const Island& b = islands[rp.second];
-    markRoad(a.cx, a.cz, b.cx, b.cz, roadW);
+    markIsthmus(a.cx, a.cz, b.cx, b.cz, cfg.worldSandbarMinW);
+  }
+
+  // ================================================================
+  // 3a) 任务"到达"目标：强制生成小型可到达区域并连入主网
+  //     （必须在 BFS 裁剪之前标记，否则会被洪泛裁掉）
+  // ================================================================
+  struct QuestArea { double x, z, r; };
+  std::vector<QuestArea> questAreas;
+  {
+    for (const auto& rp : reachPts) {
+      markDisc(rp.x, rp.z, rp.r);
+      questAreas.push_back({rp.x, rp.z, rp.r});
+      // 用窄沙洲连入最近岛屿，保证 BFS 后可达
+      const Island* best = nullptr; double bd = 1e18;
+      for (const auto& isle : islands) {
+        double d = std::hypot(rp.x - isle.cx, rp.z - isle.cz) - isle.r - rp.r;
+        if (d < bd) { bd = d; best = &isle; }
+      }
+      if (best && bd < 400.0) {
+        markIsthmus(rp.x, rp.z, best->cx, best->cz, cfg.worldSandbarMinW * 0.8);
+      } else {
+        fprintf(stderr, "[worldinit] 警告: reach 目标 (%.0f,%.0f) 距最近岛 %.0fm，无法连入主网\n",
+                rp.x, rp.z, bd);
+      }
+    }
   }
 
   // ================================================================
@@ -408,6 +483,10 @@ bool generateWorld(World& w, const Config& cfg) {
     for (const auto& city : cities) {
       if (std::hypot(x - city.cx, z - city.cz) < city.radius + margin) return true;
     }
+    // 任务"到达"目标区同样豁免（避免出生点被打）
+    for (const auto& qa : questAreas) {
+      if (std::hypot(x - qa.x, z - qa.z) < qa.r + margin) return true;
+    }
     return false;
   };
 
@@ -486,9 +565,9 @@ bool generateWorld(World& w, const Config& cfg) {
 
   size_t walkCount = 0;
   for (size_t i = 0; i < NN; i++) if (mask[i]) walkCount++;
-  fprintf(stderr, "[worldinit] 生成完成：岛屿 %d（大%d + 小%d），城市 %d，道路 %zu 条，"
+  fprintf(stderr, "[worldinit] 生成完成：岛屿 %d（大%d + 小%d），城市 %d，自然连接 %zu 条，任务区 %zu 个，"
           "可通行格 %zu/%zu（%.1f%%），出生点 %zu\n",
-          nIslands, numLarge, numSmall, (int)cities.size(), roadPairs.size(),
+          nIslands, numLarge, numSmall, (int)cities.size(), roadPairs.size(), questAreas.size(),
           walkCount, NN, 100.0 * (double)walkCount / (double)NN, list.size());
   return walkCount > 0;
 }

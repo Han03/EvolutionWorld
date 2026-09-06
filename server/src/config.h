@@ -27,11 +27,14 @@ struct Config {
   double worldCityRadius = 50.0;           // 主城可通行圆盘半径（米），>=100m×100m
   int worldNpcGroupsPerCity = 4;           // 每城 NPC 组别数（每组含基础功能/任务/商店/铁匠各一）
   double worldIslandRingDist = 120.0;      // 大岛环形分布距离参考值（实际由不重叠约束自动求解）
-  double worldSmallIslandMinR = 5.0;       // 小岛最小半径（米）
-  double worldSmallIslandMaxR = 12.0;      // 小岛最大半径（米）
-  double worldRoadWidth = 4.5;             // 岛屿连接道路半宽（米）
-  double worldMonsterFreeRadius = 55.0;    // 主城免怪半径（米）：主城范围内不投放怪物
-  double worldMonsterMaxRadius = 120.0;    // 怪物投放最远距离（米）：越远实力越强
+  double worldSmallIslandMinR = 10.0;      // 小岛最小半径（米）——放大（原 5）
+  double worldSmallIslandMaxR = 22.0;      // 小岛最大半径（米）——放大（原 12）
+  double worldRoadWidth = 4.5;             // 岛屿连接道路半宽（米，沙洲最小宽度退路）
+  double worldSandbarMinW = 8.0;           // 自然陆地连接（沙洲）最小半宽（米）
+  double worldSandbarBend = 0.15;          // 沙洲弯曲幅度（连线长度比例，0~0.3）
+  double worldQuestReachPadM = 10.0;       // 任务"到达"目标最小可到达区半径（米）
+  double worldMonsterFreeRadius = 90.0;    // 主城免怪半径（米）：放大世界适配（原 55）
+  double worldMonsterMaxRadius = 260.0;    // 怪物投放最远距离（米）：覆盖外环岛（原 120）
   int worldMonsterGroups = 30;             // 怪物群数量（相同怪物成群出现）
   int worldMonsterGroupMin = 3;            // 每群怪物数量下限
   int worldMonsterGroupMax = 6;            // 每群怪物数量上限
