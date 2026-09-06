@@ -68,7 +68,7 @@ const S_ = {
   _skillSendLockUntil: 0, // 技能发送串行锁：上个技能前摇+网络余量未过 → 不连发（防服务端替换取消）
   _skillAt: {},         // 技能 id -> 上次施放时间（per-skill 本地节流）
   _lastBuffAt: 0,       // 自身增益技能上次施放时间（刷新节流）
-  _pendingBuy: null,    // 商店购买等待背包确认：{itemId, want, at}（防库存延迟重复购买）
+  _pendingBuy: null,    // 商店购买等待背包确认：{itemId, want, at, tries}（防库存延迟重复购买 / 超时无限重发）
   _moveSnap: null,      // 卡住检测：上次位置快照 {x,z,at}
   _moveCtx: '',         // 卡住检测：当前移动上下文（区分目标）
 
@@ -840,14 +840,24 @@ function advanceGoal(now) {
           return;
         }
         if (performance.now() - pb.at > 6000) {
+          // 补发次数上限：连续 3 次超时补发仍无背包反馈（装备可能已到账并穿戴导致 invCount 查不到 /
+          // 服务端金币不足拒绝且无反馈）→ 放弃本次购买并冷却 15s，避免"无限触发补给超时重发"
+          if (pb.tries >= 3) {
+            S_._pendingBuy = null;
+            log(`⚠️ 补给 ${pb.tries} 次补发均无确认，放弃购买（15s 冷却）：${itemName(pb.itemId)}`);
+            S_._supplyFailAt = performance.now() + 15000;
+            closeNpcPanels();
+            failGoal();
+            return;
+          }
           const lack = pb.want - have;
           const price = shopPrice(pb.itemId);
           if (lack > 0 && price !== null && S.gold >= price) {
-            // 丢包/延迟：补发剩余差量并重置等待，仍等背包确认
+            // 丢包/延迟：补发剩余差量并重置等待，仍等背包确认（tries 递增，超上限即放弃）
             net.sendShopBuy(pb.itemId, lack);
-            S_._pendingBuy = { itemId: pb.itemId, want: pb.want, at: performance.now() };
+            S_._pendingBuy = { itemId: pb.itemId, want: pb.want, at: performance.now(), tries: pb.tries + 1 };
             S_._lastSupplyAt = performance.now();
-            log(`🔄 补给超时重发：${itemName(pb.itemId)} 补 ${lack}`);
+            log(`🔄 补给超时重发：${itemName(pb.itemId)} 补 ${lack}（第 ${pb.tries + 1} 次）`);
             return;
           }
           S_._pendingBuy = null;
@@ -893,7 +903,7 @@ function advanceGoal(now) {
       log(`🛒 购买 ${itemName(g.itemId)} ×${g.count || 1}（-${price}💰）`);
       closeNpcPanels(); // 购买完成后关闭商店面板
       // 进入等待确认：背包达标才结束子目标（防服务端库存延迟 → 下轮重复购买堆积）
-      S_._pendingBuy = { itemId: g.itemId, want: (g.count || 1) + invCount(g.itemId), at: performance.now() };
+      S_._pendingBuy = { itemId: g.itemId, want: (g.count || 1) + invCount(g.itemId), at: performance.now(), tries: 0 };
       S_.questDirty = true;
       return; // 新装备穿戴由维护期的 autoEquipBest() 统一处理（避免 setTimeout 竞态）
     }
@@ -964,6 +974,14 @@ function goto(tx, tz, ctx = 'move') {
   // 1) 目标点本身不可达（空洞/深水/悬崖）→ 放弃，调用方换目标
   if (terrainBlocked(tx, tz)) return { ok: false, reason: 'target-blocked' };
 
+  // 1b) 目标落点碰撞半径检查：格子可走但落点贴墙/贴障碍（角色半径 0.5，容差 0.35 兼顾 1m 窄缝）
+  //     → 从近到远扫描安全落点，避免"到达即卡在墙角/障碍边缘"
+  if (circleBlocked(tx, tz, 0.35)) {
+    const near = findNearWalkable(tx, tz);
+    if (!near) return { ok: false, reason: 'target-blocked' };
+    tx = near.x; tz = near.z;
+  }
+
   const d = Math.hypot(tx - self.x, tz - self.z);
   if (d < 0.6) { S.input.clickTarget = null; return { ok: true, done: true }; }
 
@@ -977,21 +995,30 @@ function goto(tx, tz, ctx = 'move') {
     if (moved > 0.4) { S_._moveSnap = { x: self.x, z: self.z, at: now }; }
     else if (now - S_._moveSnap.at > 3500) {
       S_._moveSnap = { x: self.x, z: self.z, at: now };
-      const off = findClearOffset(self.x, self.z, ux, uz);
-      if (off) { S.input.clickTarget = { x: self.x + off.x * 4, z: self.z + off.z * 4 }; return { ok: true, detour: true }; }
+      const off = findClearOffset(self.x, self.z, ux, uz, 1.6);
+      if (off) { S.input.clickTarget = { x: self.x + off.x * 3, z: self.z + off.z * 3 }; return { ok: true, detour: true }; }
       return { ok: false, reason: 'stuck' };
     }
   }
 
-  // 3) 交由游戏自动寻路（PathFinder A*，input.js 驱动 clickTarget）：
-  //    · A* 已有活跃路径 → 信任路径，不做直线探点干扰（避免打断绕障路线）
-  //    · 无活跃路径 → 才做即时防空洞探测（短距直线兜底）
+  // 3) 碰撞半径感知的即时绕障（性能：每 tick 仅 1 次 O(1) 圆形查询）：
+  //    不论 A* 是否在走，正前方 probe 距离内被角色碰撞半径（容差 0.35）挡住 → 立即绕行并覆盖 clickTarget，
+  //    避免"信任 A* 路径但路径贴墙/穿窄口导致角色撞墙卡住"。
+  //    · A* 活跃：探针贴脸（≤1.0m），只掰开当前朝向，不打断主干绕障路径（绕行点 2.5m）；
+  //    · 无 A*：探针稍远（≤1.4m），直线移动提前发现阻挡（绕行点 4m）；
+  //    · 探针距离随剩余距离缩放，目标已近时不探到目标之外误判。
   const pf = S.input && S.input.pathfinder;
   const pfActive = !!(pf && pf.hasPath());
-  if (!pfActive && circleBlocked(self.x + ux * 2.2, self.z + uz * 2.2, 0.5)) {
-    const off = findClearOffset(self.x, self.z, ux, uz);
-    if (off) { S.input.clickTarget = { x: self.x + off.x * 4, z: self.z + off.z * 4 }; return { ok: true, detour: true }; }
-    return { ok: false, reason: 'no-route' };
+  const probe = pfActive ? Math.min(1.0, Math.max(0.7, d * 0.5)) : Math.min(1.4, Math.max(1.0, d * 0.6));
+  if (circleBlocked(self.x + ux * probe, self.z + uz * probe, 0.35)) {
+    const off = findClearOffset(self.x, self.z, ux, uz, probe);
+    if (off) {
+      const detourDist = pfActive ? 2.5 : 4;
+      S.input.clickTarget = { x: self.x + off.x * detourDist, z: self.z + off.z * detourDist };
+      return { ok: true, detour: true };
+    }
+    if (!pfActive) return { ok: false, reason: 'no-route' };
+    // A* 活跃但贴脸 1.0m 全向被挡：交给 A* 继续（可能正在绕大弯），不强制失败
   }
 
   // 4) 通畅（或 A* 正在走）→ 设置目标点，远程交由自动寻路完成
@@ -999,14 +1026,27 @@ function goto(tx, tz, ctx = 'move') {
   return { ok: true };
 }
 
-/** 左右扫描（15°~90°）找第一个前方 2.2m 不被挡的方向向量 */
-function findClearOffset(x, z, ux, uz) {
+/** 目标落点被碰撞半径挡住（贴墙/贴障碍）→ 从近到远 8 方向扫描安全落点（≤3m），返回 null 表示无可达落点 */
+function findNearWalkable(tx, tz) {
+  for (const dist of [0.5, 1.0, 1.5, 2.0, 3.0]) {
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      const x = tx + Math.cos(a) * dist;
+      const z = tz + Math.sin(a) * dist;
+      if (!circleBlocked(x, z, 0.35)) return { x, z };
+    }
+  }
+  return null;
+}
+
+/** 左右扫描（15°~90°）找第一个前方 dist 米不被挡的方向向量（碰撞半径 0.35，兼顾 1m 窄缝通过性） */
+function findClearOffset(x, z, ux, uz, dist = 2.2) {
   for (const deg of [15, 30, 45, 60, 75, 90]) {
     const a = deg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
     for (const s of [1, -1]) {
       const rx = ux * ca - s * uz * sa;
       const rz = s * ux * sa + uz * ca;
-      if (!circleBlocked(x + rx * 2.2, z + rz * 2.2, 0.5)) return { x: rx, z: rz };
+      if (!circleBlocked(x + rx * dist, z + rz * dist, 0.35)) return { x: rx, z: rz };
     }
   }
   return null;
