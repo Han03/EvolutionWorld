@@ -154,6 +154,10 @@ configureGame({
 // ============================================================================
 // 登录 UI
 // ============================================================================
+// 调试入口：?autostart=1 自动启动 autobot（绕开 DOMContentLoaded/UI 绑定问题）
+if (new URLSearchParams(location.search).get('autostart') === '1') {
+  setTimeout(() => { try { if (!autobot.isRunning()) autobot.start(); } catch (e) { console.error('autostart:', e); } }, 1500);
+}
 initLogin({
   subtitle: '无缝世界 · 固定俯视角大型MMO · 空壳网络游戏服务端',
   hint: '登录后将以 <b>橙色球体</b> 进入无缝世界（固定俯视角）<br/>绿色=其他玩家 · 红色=怪物 · 蓝色=NPC<br/><a href="./editor.html" target="_blank">🛠 地形编辑器（画刷调整地图）</a>',
@@ -705,6 +709,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   setInterval(() => autobot.tick(performance.now()), 200);
   // 刷新页面后若上次运行中 → 自动恢复
   autobot.restore();
+  // 调试入口：URL 带 #ab 时自动启动（自动化实机验证用）
+  if (location.hash === '#ab') setTimeout(() => { if (!autobot.isRunning()) autobot.start(); }, 600);
 
   // 游戏菜单
   const gm = $('game-menu');

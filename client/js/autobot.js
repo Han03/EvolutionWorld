@@ -65,8 +65,10 @@ const S_ = {
   _kiteUntil: 0,        // 攻击后走位窗口截止时间（期间横向移动躲避怪物攻击）
   _kiteSide: 1,         // 走位绕圈方向（交替）
   _castLockUntil: 0,    // 技能前摇走位锁定截止时间（期间静止等前摇结算）
+  _skillSendLockUntil: 0, // 技能发送串行锁：上个技能前摇+网络余量未过 → 不连发（防服务端替换取消）
   _skillAt: {},         // 技能 id -> 上次施放时间（per-skill 本地节流）
   _lastBuffAt: 0,       // 自身增益技能上次施放时间（刷新节流）
+  _pendingBuy: null,    // 商店购买等待背包确认：{itemId, want, at}（防库存延迟重复购买）
   _moveSnap: null,      // 卡住检测：上次位置快照 {x,z,at}
   _moveCtx: '',         // 卡住检测：当前移动上下文（区分目标）
 
@@ -301,11 +303,32 @@ export function tick(now) {
   // ── 0.5b 顺手拾取：范围内掉落物（任意状态不 goto，不中断当前目标） ──
   if (tryPickupNearby(self, false)) return;
 
+  // ── 0.5c 规划/空闲警戒：无战斗、无移动目标时，附近怪进入攻击范围 → 直接反击。
+  //      避免规划/思考/等数据期间站桩被怪白打至残血才逃跑 ──
+  if (!S_.attackWid && !S_.goal && S.input && !S.input.clickTarget) {
+    const threat = nearestMonster();
+    if (threat) {
+      const sp = S.predictor.predicted();
+      const dd = Math.hypot(threat.x - sp.x, threat.z - sp.z);
+      if (dd < CFG.ATK_RANGE + 1.2) {
+        beginCombat(threat.wid);
+        combatAttack(threat);
+        return;
+      }
+    }
+  }
+
   // ── 1. 战斗中：攻击循环（走位攻击：攻击 → 冷却期横向绕圈，低血拉开） ──
   if (S_.attackWid) {
     const v = S.entities.views.get(S_.attackWid);
     if (!v || v.dying || (v.hp !== undefined && v.hp <= 0)) {
       stopCombat(); // 目标死亡/消失
+    } else if (v.invincible) {
+      // 目标进入无敌（AI 恢复态：回血+免疫伤害）：停止攻击并暂时跳过，避免空耗
+      log(`🛡️ 目标 wid=${S_.attackWid} 无敌（恢复态），停止攻击并暂时跳过`);
+      S_._skipWids.set(S_.attackWid, performance.now() + 30000);
+      stopCombat();
+      S_.questDirty = true;
     } else {
       const now = performance.now();
       const d = Math.hypot(v.x - self.x, v.z - self.z);
@@ -804,6 +827,35 @@ function advanceGoal(now) {
     // ---------- 商店 / 强化 / 合成 ----------
     case 'buyEquip':
     case 'buyConsumable': {
+      // 0) 上一笔购买等待背包确认：达标才结束子目标；超时未确认补发差量。
+      //    修复"购买后立即 finishGoal → 服务端库存延迟 → 下轮又判定不足 → 反复购买堆积"
+      if (S_._pendingBuy) {
+        const pb = S_._pendingBuy;
+        const have = invCount(pb.itemId);
+        if (have >= pb.want) {
+          S_._pendingBuy = null;
+          log(`✅ 补给确认：${itemName(pb.itemId)} 背包 ${have}/${pb.want}`);
+          finishGoal();
+          S_.questDirty = true;
+          return;
+        }
+        if (performance.now() - pb.at > 6000) {
+          const lack = pb.want - have;
+          const price = shopPrice(pb.itemId);
+          if (lack > 0 && price !== null && S.gold >= price) {
+            // 丢包/延迟：补发剩余差量并重置等待，仍等背包确认
+            net.sendShopBuy(pb.itemId, lack);
+            S_._pendingBuy = { itemId: pb.itemId, want: pb.want, at: performance.now() };
+            S_._lastSupplyAt = performance.now();
+            log(`🔄 补给超时重发：${itemName(pb.itemId)} 补 ${lack}`);
+            return;
+          }
+          S_._pendingBuy = null;
+          failGoal();
+          return;
+        }
+        return; // 等待确认中：不重复购买、不推进其他动作
+      }
       // 按目标物品匹配售卖商店对应的 NPC（元数据 shopId 驱动），避免找错商店
       const npc = nearestShopNpc(g.itemId) || nearestNpcByTag(NPC_TAG_SHOP);
       if (!npc) {
@@ -840,7 +892,8 @@ function advanceGoal(now) {
       emitStatus();
       log(`🛒 购买 ${itemName(g.itemId)} ×${g.count || 1}（-${price}💰）`);
       closeNpcPanels(); // 购买完成后关闭商店面板
-      finishGoal();
+      // 进入等待确认：背包达标才结束子目标（防服务端库存延迟 → 下轮重复购买堆积）
+      S_._pendingBuy = { itemId: g.itemId, want: (g.count || 1) + invCount(g.itemId), at: performance.now() };
       S_.questDirty = true;
       return; // 新装备穿戴由维护期的 autoEquipBest() 统一处理（避免 setTimeout 竞态）
     }
@@ -930,14 +983,18 @@ function goto(tx, tz, ctx = 'move') {
     }
   }
 
-  // 3) 前方 2.2m 探点被挡（空洞/悬崖）→ 左右扫描绕障
-  if (circleBlocked(self.x + ux * 2.2, self.z + uz * 2.2, 0.5)) {
+  // 3) 交由游戏自动寻路（PathFinder A*，input.js 驱动 clickTarget）：
+  //    · A* 已有活跃路径 → 信任路径，不做直线探点干扰（避免打断绕障路线）
+  //    · 无活跃路径 → 才做即时防空洞探测（短距直线兜底）
+  const pf = S.input && S.input.pathfinder;
+  const pfActive = !!(pf && pf.hasPath());
+  if (!pfActive && circleBlocked(self.x + ux * 2.2, self.z + uz * 2.2, 0.5)) {
     const off = findClearOffset(self.x, self.z, ux, uz);
     if (off) { S.input.clickTarget = { x: self.x + off.x * 4, z: self.z + off.z * 4 }; return { ok: true, detour: true }; }
     return { ok: false, reason: 'no-route' };
   }
 
-  // 4) 通畅 → 直线前往
+  // 4) 通畅（或 A* 正在走）→ 设置目标点，远程交由自动寻路完成
   S.input.clickTarget = { x: tx, z: tz };
   return { ok: true };
 }
@@ -982,11 +1039,13 @@ function handleLowHp(now) {
   }
 
   // 1) 附近有威胁怪物且未脱离 → 径向逃跑（远离最近威胁）
+  //    阈值放宽到 FLEE_SAFE_DIST+8（22m）：怪在逼近但未贴身也持续拉开，
+  //    避免"判定安全→站桩恢复→怪走进挨打"的窗口
   const threat = nearestMonster();
   if (threat) {
     const self = S.predictor.predicted();
     const d = Math.hypot(threat.x - self.x, threat.z - self.z);
-    if (d < CFG.FLEE_SAFE_DIST) {
+    if (d < CFG.FLEE_SAFE_DIST + 8) {
       fleeFrom(threat, d);
       return true;
     }
@@ -1000,9 +1059,11 @@ function handleLowHp(now) {
     const self = S.predictor.predicted();
     castSkill(hs, 0, self.x, self.z);
     log(`💚 残血恢复：使用回复技能 ${hs.name}`);
+    // 治疗前摇（cancelOnMove）期间原地等结算；前摇已过且怪逼近 → 走位拉开
+    if (performance.now() >= S_._castLockUntil) keepKitingFromThreat();
     return true;
   }
-  // 2a) 有血瓶 → 喝血瓶恢复（带节流，等待生效）
+  // 2a) 有血瓶 → 喝血瓶恢复（瞬发无前摇；带节流，等待生效）
   const pot = potionOf('hp');
   if (pot && invCount(pot.id) > 0) {
     if (now - S_._lastFleePotAt > CFG.FLEE_USE_POT_CD) {
@@ -1010,6 +1071,8 @@ function handleLowHp(now) {
       S_._lastFleePotAt = now;
       log('❤️ 残血恢复：使用血瓶');
     }
+    // 喝血瓶瞬发：恢复期间持续规避逼近怪，避免站桩挨打
+    keepKitingFromThreat();
     return true; // 恢复中：本轮不做其他事，等血量回升
   }
   // 2b) 无血瓶 → 前往商店补给 / 合成血瓶（交给 goal 流程执行；补给失败冷却期内原地警戒）
@@ -1063,6 +1126,16 @@ function fleeFrom(threat, dist) {
   S_._fleeSafeCount = 0;
   emitStatus();
   log(`🚨 残血逃跑：远离 ${threat.name || '威胁'}（${Math.round(dist)}m）`);
+}
+
+/** 恢复期间规避走位：最近怪进入警戒范围（FLEE_SAFE_DIST+8）→ 持续拉开，避免站桩挨打 */
+function keepKitingFromThreat() {
+  const threat = nearestMonster();
+  if (!threat) return;
+  const S = S_.S;
+  const self = S.predictor.predicted();
+  const d = Math.hypot(threat.x - self.x, threat.z - self.z);
+  if (d < CFG.FLEE_SAFE_DIST + 8) fleeFrom(threat, d);
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,17 +1214,21 @@ function combatAttack(v) {
     // 触发技能栏冷却与施法特效（原 sendAttack 独立协议无冷却/特效表现）
     const atkSkill = skillDefById(1000);
     if (atkSkill) {
-      castSkill(atkSkill, v.wid, v.x, v.z);
-      if (now - (S_._lastAtkLogAt || 0) > 3000) {
-        S_._lastAtkLogAt = now;
-        log('⚔️ 普攻（技能协议）');
+      // 前摇在途锁拦截时返回 false：不刷新攻击节奏，下轮再补（防普攻被连发取消吞掉）
+      if (castSkill(atkSkill, v.wid, v.x, v.z)) {
+        S_.lastAttackAt = now;
+        // 攻击后进入走位窗口：冷却期间持续走位躲避怪物攻击，不站着对打
+        S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
+        if (now - (S_._lastAtkLogAt || 0) > 3000) {
+          S_._lastAtkLogAt = now;
+          log('⚔️ 普攻（技能协议）');
+        }
       }
     } else {
       net.sendAttack(v.wid, 0); // 兜底：元数据缺失时走旧协议
+      S_.lastAttackAt = now;
+      S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
     }
-    S_.lastAttackAt = now;
-    // 攻击后进入走位窗口：冷却期间持续走位躲避怪物攻击，不站着对打
-    S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
   }
   // 移动施法：走位与技能施放并行（服务端已支持移动中施法，不站桩）
   castCombatSkills(v);
@@ -1170,8 +1247,7 @@ function castCombatSkills(v, mp) {
   if (st.hp !== undefined && st.maxHp && st.hp / st.maxHp < CFG.HP_USE_AT) {
     const hs = readyHealSkill(mp);
     if (hs) {
-      castSkill(hs, 0, self.x, self.z);
-      log(`💚 战斗中使用回复技能 ${hs.name}`);
+      if (castSkill(hs, 0, self.x, self.z)) log(`💚 战斗中使用回复技能 ${hs.name}`);
     } else {
       const pot = potionOf('hp');
       if (pot && invCount(pot) > 0) {
@@ -1184,15 +1260,17 @@ function castCombatSkills(v, mp) {
   // 进攻技能：冷却就绪 + 目标在施法距离内 + 蓝量够
   const skill = bestOffensiveSkill(mp, distToTarget);
   if (skill) {
-    castSkill(skill, v ? v.wid : 0, v ? v.x : self.x, v ? v.z : self.z);
-    log(`🔥 施放技能 ${skill.name}（伤害/减益，距离 ${Math.round(distToTarget)}m）`);
+    if (castSkill(skill, v ? v.wid : 0, v ? v.x : self.x, v ? v.z : self.z)) {
+      log(`🔥 施放技能 ${skill.name}（伤害/减益，距离 ${Math.round(distToTarget)}m）`);
+    }
   }
   // 自身增益技能：冷却好了顺手补（战斗属性提升，减少受伤）
   const buff = readySelfBuffSkill(mp);
   if (buff && now - (S_._lastBuffAt || -1e9) > CFG.BUFF_REFRESH_MS) {
-    castSkill(buff, 0, self.x, self.z);
-    S_._lastBuffAt = now;
-    log(`✨ 施放增益技能 ${buff.name}`);
+    if (castSkill(buff, 0, self.x, self.z)) {
+      S_._lastBuffAt = now;
+      log(`✨ 施放增益技能 ${buff.name}`);
+    }
   }
 }
 
@@ -1284,6 +1362,7 @@ function nearestMonster() {
   for (const v of views().values()) {
     if (v.kind !== 'monster' || v.dying) continue;
     if (v.hp !== undefined && v.hp <= 0) continue;
+    if (v.invincible) continue; // 无敌（恢复态免疫伤害）：不打，避免空耗
     if (S_._skipWids.has(v.wid) && S_._skipWids.get(v.wid) > performance.now()) continue;
     if (terrainBlocked(v.x, v.z)) continue; // 不可达（空洞隔开）→ 不选
     const d = Math.hypot(v.x - self.x, v.z - self.z);
@@ -1326,6 +1405,7 @@ function pickKillTarget(key) {  const nameSet = new Set();
   for (const v of views().values()) {
     if (v.kind !== 'monster' || v.dying) continue;
     if (v.hp !== undefined && v.hp <= 0) continue;
+    if (v.invincible) continue; // 无敌（恢复态）不打
     if (S_._skipWids.has(v.wid) && S_._skipWids.get(v.wid) > performance.now()) continue;
     if (nameSet.size && !nameSet.has(v.name)) continue; // 指定类型才打
     if (terrainBlocked(v.x, v.z)) continue; // 目标站在空洞/不可达区（路径隔开）→ 不选
@@ -1370,6 +1450,7 @@ function pickDropMonster(itemId) {
   for (const v of views().values()) {
     if (v.kind !== 'monster' || v.dying) continue;
     if (v.hp !== undefined && v.hp <= 0) continue;
+    if (v.invincible) continue; // 无敌（恢复态）不打
     if (S_._skipWids.has(v.wid) && S_._skipWids.get(v.wid) > performance.now()) continue;
     const isDrop = dropKeys.has(v.name);
     if (!isDrop) continue;
@@ -1389,6 +1470,7 @@ function findMonsterForGrind() {
   for (const v of views().values()) {
     if (v.kind !== 'monster' || v.dying) continue;
     if (v.hp !== undefined && v.hp <= 0) continue;
+    if (v.invincible) continue; // 无敌（恢复态）不打
     if (S_._skipWids.has(v.wid) && S_._skipWids.get(v.wid) > performance.now()) continue;
     // 不找明显打不过的（hp 远高于自身攻击力*18 的跳过，避免刮痧）
     const atk = stats.attack || 12;
@@ -1805,12 +1887,21 @@ function skillReady(s) {
   const minGap = Math.max(s.cooldownMs || 3000, 2000);
   return performance.now() - lastAt >= minGap;
 }
-/** 施放技能并登记：本地节流；仅"移动打断"技能（cancelOnMove>0）锁走位等前摇，移动施法技能不站桩 */
+/** 施放技能并登记：本地节流；仅"移动打断"技能（cancelOnMove>0）锁走位等前摇，移动施法技能不站桩。
+ *  发送串行锁：上个技能前摇未结算（+网络余量）时返回 false 不发送——
+ *  服务端新技能会"替换"旧施放（casting 被新 cast 取消），连发会导致第一个技能被吞。 */
 function castSkill(s, targetWid, x, z) {
   const S = S_.S;
+  const now = performance.now();
+  if (now < S_._skillSendLockUntil) return false; // 前摇在途：延后到下一决策轮
   S_.net.sendCastSkill(s.id, targetWid, x, z);
-  S_._skillAt[s.id] = performance.now();
-  if (s.cancelOnMove > 0) S_._castLockUntil = performance.now() + CFG.CAST_LOCK_MS;
+  S_._skillAt[s.id] = now;
+  // 前摇时长 + 网络/结算余量内不再发送任何技能（防连发取消）；瞬发技能也留小余量
+  const castMs = Math.max(s.castTimeMs || 0, 0);
+  const settle = castMs + (s.cancelOnMove > 0 ? CFG.CAST_LOCK_MS : 120);
+  S_._skillSendLockUntil = now + settle;
+  if (s.cancelOnMove > 0) S_._castLockUntil = now + CFG.CAST_LOCK_MS;
+  return true;
 }
 /** 战斗技能候选评分：伤害口径（dmgMul×100+flatDmg，兼容旧 damage）+ 减益价值加权 */
 function skillOffenseScore(s) {

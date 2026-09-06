@@ -95,6 +95,8 @@ export class EntityViewManager {
           v.intent.mult = u.speedMult !== undefined ? u.speedMult : 100;
           // 怪物生命值（服务端 INTENT 块对齐）
           if (u.hp !== undefined) { v.hp = u.hp; v.maxHp = u.maxHp; }
+          // 无敌标志（恢复态免疫伤害；更新后才变化，无则保持默认 false）
+          if (u.invincible !== undefined) v.invincible = u.invincible;
         }
         if (u.state !== undefined) v.state = u.state;
       } else {
@@ -159,10 +161,11 @@ export class EntityViewManager {
         tz: e.tz !== undefined ? e.tz : (e.vz || 0),
         mult: e.speedMult !== undefined ? e.speedMult : 100,
       };
-      // 怪物生命值（仇恨血条渲染）
+      // 怪物生命值（仇恨血条渲染）+ 无敌标志（恢复态免疫伤害）
       if (e.kind === KIND.MONSTER) {
         v.hp = e.hp || 0;
         v.maxHp = e.maxHp || 0;
+        v.invincible = !!e.invincible;
       }
       v.hist = [{ t: 0, x: e.x, y: e.y, z: e.z }];
       v.simTime = 0;
@@ -191,6 +194,8 @@ export class EntityViewManager {
       if (e.radius) v.sim.radius = e.radius;
       // 怪物生命值（快照校准）
       if (e.hp !== undefined) { v.hp = e.hp; v.maxHp = e.maxHp; }
+      // 无敌标志（快照校准）
+      if (e.invincible !== undefined) v.invincible = !!e.invincible;
       // NPC 插件：同步 npcId + npcTag（编辑器保存后热生效）
       if (v.kind === 'npc') {
         if (e.npcId !== undefined) v.npcId = e.npcId;

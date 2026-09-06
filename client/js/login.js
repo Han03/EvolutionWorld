@@ -150,6 +150,20 @@ export function initLogin(cfg) {
   createDOM(cfg);
   bindEvents();
   beginSessionCheck();
+  // 调试入口：?acct=xxx&pwd=yyy&act=register|login 自动填充并提交（绕开手动输入）
+  const qp = new URLSearchParams(location.search);
+  const qAcct = qp.get('acct'), qPwd = qp.get('pwd'), qAct = qp.get('act');
+  if (qAcct && qPwd) {
+    setTimeout(() => {
+      const userEl = document.getElementById('ew-login-user');
+      const passEl = document.getElementById('ew-login-pass');
+      if (userEl && passEl) {
+        userEl.value = qAcct;
+        passEl.value = qPwd;
+        if (qAct === 'login') doLogin(); else doRegister();
+      }
+    }, 300);
+  }
 }
 
 /** 页面加载时检查已有会话，决定显示登录还是直接进入 */

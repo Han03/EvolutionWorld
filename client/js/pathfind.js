@@ -18,23 +18,57 @@ const key = (x, z) => (z + 512) * 1024 + (x + 512);
 // 网格坐标 = Math.floor(世界坐标)，terrainVoid 接受世界坐标（内部 floor 等价于整数输入直传）
 function blocked(gx, gz) { return terrainVoid(gx, gz); }
 
+// ── 二叉堆优先队列（小顶堆，按 f 排序） ──
+// A* 每迭代取最小 f。线性扫描在远距离搜索（数万次扩展）下是 O(n²) 灾难，
+// 二叉堆保证 push/pop 均为 O(log n)，支持全图范围寻路。
+function heapPush(h, item) {
+  h.push(item);
+  let i = h.length - 1;
+  while (i > 0) {
+    const p = (i - 1) >> 1;
+    if (h[p].f <= h[i].f) break;
+    const tmp = h[p]; h[p] = h[i]; h[i] = tmp;
+    i = p;
+  }
+}
+function heapPop(h) {
+  const top = h[0];
+  const last = h.pop();
+  if (h.length > 0) {
+    h[0] = last;
+    let i = 0;
+    for (;;) {
+      const l = i * 2 + 1, r = l + 1;
+      let m = i;
+      if (l < h.length && h[l].f < h[m].f) m = l;
+      if (r < h.length && h[r].f < h[m].f) m = r;
+      if (m === i) break;
+      const tmp = h[m]; h[m] = h[i]; h[i] = tmp;
+      i = m;
+    }
+  }
+  return top;
+}
+
 // ════════════════════════════════════════════════
 // A* 寻路（整数网格坐标 = Math.floor(世界坐标)）
 // ════════════════════════════════════════════════
 
 /**
  * A* 寻路
+ * @param {boolean} softTarget 目标格被阻挡时启用：搜索耗尽后返回"离目标最近的可达格"路径
  * @returns 网格坐标数组 [{gx, gz}] 或 null（不可达 / mask 未加载）
  */
-function astar(sx, sz, ex, ez) {
+function astar(sx, sz, ex, ez, softTarget = false) {
   if (!walkMaskReady()) return null;
-  if (blocked(sx, sz) || blocked(ex, ez)) return null;
+  if (blocked(sx, sz)) return null;
+  if (!softTarget && blocked(ex, ez)) return null;
   if (sx === ex && sz === ez) return [{ gx: sx, gz: sz }];
 
-  // 估算搜索半径上限（防止在空旷地图上搜索过久）
-  const MAX_ITER = 8000;
+  // 搜索迭代上限：645×645 全图（约 41 万格）。二叉堆后每次扩展 O(log n)，
+  // 障碍地图 A* 扩展量受路径影响（通常数万）；开阔地有视线直达优化兜底，无需全图搜索。
+  const MAX_ITER = 500000;
 
-  // 二叉堆优先队列（小顶堆，按 f 排序）
   const heap = [];
   const hVal = (x, z) => {
     const dx = Math.abs(x - ex), dz = Math.abs(z - ez);
@@ -47,18 +81,20 @@ function astar(sx, sz, ex, ez) {
   const endK = key(ex, ez);
 
   gScore.set(sk, 0);
-  heap.push({ x: sx, z: sz, f: hVal(sx, sz) });
-  const inOpen = new Set([sk]);
+  heapPush(heap, { x: sx, z: sz, f: hVal(sx, sz), g: 0 });
 
   let iters = 0;
+  let bestNode = null, bestH = Infinity; // 软目标：离目标最近的可达扩展点
   while (heap.length > 0 && iters++ < MAX_ITER) {
-    // 取最小 f
-    let mi = 0;
-    for (let i = 1; i < heap.length; i++) if (heap[i].f < heap[mi].f) mi = i;
-    const cur = heap[mi];
-    heap[mi] = heap[heap.length - 1]; heap.pop();
+    // 取最小 f（跳过因改进 g 而过时的重复条目）
+    let cur = heapPop(heap);
     const ck = key(cur.x, cur.z);
-    inOpen.delete(ck);
+    const curG = gScore.get(ck);
+    if (curG === undefined || cur.g !== curG) continue;
+
+    // 记录离目标最近的可达点（软目标 / 不可达时回退终点）
+    const hc = hVal(cur.x, cur.z);
+    if (hc < bestH) { bestH = hc; bestNode = cur; }
 
     if (ck === endK) {
       // 回溯路径
@@ -73,7 +109,7 @@ function astar(sx, sz, ex, ez) {
       return path;
     }
 
-    const cg = gScore.get(ck);
+    const cg = curG;
     for (const [dx, dz, cost] of DIRS) {
       const nx = cur.x + dx, nz = cur.z + dz;
       if (blocked(nx, nz)) continue;
@@ -86,12 +122,21 @@ function astar(sx, sz, ex, ez) {
       if (!gScore.has(nk) || ng < gScore.get(nk)) {
         gScore.set(nk, ng);
         parent.set(nk, ck);
-        if (!inOpen.has(nk)) {
-          heap.push({ x: nx, z: nz, f: ng + hVal(nx, nz) });
-          inOpen.add(nk);
-        }
+        heapPush(heap, { x: nx, z: nz, f: ng + hVal(nx, nz), g: ng });
       }
     }
+  }
+  // 搜索耗尽：软目标模式下返回离目标最近的可达格路径（替代 BFS+逐格 A* 验证）
+  if (softTarget && bestNode && !(bestNode.x === sx && bestNode.z === sz)) {
+    const path = [];
+    let k = key(bestNode.x, bestNode.z);
+    while (k !== undefined && k !== sk) {
+      const x = (k & 1023) - 512, z = ((k >> 10) & 1023) - 512;
+      path.push({ gx: x, gz: z });
+      k = parent.get(k);
+    }
+    path.reverse();
+    return path;
   }
   return null; // 不可达或搜索超限
 }
@@ -135,48 +180,6 @@ function smoothPath(path) {
 }
 
 // ════════════════════════════════════════════════
-// 最近可达点搜索（BFS 螺旋 + A* 可达性验证）
-// ════════════════════════════════════════════════
-
-/**
- * 从被阻挡的目标位置向外 BFS 搜索，找到离目标最近且从起点可达的可通行格子
- * @returns {gx, gz} 或 null
- */
-function findNearestWalkable(sgx, sgz, egx, egz) {
-  const RADIUS = 30;
-  const visited = new Set();
-  const queue = [{ gx: egx, gz: egz }];
-  visited.add(key(egx, egz));
-
-  while (queue.length > 0) {
-    const cur = queue.shift();
-    const dx = cur.gx - egx, dz = cur.gz - egz;
-    const distToTarget = Math.max(Math.abs(dx), Math.abs(dz));
-    if (distToTarget > RADIUS) continue;
-
-    if (!blocked(cur.gx, cur.gz)) {
-      // 可通行——用 A* 验证从起点是否可达
-      const path = astar(sgx, sgz, cur.gx, cur.gz);
-      if (path && path.length > 0) {
-        // 离目标最近的可达点（BFS 按距离递增，首个即最近）
-        return cur;
-      }
-    }
-
-    // 扩展 8 方向邻居
-    for (const [ddx, ddz] of DIRS) {
-      const nx = cur.gx + ddx, nz = cur.gz + ddz;
-      const nk = key(nx, nz);
-      if (!visited.has(nk)) {
-        visited.add(nk);
-        queue.push({ gx: nx, gz: nz });
-      }
-    }
-  }
-  return null;
-}
-
-// ════════════════════════════════════════════════
 // PathFinder — 对外接口
 // ════════════════════════════════════════════════
 
@@ -196,20 +199,22 @@ export class PathFinder {
 
   /**
    * 设定移动目标：从 (cx,cz) 寻路到 (tx,tz)
+   * 目标格被阻挡（空洞等）时自动启用软目标模式，一次 A* 即回到离目标最近的可达格。
    */
   moveTo(cx, cz, tx, tz) {
     if (!walkMaskReady()) { this.clear(); return; }
     const sgx = Math.floor(cx), sgz = Math.floor(cz);
-    let egx = Math.floor(tx), egz = Math.floor(tz);
-    if (blocked(egx, egz)) {
-      // 目标被阻挡（空洞等）——寻找离目标最近且从起点可达的可通行格子
-      const alt = findNearestWalkable(sgx, sgz, egx, egz);
-      if (!alt) { this.clear(); return; }
-      egx = alt.gx;
-      egz = alt.gz;
+    const egx = Math.floor(tx), egz = Math.floor(tz);
+
+    // 直达优先：目标可通行且视线无遮挡 → 直接直线（远距离开阔地免全图 A*，O(1)）
+    if (!blocked(egx, egz) && lineOfSight(sgx, sgz, egx, egz)) {
+      this._waypoints = [{ x: tx, z: tz }];
+      this._idx = 0;
+      this._dest = { x: tx, z: tz };
+      return;
     }
 
-    const raw = astar(sgx, sgz, egx, egz);
+    const raw = astar(sgx, sgz, egx, egz, blocked(egx, egz));
     if (!raw || raw.length === 0) { this.clear(); return; }
 
     const smoothed = smoothPath(raw);
