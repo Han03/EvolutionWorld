@@ -365,6 +365,12 @@ export function tick(now) {
       clearGoal();
       if (S_.goalTries > 3) { stopCombat(); S_.goalTries = 0; }
     } else {
+      // 子目标执行中周期性刷新任务进度（权威数据）：
+      // 进度达成后完成检测立即生效并去提交，避免拖到超时才重规划
+      if (now - S_.questRefreshedAt > CFG.QUEST_REFRESH_MS) {
+        refreshQuests();
+        return;
+      }
       advanceGoal(now);
       return;
     }
@@ -574,22 +580,30 @@ function advanceGoal(now) {
     case 'accept':
     case 'turnin':
     case 'talk': {
-      const npc = nearestNpc(g.npcWid);
-      if (!npc) { log('⚠️ 视野内无 NPC，先探索寻找'); failGoal(); return; }
-      const d = Math.hypot(npc.x - self.x, npc.z - self.z);
-      if (d > CFG.NPC_RANGE) {
-        const r = goto(npc.x, npc.z, 'npc');
-        if (!r.ok) { log('⚠️ 任务 NPC 不可达，放弃该子目标'); failGoal(); }
-        return;
+      // 服务端提交/接取判定：任务绑定 NPC（giverNpc）才需要走到 NPC 旁；
+      // 无绑定 NPC 的任务可原地提交/接取（npcWid=0，服务端跳过 NPC 校验），
+      // 避免"视野内无 NPC"时无限探索卡死提交流程
+      const qdef = questDef(g.questId);
+      const needNpc = g.type === 'talk' || !!(qdef && qdef.giverNpc);
+      let npc = null;
+      if (needNpc) {
+        npc = nearestNpc(g.npcWid);
+        if (!npc) { log('⚠️ 视野内无 NPC，先探索寻找'); failGoal(); return; }
+        const d = Math.hypot(npc.x - self.x, npc.z - self.z);
+        if (d > CFG.NPC_RANGE) {
+          const r = goto(npc.x, npc.z, 'npc');
+          if (!r.ok) { log('⚠️ 任务 NPC 不可达，放弃该子目标'); failGoal(); }
+          return;
+        }
       }
       S.input.clickTarget = null;
-      // 已到 NPC 旁：执行操作
+      // 已到 NPC 旁（或无绑定 NPC 原地）：执行操作
       if (g.type === 'accept') {
-        net.sendTalkNpc ? net.sendTalkNpc(npc.wid) : (S_.sendTalkNpc && S_.sendTalkNpc(net, npc.wid));
-        S_.sendQuestAccept(net, g.questId, npc.wid);
+        if (npc) net.sendTalkNpc ? net.sendTalkNpc(npc.wid) : (S_.sendTalkNpc && S_.sendTalkNpc(net, npc.wid));
+        S_.sendQuestAccept(net, g.questId, npc ? npc.wid : 0);
         log(`📋 尝试接取任务 #${g.questId}`);
       } else if (g.type === 'turnin') {
-        S_.sendQuestTurnIn(net, g.questId, npc.wid);
+        S_.sendQuestTurnIn(net, g.questId, npc ? npc.wid : 0);
         log(`✅ 提交任务 #${g.questId}`);
         S_.stats.questsDone++;
         emitStatus();
@@ -632,6 +646,8 @@ function advanceGoal(now) {
 
     // ---------- 战斗类 ----------
     case 'kill': {
+      // 完成检测：目标进度已满 → 立即结束子目标（下轮去提交），不等超时
+      if (goalComplete(g)) { finishGoal(); return; }
       const target = pickKillTarget(g.key);
       if (!target) {
         // 目标怪不在视野：去最近可能的区域（杀任意怪/探索）
@@ -664,6 +680,8 @@ function advanceGoal(now) {
     }
 
     case 'collect': {
+      // 完成检测：目标进度已满 → 立即结束子目标（下轮去提交），不等超时
+      if (goalComplete(g)) { finishGoal(); return; }
       // 1) 若附近有目标物品掉落 → 拾取
       const drop = nearestDrop(g.itemId);
       if (drop) {
@@ -680,6 +698,7 @@ function advanceGoal(now) {
         S.input.clickTarget = null;
         net.sendPickup(drop.wid);
         S_._pickupTries.set(drop.wid, (S_._pickupTries.get(drop.wid) || 0) + 1);
+        S_.questDirty = true; // 拾取可能推进任务进度：刷新后立即检测完成
         if (S_._pickupTries.get(drop.wid) >= 6) {
           S.entities.views.delete(drop.wid); // 服务端无响应（移除事件丢失），本地剔除防死循环
           log(`⚠️ 掉落 wid=${drop.wid} 拾取无响应，本地剔除`);
@@ -718,11 +737,22 @@ function advanceGoal(now) {
     case 'buyConsumable': {
       // 按目标物品匹配售卖商店对应的 NPC（元数据 shopId 驱动），避免找错商店
       const npc = nearestShopNpc(g.itemId) || nearestNpcByTag(NPC_TAG_SHOP);
-      if (!npc) { log('⚠️ 未找到商店 NPC'); closeNpcPanels(); failGoal(); return; }
+      if (!npc) {
+        // NPC 不在视野（玩家在野外做任务离城远）：先回主城（城市中心）再找，
+        // 避免"视野内无 NPC"无限重试卡死；回城仍失败则节流 15s
+        const r = goto(0, 0, 'city');
+        if (!r.ok) {
+          log('⚠️ 主城不可达，放弃购买');
+          S_._supplyFailAt = performance.now() + 15000;
+          closeNpcPanels();
+          failGoal();
+        }
+        return;
+      }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
       if (d > CFG.NPC_RANGE) {
         const r = goto(npc.x, npc.z, 'npc');
-        if (!r.ok) { log('⚠️ 商店 NPC 不可达，放弃购买'); closeNpcPanels(); failGoal(); }
+        if (!r.ok) { log('⚠️ 商店 NPC 不可达，放弃购买'); S_._supplyFailAt = performance.now() + 15000; closeNpcPanels(); failGoal(); }
         return;
       }
       S.input.clickTarget = null;
@@ -748,11 +778,15 @@ function advanceGoal(now) {
 
     case 'enhance': {
       const npc = nearestNpcByTag(NPC_TAG_BLACKSMITH);
-      if (!npc) { log('⚠️ 未找到铁匠 NPC'); failGoal(); return; }
+      if (!npc) {
+        const r = goto(0, 0, 'city');
+        if (!r.ok) { log('⚠️ 主城不可达，放弃强化'); S_._supplyFailAt = performance.now() + 15000; failGoal(); }
+        return;
+      }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
       if (d > CFG.NPC_RANGE) {
         const r = goto(npc.x, npc.z, 'npc');
-        if (!r.ok) { log('⚠️ 铁匠 NPC 不可达，放弃强化'); failGoal(); }
+        if (!r.ok) { log('⚠️ 铁匠 NPC 不可达，放弃强化'); S_._supplyFailAt = performance.now() + 15000; failGoal(); }
         return;
       }
       S.input.clickTarget = null;
@@ -769,11 +803,15 @@ function advanceGoal(now) {
     case 'craftConsumable': {
       // 合成 NPC：优先目标配方自带 npcTag（元数据驱动），退化为任意合成 NPC
       const npc = nearestNpcByTag(g.npcTag || NPC_TAG_CRAFT);
-      if (!npc) { log('⚠️ 未找到合成 NPC'); failGoal(); return; }
+      if (!npc) {
+        const r = goto(0, 0, 'city');
+        if (!r.ok) { log('⚠️ 主城不可达，放弃合成'); S_._supplyFailAt = performance.now() + 15000; failGoal(); }
+        return;
+      }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
       if (d > CFG.NPC_RANGE) {
         const r = goto(npc.x, npc.z, 'npc');
-        if (!r.ok) { log('⚠️ 合成 NPC 不可达，放弃合成'); failGoal(); }
+        if (!r.ok) { log('⚠️ 合成 NPC 不可达，放弃合成'); S_._supplyFailAt = performance.now() + 15000; failGoal(); }
         return;
       }
       S.input.clickTarget = null;
@@ -1030,7 +1068,18 @@ function combatAttack(v) {
 
   // 普攻为主（稳定命中、即时伤害；服务端权威判定）
   if (now - S_.lastAttackAt >= CFG.ATK_CD_MS) {
-    net.sendAttack(v.wid, 0);
+    // 按技能方式释放普通攻击（skill 1000）：与其他技能同协议，
+    // 触发技能栏冷却与施法特效（原 sendAttack 独立协议无冷却/特效表现）
+    const atkSkill = skillDefById(1000);
+    if (atkSkill) {
+      castSkill(atkSkill, v.wid, v.x, v.z);
+      if (now - (S_._lastAtkLogAt || 0) > 3000) {
+        S_._lastAtkLogAt = now;
+        log('⚔️ 普攻（技能协议）');
+      }
+    } else {
+      net.sendAttack(v.wid, 0); // 兜底：元数据缺失时走旧协议
+    }
     S_.lastAttackAt = now;
     // 攻击后进入走位窗口：冷却期间持续走位躲避怪物攻击，不站着对打
     S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
@@ -1083,6 +1132,8 @@ function stopCombat() {
   S_.attackWid = 0;
   S_._combatNoDmg = 0;
   S_._combatHpAt = 0;
+  // 击杀后任务进度可能达成：置脏标记，下一轮刷新后立即检测完成并去提交
+  S_.questDirty = true;
 }
 
 function beginCombat(wid) {
@@ -1172,9 +1223,27 @@ function nearestMonster() {
   return best;
 }
 
+/** 子目标完成检测：任务目标进度已满（服务端 questProgress 权威），完成即结束子目标去提交 */
+function goalComplete(g) {
+  if (!g || g.questId === undefined || g.objIndex === undefined) return false;
+  const gid = String(g.questId); // questId 数字/字符串归一化，防元数据与协议类型不一致
+  const q = (S_.questProgress || []).find(x => String(x.questId ?? x.id) === gid);
+  if (!q) return false;
+  if (q.objectives && q.objectives[g.objIndex]) {
+    const o = q.objectives[g.objIndex];
+    return (o.current || 0) >= (o.required || 1);
+  }
+  // 兼容 {obj:["3/3"]} 字符串进度结构
+  const s = q.obj && q.obj[g.objIndex];
+  if (typeof s === 'string') {
+    const [cur, req] = s.split('/').map(Number);
+    return cur >= req;
+  }
+  return false;
+}
+
 /** 击杀目标怪：targetKey 匹配怪物类型（gamedata.monsters 的 key 与实体 name 关联） */
-function pickKillTarget(key) {
-  const nameSet = new Set();
+function pickKillTarget(key) {  const nameSet = new Set();
   if (key && key !== '*') {
     const m = gamedataMonster(key);
     if (m && m.name) nameSet.add(m.name);
