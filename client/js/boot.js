@@ -183,9 +183,12 @@ function initAutobotUI(net) {
       const ph = phaseMap[st.phase] || st.phase;
       el.textContent = `${st.running ? (st.paused ? '⏸ ' : '▶ ') : '⏹ '}${ph}`;
       el.className = 'autobot-status ' + (st.running ? (st.paused ? 'ab-paused' : 'ab-running') : 'ab-stop');
+      // 合并后的开始/暂停按钮文案：运行→暂停，已暂停→继续，停止→开始
+      const tgl = $('ab-toggle');
+      if (tgl) tgl.textContent = st.running ? (st.paused ? '继续' : '暂停') : '开始';
       const statEl = $('ab-stat');
       if (statEl && st.stats) {
-        statEl.textContent = `任务${st.stats.questsDone} 击杀${st.stats.monstersKilled} 购${st.stats.itemsBought} 合${st.stats.itemsCrafted}`;
+        statEl.textContent = `任务${st.stats.questsDone} 击杀${st.stats.monstersKilled} 购${st.stats.itemsBought} 合${st.stats.itemsCrafted} 逃${st.stats.flees || 0}`;
       }
     },
     onLog: (msg) => {
@@ -540,13 +543,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     debugPrint(sel.value);
   });
 
-  // ── 自动化测试插件（autobot.js） ──
-  const abStart = $('ab-start');
-  const abPause = $('ab-pause');
-  const abReset = $('ab-reset');
-  if (abStart) abStart.addEventListener('click', () => autobot.start());
-  if (abPause) abPause.addEventListener('click', () => autobot.pause());
-  if (abReset) abReset.addEventListener('click', () => autobot.reset());
+  // ── 自动化测试插件（autobot.js）：开始/暂停合并为一个切换按钮 ──
+  const abToggle = $('ab-toggle');
+  if (abToggle) abToggle.addEventListener('click', () => {
+    if (autobot.isRunning()) autobot.pause(); // 运行中 → 暂停
+    else autobot.start();                      // 停止/已暂停 → 开始/继续
+  });
   // 决策循环（主循环外独立节流，不侵入渲染帧）
   setInterval(() => autobot.tick(performance.now()), 200);
   // 刷新页面后若上次运行中 → 自动恢复
