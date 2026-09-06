@@ -113,11 +113,12 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
         const uint8_t imult = (uint8_t)std::lround(e->moveScale() * 100.0);
         const uint16_t ihp = (uint16_t)std::lround(e->hp);
         const uint16_t imhp = (uint16_t)std::lround(e->maxHp);
+        const uint8_t iinv = e->ai.invincible ? 1 : 0;
         if (!last.has || ist != last.aiState || itx != last.itx || itz != last.itz || imult != last.imult
-            || ihp != last.hp || imhp != last.maxHp) {
+            || ihp != last.hp || imhp != last.maxHp || iinv != last.iinv) {
           mask |= proto::M_INTENT;
           last.aiState = ist; last.itx = itx; last.itz = itz; last.imult = imult;
-          last.hp = ihp; last.maxHp = imhp;
+          last.hp = ihp; last.maxHp = imhp; last.iinv = iinv;
         }
       }
       if (mask) {

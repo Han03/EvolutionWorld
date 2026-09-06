@@ -9,7 +9,7 @@ struct Config {
   // ---- 服务 ----
   int port = 3000;
   std::string host = "0.0.0.0";
-  std::string clientDir = "../client/dist";   // Vite 构建产物目录
+  std::string clientDir = "../client";   // 源码目录直出（开发模式：改动 JS 即生效，无需 Vite 构建）
   std::string dataDir = "data";      // 商店配置目录（shop.json）
   int sessionTtlSec = 24 * 3600;
 

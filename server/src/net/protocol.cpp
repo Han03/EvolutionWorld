@@ -152,11 +152,12 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
     w.i16(qVel(e.ai.targetVX));
     w.i16(qVel(e.ai.targetVZ));
     w.u8((uint8_t)std::lround(e.moveScale() * 100.0)); // 0-100%
-    // 怪物生命值（客户端仇恨血条渲染）+ 精英标志
+    // 怪物生命值（客户端仇恨血条渲染）+ 精英标志 + 无敌标志（恢复态免疫伤害，autobot 据此跳过）
     if (e.kind == EntityKind::Monster) {
       w.u16((uint16_t)std::lround(e.hp));
       w.u16((uint16_t)std::lround(e.maxHp));
       w.u8(e.isElite ? 1 : 0);
+      w.u8(e.ai.invincible ? 1 : 0);
     }
     // NPC 插件：NPC 实体额外广播 npcId + npcTag（客户端据此渲染交互菜单）
     if (e.kind == EntityKind::Npc) {
@@ -242,6 +243,8 @@ std::string update(const std::vector<uint32_t>& wids,
       // 因此 Monster/NPC 均须写入，否则 NPC INTENT 变化时客户端 short read）
       w.u16((uint16_t)std::lround(e.hp));
       w.u16((uint16_t)std::lround(e.maxHp));
+      // 无敌标志（与 writeEntityFull 对齐；仅怪物携带，NPC 固定写 0 保字节对齐）
+      w.u8(e.kind == EntityKind::Monster && e.ai.invincible ? 1 : 0);
     }
   }
   return frame(S2C_UPDATE, w.data());

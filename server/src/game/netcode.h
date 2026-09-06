@@ -26,6 +26,7 @@ struct LastEnt {
   int16_t itx = 0, itz = 0; // 目标速度量化
   uint8_t imult = 100;      // 速度倍率 0-100
   uint16_t hp = 0, maxHp = 0; // 生命值（M_INTENT 去重）
+  uint8_t iinv = 0;         // 无敌标志（恢复态免疫伤害，M_INTENT 去重）
   bool has = false;
 };
 struct PlayerView {
