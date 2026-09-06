@@ -64,6 +64,7 @@ const S_ = {
   // 走位攻击 / 空洞绕行
   _kiteUntil: 0,        // 攻击后走位窗口截止时间（期间横向移动躲避怪物攻击）
   _kiteSide: 1,         // 走位绕圈方向（交替）
+  _castLockUntil: 0,    // 技能前摇走位锁定截止时间（期间静止等前摇结算）
   _moveSnap: null,      // 卡住检测：上次位置快照 {x,z,at}
   _moveCtx: '',         // 卡住检测：当前移动上下文（区分目标）
 
@@ -86,6 +87,7 @@ const S_ = {
   _lastDecisionAt: 0,
   _lastManualInputAt: 0,
   _lastSupplyAt: 0,
+  _supplyFailAt: 0,     // 补给失败冷却截止时间（金币不足时避免反复跑商店）
   _logBuf: [],
 };
 
@@ -97,6 +99,8 @@ const CFG = {
   ATK_CD_MS: 700,          // 普攻节流（服务端冷却 0.5s）
   NPC_RANGE: 3.2,          // 对话 / 商店 / 强化 / 合成 操作距离
   PICKUP_RANGE: 2.4,       // 主动拾取距离
+  PICKUP_GOTO_RANGE: 16,   // 空闲时前往拾取的掉落物最大距离（更远不值得跑）
+  CAST_LOCK_MS: 400,       // 技能前摇走位锁定（前摇 200ms + 余量，防 cancelOnMove 打断）
   GOAL_TIMEOUT_MS: 45000,  // 子目标超时
   GRIND_EXPLORE_M: 40,     // 无怪时探索距离
   HP_POTION_KEEP: 6,       // 血瓶保有量
@@ -251,6 +255,9 @@ export function tick(now) {
   const selfPos = S.predictor.predicted();
   const self = { x: selfPos.x, z: selfPos.z };
 
+  // ── 0.5 顺手拾取：范围内掉落物（任意状态不 goto，不中断当前目标） ──
+  if (tryPickupNearby(self, false)) return;
+
   // ── 1. 战斗中：攻击循环（走位攻击：攻击 → 冷却期横向绕圈，低血拉开） ──
   if (S_.attackWid) {
     const v = S.entities.views.get(S_.attackWid);
@@ -274,8 +281,13 @@ export function tick(now) {
           }
         }
       } else if (now < S_.kiteUntil) {
-        // 攻击冷却中：走位躲避（绕圈；低血径向拉开）
-        kiteStep(v, lowHp);
+        if (now < S_._castLockUntil) {
+          // 技能前摇锁定：原地不动，避免 cancelOnMove 打断施法
+          S.input.clickTarget = null;
+        } else {
+          // 攻击冷却中：走位躲避（绕圈；低血径向拉开）
+          kiteStep(v, lowHp);
+        }
       } else {
         S.input.clickTarget = null;
         // 幽灵容错：hp 长时间无变化（服务端已失活但视图残留）→ 放弃换目标
@@ -309,6 +321,9 @@ export function tick(now) {
       return;
     }
   }
+
+  // ── 2.5 空闲拾取：附近掉落物优先前往拾取（攒材料/金币，任务与维护之前） ──
+  if (tryPickupNearby(self, true)) return;
 
   // ── 3. 刷新任务视图（周期性 + 脏标记） ──
   if (S_.questDirty || now - S_.questRefreshedAt > CFG.QUEST_REFRESH_MS) {
@@ -427,23 +442,26 @@ function pickMaintenanceAction(now) {
   const stats = S.playerStats || {};
   const lv = stats.level || 1;
 
-  // a) 血量偏低且血瓶不足 → 补给
+  // a0) 自动穿戴：背包中更强的装备立即穿上（购买/拾取后生效，确定性替代 setTimeout）
+  autoEquipBest();
+
+  // a) 血量偏低且血瓶不足 → 补给（补给失败冷却期内跳过，避免反复跑商店）
   const hpPots = invCount(potionOf('hp'));
-  if (hpPots < CFG.HP_POTION_KEEP) {
+  if (hpPots < CFG.HP_POTION_KEEP && now < S_._supplyFailAt) {
     if (now - S_._lastSupplyAt > 2000) {
       const buy = findShopEntryFor('hp');
       if (buy) return { type: 'buyConsumable', itemId: buy.itemId, count: CFG.HP_POTION_KEEP - hpPots };
       const craft = findCraftFor('hp');
-      if (craft) return { type: 'craftConsumable', recipeId: craft.recipeId, count: 1 };
+      if (craft) return { type: 'craftConsumable', recipeId: craft.recipeId, count: 1, npcTag: craft.npcTag || NPC_TAG_CRAFT };
     }
   }
   const mpPots = invCount(potionOf('mp'));
-  if (mpPots < CFG.MP_POTION_KEEP) {
+  if (mpPots < CFG.MP_POTION_KEEP && now < S_._supplyFailAt) {
     if (now - S_._lastSupplyAt > 2000) {
       const buy = findShopEntryFor('mp');
       if (buy) return { type: 'buyConsumable', itemId: buy.itemId, count: CFG.MP_POTION_KEEP - mpPots };
       const craft = findCraftFor('mp');
-      if (craft) return { type: 'craftConsumable', recipeId: craft.recipeId, count: 1 };
+      if (craft) return { type: 'craftConsumable', recipeId: craft.recipeId, count: 1, npcTag: craft.npcTag || NPC_TAG_CRAFT };
     }
   }
 
@@ -455,12 +473,19 @@ function pickMaintenanceAction(now) {
   if (lv >= CFG.ENHANCE_MIN_LV) {
     const enh = pickEnhanceCandidate();
     if (enh) return { type: 'enhance', instId: enh.instId, itemId: enh.itemId, level: enh.enhance };
+    // 有可强化装备但缺强化石（商店不售，只能合成）→ 优先合成强化石
+    if (hasEnhanceableGear() && invCount(enhanceStoneId()) < 1 && S.gold > CFG.GOLD_RESERVE) {
+      const stoneRecipe = craftRecipes().find(r => r.resultItemId === enhanceStoneId());
+      if (stoneRecipe && craftableNow(stoneRecipe)) {
+        return { type: 'craftConsumable', recipeId: stoneRecipe.recipeId, count: 1, npcTag: stoneRecipe.npcTag || NPC_TAG_CRAFT };
+      }
+    }
   }
 
   // d) 材料富余时合成消耗品/强化石（数据驱动：找成本最低且材料够的配方）
   const craftAny = findAnyCraftable();
   if (craftAny && S.gold > CFG.GOLD_RESERVE) {
-    return { type: 'craftConsumable', recipeId: craftAny.recipeId, count: 1 };
+    return { type: 'craftConsumable', recipeId: craftAny.recipeId, count: 1, npcTag: craftAny.npcTag || NPC_TAG_CRAFT };
   }
   return null;
 }
@@ -523,6 +548,7 @@ function advanceGoal(now) {
       }
       finishGoal();
       S_.questDirty = true;
+      closeNpcPanels(); // 接/交/对话完成后关闭 NPC 面板
       return;
     }
 
@@ -636,31 +662,34 @@ function advanceGoal(now) {
     // ---------- 商店 / 强化 / 合成 ----------
     case 'buyEquip':
     case 'buyConsumable': {
-      const npc = nearestNpcByTag(NPC_TAG_SHOP);
-      if (!npc) { log('⚠️ 未找到商店 NPC'); failGoal(); return; }
+      // 按目标物品匹配售卖商店对应的 NPC（元数据 shopId 驱动），避免找错商店
+      const npc = nearestShopNpc(g.itemId) || nearestNpcByTag(NPC_TAG_SHOP);
+      if (!npc) { log('⚠️ 未找到商店 NPC'); closeNpcPanels(); failGoal(); return; }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
       if (d > CFG.NPC_RANGE) {
         const r = goto(npc.x, npc.z, 'npc');
-        if (!r.ok) { log('⚠️ 商店 NPC 不可达，放弃购买'); failGoal(); }
+        if (!r.ok) { log('⚠️ 商店 NPC 不可达，放弃购买'); closeNpcPanels(); failGoal(); }
         return;
       }
       S.input.clickTarget = null;
       if (!S.shopData) { net.sendShopOpen(npc.wid); return; }
       const price = shopPrice(g.itemId);
-      if (price === null || S.gold < price) { log(`⚠️ 金币不足或商品下架：${g.itemId}`); failGoal(); return; }
+      if (price === null || S.gold < price) {
+        log(`⚠️ 金币不足或商品下架：${g.itemId}`);
+        S_._supplyFailAt = performance.now() + 15000; // 15s 内不再尝试补给，避免反复跑商店
+        closeNpcPanels();
+        failGoal();
+        return;
+      }
       net.sendShopBuy(g.itemId, g.count || 1);
       S_._lastSupplyAt = performance.now();
       S_.stats.itemsBought++;
       emitStatus();
       log(`🛒 购买 ${itemName(g.itemId)} ×${g.count || 1}（-${price}💰）`);
-      if (g.type === 'buyEquip') {
-        // 购买成功后等待背包更新，再穿戴（下一轮决策处理）
-        const slotNum = g.slot;
-        setTimeout(() => { equipBestInSlot(slotNum); }, 600);
-      }
+      closeNpcPanels(); // 购买完成后关闭商店面板
       finishGoal();
       S_.questDirty = true;
-      return;
+      return; // 新装备穿戴由维护期的 autoEquipBest() 统一处理（避免 setTimeout 竞态）
     }
 
     case 'enhance': {
@@ -675,12 +704,17 @@ function advanceGoal(now) {
       S.input.clickTarget = null;
       net.sendEnhance(g.instId, false);
       log(`🔨 强化装备 ${itemName(g.itemId)} +${g.level}`);
+      S_.stats.enhanceOk++;
+      emitStatus();
+      closeNpcPanels(); // 强化完成后关闭强化面板
       finishGoal();
+      S_.questDirty = true;
       return;
     }
 
     case 'craftConsumable': {
-      const npc = nearestNpcByTag(NPC_TAG_CRAFT);
+      // 合成 NPC：优先目标配方自带 npcTag（元数据驱动），退化为任意合成 NPC
+      const npc = nearestNpcByTag(g.npcTag || NPC_TAG_CRAFT);
       if (!npc) { log('⚠️ 未找到合成 NPC'); failGoal(); return; }
       const d = Math.hypot(npc.x - self.x, npc.z - self.z);
       if (d > CFG.NPC_RANGE) {
@@ -695,6 +729,7 @@ function advanceGoal(now) {
       S_.stats.itemsCrafted++;
       emitStatus();
       log(`⚗️ 合成 ${rec ? rec.name : '#' + g.recipeId}`);
+      closeNpcPanels(); // 合成完成后关闭合成面板
       finishGoal();
       S_.questDirty = true;
       return;
@@ -808,15 +843,15 @@ function handleLowHp(now) {
     }
     return true; // 恢复中：本轮不做其他事，等血量回升
   }
-  // 2b) 无血瓶 → 前往商店补给 / 合成血瓶（交给 goal 流程执行）
+  // 2b) 无血瓶 → 前往商店补给 / 合成血瓶（交给 goal 流程执行；补给失败冷却期内原地警戒）
   if (!S_.goal || (S_.goal.type !== 'buyConsumable' && S_.goal.type !== 'craftConsumable')) {
-    const buy = findShopEntryFor('hp');
+    const buy = now < S_._supplyFailAt ? findShopEntryFor('hp') : null;
     const craft = findCraftFor('hp');
     if (buy) {
       setGoal({ type: 'buyConsumable', itemId: buy.itemId, count: CFG.HP_POTION_KEEP });
       log('⚠️ 残血且无血瓶，前往商店补给');
     } else if (craft) {
-      setGoal({ type: 'craftConsumable', recipeId: craft.recipeId, count: 1 });
+      setGoal({ type: 'craftConsumable', recipeId: craft.recipeId, count: 1, npcTag: craft.npcTag || NPC_TAG_CRAFT });
       log('⚠️ 残血且无血瓶，前往合成补给');
     } else {
       // 商店与合成均无血瓶：限频提示，保持"恢复中"状态等待转机（捡药/刷新商店）
@@ -918,10 +953,14 @@ function combatAttack(v) {
     S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
   }
   // 技能为辅（仅在目标血量较高、冷却好时补充，不阻塞普攻）
-  const skill = bestOffensiveSkill();
-  if (skill && now - S_.lastSkillAt > Math.max(skill.cdMs || 3000, 6000) && v.maxHp && v.maxHp > 60) {
+  // 技能为辅（蓝量足够、目标血量较高、冷却好时补充，不阻塞普攻）
+  const st = S.playerStats || {};
+  const skill = bestOffensiveSkill(st.mp);
+  if (skill && now - S_.lastSkillAt > Math.max(skill.cdMs || 3000, 2000) && v.maxHp && v.maxHp > 60) {
     net.sendCastSkill(skill.id, v.wid, v.x, v.z);
     S_.lastSkillAt = now;
+    // 前摇锁定：期间不走位，避免 cancelOnMove 打断施法（服务端移动即取消）
+    S_._castLockUntil = now + CFG.CAST_LOCK_MS;
   }
 }
 
@@ -1108,6 +1147,90 @@ function nearestDrop(itemId) {
   return best;
 }
 
+/** 任意物品掉落（含任务物品/材料/金币袋，不再局限于当前任务目标） */
+function nearestDropAny() {
+  return nearestDrop(0);
+}
+
+/**
+ * 全局拾取：范围内的掉落物直接拾取（任意状态顺手捡）；空闲且距离合适时前往拾取。
+ * - allowGoto=false：仅捡脚边（PICKUP_RANGE 内），不 goto、不中断当前目标
+ * - allowGoto=true ：允许走位前往拾取（仅限非战斗/非任务轮调用）
+ * 返回 true 表示本决策轮已被拾取占用。
+ */
+function tryPickupNearby(self, allowGoto) {
+  const S = S_.S;
+  const drop = nearestDropAny();
+  if (!drop) return false;
+  const d = Math.hypot(drop.x - self.x, drop.z - self.z);
+  const tries = S_._pickupTries.get(drop.wid) || 0;
+  if (d <= CFG.PICKUP_RANGE) {
+    S.input.clickTarget = null;
+    S.net.sendPickup(drop.wid);
+    S_._pickupTries.set(drop.wid, tries + 1);
+    if (tries + 1 >= 6) {
+      S.entities.views.delete(drop.wid); // 服务端无响应 → 本地剔除防死循环
+      log(`⚠️ 掉落 wid=${drop.wid} 拾取无响应，本地剔除`);
+    } else {
+      log(`🎒 拾取 ${drop.name || '掉落'} wid=${drop.wid}`);
+    }
+    return true;
+  }
+  if (allowGoto && d <= CFG.PICKUP_GOTO_RANGE) {
+    const r = goto(drop.x, drop.z, 'pick');
+    if (!r.ok) {
+      S.entities.views.delete(drop.wid); // 不可达（空洞隔开）→ 本地剔除
+      S_._pickupTries.set(drop.wid, 99);
+      log(`⚠️ 掉落 wid=${drop.wid} 不可达，本地剔除`);
+    }
+    return true;
+  }
+  return false;
+}
+
+/** 自动穿戴：背包中每个槽位评分更高的装备立即穿上（替代购买后异步 setTimeout 竞态） */
+function autoEquipBest() {
+  const S = S_.S;
+  const bag = S.equipBag || [];
+  if (!bag.length || !S.equip) return;
+  for (let slot = 1; slot <= 6; slot++) {
+    const cur = S.equip[slot];
+    const curScore = cur && cur.itemId ? equipScore(itemDefById(cur.itemId)) * (1 + (cur.enhance || 0) * 0.15) : 0;
+    let best = null, bestScore = -1;
+    for (const ins of bag) {
+      const d = itemDefById(ins.itemId);
+      if (!d || slotNumber(d.slot) !== slot) continue;
+      const sc = equipScore(d);
+      if (sc > bestScore) { bestScore = sc; best = ins; }
+    }
+    if (best && bestScore > curScore + 0.5) {
+      S.net.sendEquip(slot, best.instId);
+      log(`⚔️ 自动穿戴 ${itemName(best.itemId)}（槽位 ${slot}）`);
+    }
+  }
+}
+
+/** 背包中是否有可继续强化的装备（未满级、未锁定） */
+function hasEnhanceableGear() {
+  const S = S_.S;
+  const bag = S.equipBag || [];
+  const enhCfg = S_.gamedata && S_.gamedata.enhance;
+  if (!enhCfg || !enhCfg.levels || !enhCfg.levels.length) return false;
+  for (const ins of bag) {
+    if (ins.locked) continue;
+    const lvl = ins.enhance || 0;
+    if (enhCfg.levels[lvl]) return true;
+  }
+  return false;
+}
+
+/** 关闭 NPC 交互面板（商店/强化/合成/背包等，操作完成后调用，避免面板常驻遮挡） */
+function closeNpcPanels() {
+  if (S_.closeAllNpcPanels) {
+    try { S_.closeAllNpcPanels(); } catch (_) { /* 面板已关闭/不存在时忽略 */ }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 数据驱动查询（gamedata）
 // ---------------------------------------------------------------------------
@@ -1156,15 +1279,52 @@ function invCount(itemId) {
  *        此处统一映射为 itemId，避免静态表与实时帧匹配不一致。 */
 function shopEntries() {
   const S = S_.S;
-  if (S.shopData && S.shopData.entries) return S.shopData.entries;
+  if (S.shopData && S.shopData.entries) {
+    // S2C 实时条目补 shopId（当前商店 ID），供按商店匹配 NPC 使用
+    const liveShopId = S.shopData.shopId || 0;
+    return S.shopData.entries.map(e => ({ ...e, itemId: e.itemId !== undefined ? e.itemId : e.item, shopId: liveShopId }));
+  }
   const d = S_.gamedata;
   if (!d || !d.shops) return [];
-  const shops = Array.isArray(d.shops) ? d.shops : Object.values(d.shops);
+  const isArr = Array.isArray(d.shops);
+  const shops = isArr ? d.shops : Object.values(d.shops);
+  // shopId 来源：dict 场景 key 即 shopId（value 无 shopId 字段），数组场景取 sh.shopId
+  const shopIds = isArr ? d.shops.map(s => (s.shopId || 0)) : Object.keys(d.shops).map(k => (parseInt(k, 10) || 0));
   const entries = [];
-  for (const sh of shops) for (const e of (sh.entries || [])) {
-    entries.push({ ...e, itemId: e.itemId !== undefined ? e.itemId : e.item, shopId: sh.shopId || 0 });
-  }
+  shops.forEach((sh, idx) => {
+    const shopId = sh.shopId || shopIds[idx] || 0;
+    for (const e of (sh.entries || [])) {
+      entries.push({ ...e, itemId: e.itemId !== undefined ? e.itemId : e.item, shopId });
+    }
+  });
   return entries;
+}
+/** 售卖某物品的商店 ID（实时 S2C 优先，静态表兜底；0=未关联商店） */
+function shopIdForItem(itemId) {
+  const e = shopEntries().find(x => x.itemId === itemId);
+  return e ? (e.shopId || 0) : 0;
+}
+/** 找售卖指定物品的商店 NPC：优先 shopId 精确匹配，退化到任意商店 NPC（元数据驱动） */
+function nearestShopNpc(itemId) {
+  const S = S_.S;
+  if (!S.predictor) return null;
+  const self = S.predictor.predicted();
+  const wantShopId = shopIdForItem(itemId);
+  let best = null, bd = 1e9;
+  for (const v of views().values()) {
+    if (v.kind !== 'npc' || v.dying) continue;
+    if (!v.npcTag || (v.npcTag & NPC_TAG_SHOP) === 0) continue;
+    if (wantShopId && v.shopId && v.shopId !== wantShopId) continue; // shopId 明确不匹配则跳过
+    const d = Math.hypot(v.x - self.x, v.z - self.z);
+    if (d < bd) { bd = d; best = v; }
+  }
+  return best;
+}
+/** 强化石物品 ID：优先取元数据 enhance.levels[0].stoneItemId，避免硬编码（兜底 4006 与默认配置一致） */
+function enhanceStoneId() {
+  const enh = S_.gamedata && S_.gamedata.enhance;
+  if (enh && enh.levels && enh.levels.length && enh.levels[0].stoneItemId) return enh.levels[0].stoneItemId;
+  return 4006;
 }
 function shopPrice(itemId) {
   const e = shopEntries().find(x => x.itemId === itemId);
@@ -1269,7 +1429,7 @@ function equipBestInSlot(slotNum) {
 // ---------------------------------------------------------------------------
 // 技能选择（数据驱动：挑伤害最高、已学习的技能）
 // ---------------------------------------------------------------------------
-function bestOffensiveSkill() {
+function bestOffensiveSkill(mp) {
   const S = S_.S;
   const learned = S.learnedSkills || [];
   if (!learned.length) return null;
@@ -1279,8 +1439,11 @@ function bestOffensiveSkill() {
   let best = null, bestDmg = 0;
   for (const s of arr) {
     if (!learned.find(l => l.id === s.id)) continue;
-    if (s.damage === undefined || s.damage <= 0) continue;
-    const dmg = s.damage || 0;
+    if (s.id === 1000 || s.id >= 2000) continue; // 排除普攻与怪物技能
+    // 伤害口径：gamedata 用 dmgMul（攻击倍数）+ flatDmg，兼容旧 damage 字段
+    const dmg = s.damage !== undefined ? s.damage : (s.dmgMul || 0) * 100 + (s.flatDmg || 0);
+    if (dmg <= 0) continue;
+    if (mp !== undefined && (s.mana || 0) > mp) continue; // 蓝量不足不用，避免服务端拒施
     if (dmg > bestDmg) { bestDmg = dmg; best = s; }
   }
   return best;
