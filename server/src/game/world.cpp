@@ -535,7 +535,12 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
   }
   // ② 瞬间治疗（始终作用于施法者）
   if (hasHeal) {
+    double before = std::floor(caster.hp);
     caster.hp = std::min(caster.maxHp, caster.hp + sd.heal);
+    double healed = std::floor(caster.hp) - before;
+    if (healed > 0) {
+      pushEvent(proto::EVT_HEAL, caster.wid, (uint32_t)healed, 0, 0);
+    }
     if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
   }
   // ③ 持续 buff：增益→施法者自身，减益→中心点周围异阵营
@@ -1595,23 +1600,30 @@ static void buffSystem(World& w, double dt) {
     bool statsChanged = false;
     for (auto it = e.buffs.begin(); it != e.buffs.end();) {
       it->remainSec -= dt;
-      // 持续回血（REGEN）：每秒恢复 value 点
+      // 持续回血（REGEN）：每秒恢复 value 点，累积每秒结算一次事件
       if (it->type == (uint8_t)BuffType::REGEN && it->remainSec > 0 && e.hp > 0) {
         double before = std::floor(e.hp);
         e.hp = std::min(e.maxHp, e.hp + it->value * dt);
-        double healed = std::floor(e.hp) - before;
-        if (healed > 0) {
-          w.pushEvent(proto::EVT_HEAL, e.wid, (uint32_t)healed, 0, 0);
-          statsChanged = true;
+        if (std::floor(e.hp) != before) statsChanged = true;
+        it->tickAccum += it->value * dt;
+        if (it->tickAccum >= it->value) {
+          uint32_t amount = (uint32_t)std::floor(it->value);
+          w.pushEvent(proto::EVT_HEAL, e.wid, amount, 0, 0);
+          it->tickAccum -= it->value;
         }
       }
-      // 流血（BLEED）：每秒损失 value 点生命（DoT，不致死演示保护：最低 1 HP）
+      // 流血（BLEED）：每秒损失 value 点生命（DoT），累积每秒结算一次事件
       if (it->type == (uint8_t)BuffType::BLEED && it->remainSec > 0 && e.hp > 1) {
         double before = std::floor(e.hp);
         e.hp = std::max(1.0, e.hp - it->value * dt);
         if (std::floor(e.hp) != before) {
-          w.pushEvent(proto::EVT_DAMAGE, e.wid, (uint32_t)(it->value * dt), 0, 0);
           if (e.kind == EntityKind::Player) statsChanged = true;
+        }
+        it->tickAccum += it->value * dt;
+        if (it->tickAccum >= it->value) {
+          uint32_t amount = (uint32_t)std::floor(it->value);
+          w.pushEvent(proto::EVT_DAMAGE, e.wid, amount, 0, 0);
+          it->tickAccum -= it->value;
         }
       }
       if (it->remainSec <= 0) { it = e.buffs.erase(it); expired = true; }

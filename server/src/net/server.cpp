@@ -1659,13 +1659,14 @@ void GameServer::handleInput(Conn& c, const proto::InputMsg& in) {
     return;
   }
 
-  // 3. 减速效果：降低可达性上限
-  double spdMul = 1.0;
+  // 3. 减速/加速效果：降低可达性上限（与 entity.h moveScale() 同公式：多减速取最大 + 加速取最大）
+  double slow = 0, speed = 0;
   for (const auto& b : p->buffs) {
-    if (b.type == (uint8_t)BuffType::MOVE_SLOW && b.remainSec > 0)
-      spdMul -= b.value;
+    if (b.remainSec <= 0) continue;
+    if (b.type == (uint8_t)BuffType::MOVE_SLOW) slow = std::max(slow, b.value);
+    else if (b.type == (uint8_t)BuffType::SPEED) speed = std::max(speed, b.value);
   }
-  if (spdMul < 0.05) spdMul = 0.05;
+  double spdMul = std::max(0.05, 1.0 + speed - slow);
   double effectiveMaxSpeed = cfg_.maxMoveSpeed * spdMul;
 
   double dt = 0.0;

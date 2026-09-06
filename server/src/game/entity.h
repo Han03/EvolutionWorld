@@ -73,6 +73,7 @@ struct Entity {
     double value = 0;       // 数值（ATK/DEF 平值 / MOVE_SLOW,THORNS 比例 / REGEN 每秒回血）
     double remainSec = 0;   // 剩余时长（秒）
     double durationSec = 0; // 总时长（秒，供 UI 展示）
+    double tickAccum = 0;   // REGEN/BLEED 累积量（每秒结算一次事件）
   };
   std::vector<Buff> buffs;  // 自身 Buff 列表（buffSystem 每 tick 衰减）
   // 是否挂有指定类型的 Buff（且未过期）——眩晕/霸体/减速等状态查询
@@ -129,14 +130,17 @@ struct Entity {
     // --- 大规模 AI 调度（时间片轮转 + 距离分级）---
     uint32_t tickStride = 1; // 每 N tick 更新一次（AI LOD，由调度器维护）
   } ai;
-  // 当前移动速度倍率 0..1（多减速 Buff 取最大；100% = 无减速）。服务端/协议共用，
-  // 用于广播"速度倍率（含减速 buff）"与移动目标速度计算（与 slowedSpeed 一致）。
+  // 当前移动速度倍率 0..1（多减速取最大 + 加速取最大，与 handleInput/客户端 predict 一致）。
+  // 服务端/协议共用，用于广播“速度倍率（含减速/加速 buff）”与移动目标速度计算。
   double moveScale() const {
-    double slow = 0;
-    for (const auto& b : buffs)
-      if (b.type == 3 && b.remainSec > 0) slow = std::max(slow, b.value); // BuffType::MOVE_SLOW
-    double s = 1.0 - slow;
-    return s < 0 ? 0.0 : s;
+    double slow = 0, speed = 0;
+    for (const auto& b : buffs) {
+      if (b.remainSec <= 0) continue;
+      if (b.type == 3)       slow = std::max(slow, b.value);       // MOVE_SLOW
+      else if (b.type == 11) speed = std::max(speed, b.value);     // SPEED
+    }
+    double s = 1.0 + speed - slow;
+    return s < 0.05 ? 0.05 : s;
   }
   // 输入状态（由网络层/防作弊写入，输入系统消费）
   struct {

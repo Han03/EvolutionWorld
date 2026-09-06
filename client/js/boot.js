@@ -356,8 +356,11 @@ async function enterWorld(token, username, worldMeta) {
       } else if (S.entities) { S.entities.applyRespawn(ev.wid); }
     }
     if (ev.evtType === EVT.DAMAGE) {
-      // 伤害飘字：服务端权威伤害值（仅当目标实体在视野内时显示）
-      const dmgTarget = findEntityByWid(ev.wid);
+      // 伤害飘字：服务端权威伤害值（forRender 跳过自身，用 predictor 兜底）
+      let dmgTarget = findEntityByWid(ev.wid);
+      if (!dmgTarget && ev.wid === net.selfWid && S.predictor) {
+        const p = S.predictor.predicted(); dmgTarget = { x: p.x, z: p.z };
+      }
       if (dmgTarget) {
         const dmgVal = Math.round(ev.b);
         if (dmgVal > 0) {
@@ -365,8 +368,11 @@ async function enterWorld(token, username, worldMeta) {
         }
       }
     } else if (ev.evtType === EVT.HEAL) {
-      // 治疗飘字（buff 持续回血）：服务端权威治疗值
-      const healTarget = findEntityByWid(ev.wid);
+      // 治疗飘字：服务端权威治疗值（forRender 跳过自身，用 predictor 兜底）
+      let healTarget = findEntityByWid(ev.wid);
+      if (!healTarget && ev.wid === net.selfWid && S.predictor) {
+        const p = S.predictor.predicted(); healTarget = { x: p.x, z: p.z };
+      }
       if (healTarget) {
         const healVal = Math.round(ev.b);
         if (healVal > 0) {
@@ -564,7 +570,16 @@ async function enterWorld(token, username, worldMeta) {
     }
     renderSkillBar(); S._skillDirty = false;
   };
-  net.onBuffs = (msg) => { S.myBuffs = msg.buffs; S._buffDirty = true; };
+  net.onBuffs = (msg) => {
+    // 保留已有 buff 的 totalSec（服务端 REGEN 回血会频繁重发 S2C_BUFFS，
+    // 新对象的 remainSec 已衰减，若用它初始化 totalSec 会导致进度条恒为 1.0）
+    const prev = new Map(S.myBuffs.map(b => [b.skillId + '_' + b.type, b]));
+    for (const b of msg.buffs) {
+      const old = prev.get(b.skillId + '_' + b.type);
+      b.totalSec = old ? old.totalSec : b.remainSec;
+    }
+    S.myBuffs = msg.buffs; S._buffDirty = true;
+  };
 
   // ---- 控制台 ----
   net.onConsole = (msg) => {

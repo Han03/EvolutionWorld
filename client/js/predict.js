@@ -158,6 +158,7 @@ export class Predictor {
     this._tickFrac = 0;     // 当前 tick 内进度 [0,1)
     this._nearby = [];      // 附近实体列表（用于物理层实体阻挡）
     this._radius = CFG.RADIUS;
+    this.speedMul = 1.0;    // 速度倍率（含减速/加速 buff，由外部每帧更新）
   }
 
   /** 从服务端 welcome/快照设置起始位置 */
@@ -167,6 +168,11 @@ export class Predictor {
     this._prevPos = { ...this.pos };
     this._acc = 0;
     this._tickFrac = 0;
+  }
+
+  /** 更新速度倍率（减速/加速 buff 综合结果，0..N） */
+  setSpeedMul(mul) {
+    this.speedMul = Math.max(0.05, mul);
   }
 
   /** 应用最新输入（moveX/moveZ 归一化 [-1,1]） */
@@ -269,8 +275,8 @@ export class Predictor {
     const len = Math.hypot(this.moveX, this.moveZ);
     let tx = 0, tz = 0;
     if (len > 1e-4) {
-      tx = (this.moveX / len) * CFG.MAX_MOVE_SPEED;
-      tz = (this.moveZ / len) * CFG.MAX_MOVE_SPEED;
+      tx = (this.moveX / len) * CFG.MAX_MOVE_SPEED * this.speedMul;
+      tz = (this.moveZ / len) * CFG.MAX_MOVE_SPEED * this.speedMul;
     }
     // 2) 纯 2D 水平物理步进（加速度/摩擦/地形碰撞）→ 写入 this.pos（纯物理位置）
     //    exact=true：玩家位置会上报服务端并接受同款全精度地形校验，

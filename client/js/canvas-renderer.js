@@ -596,7 +596,8 @@ export class WebGLRenderer {
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(sd.icon || '❔', bx, iconY);
         if (buff.remainSec > 0) {
-          const ratio = Math.max(0, Math.min(1, buff.remainSec / (sd.cooldownMs ? sd.cooldownMs / 1000 : 10)));
+          const total = buff.totalSec || 10;
+          const ratio = Math.max(0, Math.min(1, buff.remainSec / total));
           ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5;
           ctx.beginPath(); ctx.arc(bx, iconY, rr + 1.5, -Math.PI / 2, -Math.PI / 2 + ratio * Math.PI * 2); ctx.stroke();
         }

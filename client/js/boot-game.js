@@ -336,6 +336,18 @@ export function loop(now) {
   }
 
   S.entities.update(dt);
+  // 从自身 buff 列表计算速度倍率（减速/加速，多减速取最大 + 加速取最大，与服务端 moveScale/handleInput 同公式）
+  {
+    let slow = 0, speed = 0;
+    const buffs = S.myBuffs || [];
+    for (let i = 0; i < buffs.length; i++) {
+      const b = buffs[i];
+      if (b.remainSec <= 0) continue;
+      if (b.type === 3) slow = Math.max(slow, b.value);       // MOVE_SLOW
+      else if (b.type === 11) speed = Math.max(speed, b.value); // SPEED
+    }
+    S.predictor.setSpeedMul(Math.max(0.05, 1.0 + speed - slow));
+  }
   S.predictor.setNearbyEntities(S.entities.forRender());
   const selfPos = S.predictor.step(rawDt);
   const renderPos = S.predictor.renderPos();
@@ -362,6 +374,16 @@ export function loop(now) {
       }
     }
     if (S._skillDirty) { renderSkillBar(); S._skillDirty = false; S._lastCdTick = now; }
+    // Buff 本地递减（与服务端 tick 解耦，平滑 UI 倒计时）
+    if (S.myBuffs.length > 0) {
+      const buffDt = (now - (S._lastBuffTick || now)) / 1000;
+      if (buffDt > 0) {
+        for (const b of S.myBuffs) { b.remainSec = Math.max(0, b.remainSec - buffDt); }
+        S.myBuffs = S.myBuffs.filter(b => b.remainSec > 0);
+        S._buffDirty = true;
+      }
+      S._lastBuffTick = now;
+    }
     if (S._buffDirty) { renderBuffBar(); S._buffDirty = false; }
     if (now - S._lastCdTick >= 100) {
       S._lastCdTick = now;
