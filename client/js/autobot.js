@@ -90,6 +90,9 @@ const S_ = {
   _lastManualInputAt: 0,
   _lastSupplyAt: 0,
   _supplyFailAt: 0,     // 补给失败冷却截止时间（金币不足时避免反复跑商店）
+  _collectGotoX: 0,     // 收集任务：前往掉落怪区的探索点（复用至到达/超时）
+  _collectGotoZ: 0,
+  _collectGotoAt: 0,
   _logBuf: [],
 };
 
@@ -111,6 +114,8 @@ const CFG = {
   SKILL_CD_TOL_MS: 150,     // 技能冷却就绪判定容忍（服务端 cdMs 精确到秒的余量）
   GOAL_TIMEOUT_MS: 45000,  // 子目标超时
   GRIND_EXPLORE_M: 40,     // 无怪时探索距离
+  MONSTER_FREE_R: 90,      // 主城免怪半径（与服务端 config.worldMonsterFreeRadius 一致）
+  MONSTER_BAND_M: 30,      // 怪物等级→距离带（每级 +30m，近弱远强：Lv1≈90~120m）
   HP_POTION_KEEP: 6,       // 血瓶保有量
   MP_POTION_KEEP: 4,       // 蓝瓶保有量
   HP_USE_AT: 0.6,          // 血量低于 60% 时喝血瓶
@@ -721,7 +726,29 @@ function advanceGoal(now) {
         combatAttack(target);
         return;
       }
-      // 3) 无对应怪 → 兜底刷怪
+      // 3) 视野无掉落怪：按掉落怪等级带主动前往怪物区（数据驱动，不打无收益怪）
+      const dropInfo = dropMonsterInfo(g.itemId);
+      if (dropInfo) {
+        // 怪区估算：主城外 免怪半径 + 等级×带宽 ± 随机（服务端按距主城距离分档投放，近弱远强）
+        const base = CFG.MONSTER_FREE_R + dropInfo.level * CFG.MONSTER_BAND_M;
+        // 复用进行中的探索点（未到达/未超时），避免每轮换方向原地打转
+        if (S_._collectGotoAt && performance.now() < S_._collectGotoAt &&
+            Math.hypot(self.x - S_._collectGotoX, self.z - S_._collectGotoZ) > 6) {
+          const r2 = goto(S_._collectGotoX, S_._collectGotoZ, 'collect');
+          if (!r2.ok) { S_._collectGotoAt = 0; }
+          return;
+        }
+        const ang = Math.random() * Math.PI * 2;
+        const dist = base + Math.random() * 80;
+        S_._collectGotoX = Math.cos(ang) * dist;
+        S_._collectGotoZ = Math.sin(ang) * dist;
+        S_._collectGotoAt = performance.now() + 25000;
+        log(`🔍 视野无掉落怪（Lv${dropInfo.level} 掉落区 ${dist.toFixed(0)}m），前往探索`);
+        const r = goto(S_._collectGotoX, S_._collectGotoZ, 'collect');
+        if (!r.ok) { S_._collectGotoAt = 0; }
+        return;
+      }
+      // 4) 掉落表无该物品（数据缺失）→ 兜底打最近怪（预期无收益，待数据补齐）
       const any = nearestMonster();
       if (any) {
         const r = goto(any.x, any.z, 'hunt');
@@ -1262,6 +1289,22 @@ function pickKillTarget(key) {  const nameSet = new Set();
     if (terrainBlocked(v.x, v.z)) continue; // 目标站在空洞/不可达区（路径隔开）→ 不选
     const d = Math.hypot(v.x - self.x, v.z - self.z);
     if (d < bd) { bd = d; best = v; }
+  }
+  return best;
+}
+
+/** 掉落指定物品的怪物信息（数据驱动）：返回最低等级掉落怪的 { level, keys }；无掉落怪返回 null
+ *  用途：collect 目标视野内无掉落怪时，按等级带估算怪区位置，主动前往而非乱打无收益怪 */
+function dropMonsterInfo(itemId) {
+  const mons = gamedataMonsters();
+  let best = null;
+  for (const m of mons) {
+    if ((m.drops || []).some(d => Number(d.item) === Number(itemId))) {
+      const lv = (m.level || 1) | 0;
+      if (!best || lv < best.level) {
+        best = { level: lv, keys: new Set([m.key, m.name].filter(Boolean)) };
+      }
+    }
   }
   return best;
 }
@@ -1812,6 +1855,8 @@ export function __testSkill(skillId, wid, x, z) {
   S_.net.sendCastSkill(skillId, wid || 0, x || 0, z || 0);
   return 'sent';
 }
+export function __testSetGamedata(gd) { S_.gamedata = gd || null; return !!S_.gamedata; }
+export function __testDropMonsterInfo(itemId) { return dropMonsterInfo(itemId); }
 export function __autobotDebug() {
   pullQuestViews();
   return {
