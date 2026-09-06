@@ -65,6 +65,8 @@ const S_ = {
   _kiteUntil: 0,        // 攻击后走位窗口截止时间（期间横向移动躲避怪物攻击）
   _kiteSide: 1,         // 走位绕圈方向（交替）
   _castLockUntil: 0,    // 技能前摇走位锁定截止时间（期间静止等前摇结算）
+  _skillAt: {},         // 技能 id -> 上次施放时间（per-skill 本地节流）
+  _lastBuffAt: 0,       // 自身增益技能上次施放时间（刷新节流）
   _moveSnap: null,      // 卡住检测：上次位置快照 {x,z,at}
   _moveCtx: '',         // 卡住检测：当前移动上下文（区分目标）
 
@@ -101,6 +103,11 @@ const CFG = {
   PICKUP_RANGE: 2.4,       // 主动拾取距离
   PICKUP_GOTO_RANGE: 16,   // 空闲时前往拾取的掉落物最大距离（更远不值得跑）
   CAST_LOCK_MS: 400,       // 技能前摇走位锁定（前摇 200ms + 余量，防 cancelOnMove 打断）
+  HEAL_SKILL_AT: 0.55,      // 血量低于 55% 时优先使用治疗/回血技能（免费，先于血瓶）
+  BUFF_REFRESH_MS: 20000,   // 自身增益技能（攻击/防御/移速等）刷新间隔
+  COMBAT_SAFE_MIN: 2.2,     // 与目标距离低于该值立即径向拉开（避免贴身受伤）
+  COMBAT_KEEP_DIST: 3.6,    // 战斗走位保持的目标距离（打得到且不易被近战贴身）
+  SKILL_CD_TOL_MS: 150,     // 技能冷却就绪判定容忍（服务端 cdMs 精确到秒的余量）
   GOAL_TIMEOUT_MS: 45000,  // 子目标超时
   GRIND_EXPLORE_M: 40,     // 无怪时探索距离
   HP_POTION_KEEP: 6,       // 血瓶保有量
@@ -280,6 +287,9 @@ export function tick(now) {
             return;
           }
         }
+      } else if (d < CFG.COMBAT_SAFE_MIN) {
+        // 贴身保护：过近立即径向拉开，维持安全距离（避免站着被怪贴身打）
+        kiteStep(v, true);
       } else if (now < S_.kiteUntil) {
         if (now < S_._castLockUntil) {
           // 技能前摇锁定：原地不动，避免 cancelOnMove 打断施法
@@ -465,9 +475,13 @@ function pickMaintenanceAction(now) {
     }
   }
 
-  // b) 装备更新：有更强可买装备（等级足够且买得起）→ 购买并穿戴
+  // b1) 装备更新：有更强可买装备（等级足够且买得起）→ 购买并穿戴
   const buyGear = findBetterBuyableGear(lv);
   if (buyGear) return { type: 'buyEquip', itemId: buyGear.itemId, slot: buyGear.slot };
+
+  // b2) 装备更新：材料/金币足够时合成最强装备（严格强于当前穿戴，元数据驱动）
+  const craftGear = bestCraftableGear(lv);
+  if (craftGear) return { type: 'craftConsumable', recipeId: craftGear.recipe.recipeId, count: 1, npcTag: craftGear.recipe.npcTag || NPC_TAG_CRAFT };
 
   // c) 强化：等级足够 + 有可强化装备 + 金币/材料充足 → 强化一次
   if (lv >= CFG.ENHANCE_MIN_LV) {
@@ -833,6 +847,14 @@ function handleLowHp(now) {
 
   // 2) 已脱离威胁（安全区）→ 恢复
   S_._fleeSafeCount++;
+  // 2a') 免费治疗技能优先（冷却就绪直接用，省血瓶；残血中也能放，self 技能无需靠近）
+  const hs = readyHealSkill(st.mp !== undefined ? st.mp : 0);
+  if (hs) {
+    const self = S.predictor.predicted();
+    castSkill(hs, 0, self.x, self.z);
+    log(`💚 残血恢复：使用回复技能 ${hs.name}`);
+    return true;
+  }
   // 2a) 有血瓶 → 喝血瓶恢复（带节流，等待生效）
   const pot = potionOf('hp');
   if (pot && invCount(pot.id) > 0) {
@@ -907,8 +929,15 @@ function kiteStep(v, radial) {
   const ux = dx / dist, uz = dz / dist;
   let tx, tz;
   if (radial) {
-    // 低血：径向远离怪物（逃跑拉开）
+    // 低血/贴身：径向远离怪物（逃跑拉开）
     tx = self.x + ux * 3.2; tz = self.z + uz * 3.2;
+  } else if (dist < 2.6) {
+    // 偏近（未到贴身线但已进入威胁区）：先径向退到安全距离，再绕圈
+    tx = self.x + ux * 3.0; tz = self.z + uz * 3.0;
+    if (circleBlocked(tx, tz, 0.5)) {
+      tx = self.x - ux * 2.2; tz = self.z - uz * 2.2;
+      if (circleBlocked(tx, tz, 0.5)) { S.input.clickTarget = null; return; }
+    }
   } else {
     // 绕圈：垂直攻击方向横移（保持可攻击距离附近打转）
     S_._kiteSide = -S_._kiteSide;
@@ -934,14 +963,22 @@ function combatAttack(v) {
   const now = performance.now();
   const net = S_.net;
   const S = S_.S;
+  const st = S.playerStats || {};
+  const mp = st.mp !== undefined ? st.mp : 0;
 
-  // 用消耗品补血
-  const stats = S.playerStats || {};
-  if (stats.hp !== undefined && stats.maxHp && stats.hp / stats.maxHp < CFG.HP_USE_AT) {
-    const pot = potionOf('hp');
-    if (pot && invCount(pot) > 0) {
-      net.sendUseItem(pot.id, 1);
-      log('❤️ 使用血瓶');
+  // 血量偏低（未到残血逃跑线）→ 优先用免费治疗技能，血瓶兜底
+  if (st.hp !== undefined && st.maxHp && st.hp / st.maxHp < CFG.HP_USE_AT) {
+    const hs = readyHealSkill(mp);
+    if (hs) {
+      const self = S.predictor.predicted();
+      castSkill(hs, 0, self.x, self.z);
+      log(`💚 战斗中使用回复技能 ${hs.name}`);
+    } else {
+      const pot = potionOf('hp');
+      if (pot && invCount(pot) > 0) {
+        net.sendUseItem(pot.id, 1);
+        log('❤️ 使用血瓶');
+      }
     }
   }
 
@@ -952,15 +989,20 @@ function combatAttack(v) {
     // 攻击后进入走位窗口：冷却期间横向绕圈躲避怪物攻击，不站着对打
     S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
   }
-  // 技能为辅（仅在目标血量较高、冷却好时补充，不阻塞普攻）
-  // 技能为辅（蓝量足够、目标血量较高、冷却好时补充，不阻塞普攻）
-  const st = S.playerStats || {};
-  const skill = bestOffensiveSkill(st.mp);
-  if (skill && now - S_.lastSkillAt > Math.max(skill.cdMs || 3000, 2000) && v.maxHp && v.maxHp > 60) {
-    net.sendCastSkill(skill.id, v.wid, v.x, v.z);
-    S_.lastSkillAt = now;
-    // 前摇锁定：期间不走位，避免 cancelOnMove 打断施法（服务端移动即取消）
-    S_._castLockUntil = now + CFG.CAST_LOCK_MS;
+  // 进攻技能为辅：按元数据判定冷却就绪 + 目标在施法距离内 + 蓝量够（不阻塞普攻）
+  const distToTarget = Math.hypot(v.x - S.predictor.predicted().x, v.z - S.predictor.predicted().z);
+  const skill = bestOffensiveSkill(mp, distToTarget);
+  if (skill) {
+    castSkill(skill, v.wid, v.x, v.z);
+    log(`🔥 施放技能 ${skill.name}（伤害/减益，距离 ${Math.round(distToTarget)}m）`);
+  }
+  // 自身增益技能：冷却好了顺手补（战斗属性提升，减少受伤）
+  const buff = readySelfBuffSkill(mp);
+  if (buff && now - (S_._lastBuffAt || -1e9) > CFG.BUFF_REFRESH_MS) {
+    const self = S.predictor.predicted();
+    castSkill(buff, 0, self.x, self.z);
+    S_._lastBuffAt = now;
+    log(`✨ 施放增益技能 ${buff.name}`);
   }
 }
 
@@ -1368,7 +1410,7 @@ function slotNumber(slotKey) {
   return { helm: 1, chest: 2, pants: 3, gloves: 4, boots: 5, weapon: 6 }[slotKey] || 0;
 }
 
-/** 找可购买且更强的装备（等级满足、买得起、优于当前穿戴） */
+/** 找可购买且更强的装备（等级满足、买得起、优于当前穿戴，选评分最高=当前能获取的最强） */
 function findBetterBuyableGear(lv) {
   const S = S_.S;
   const entries = shopEntries();
@@ -1390,15 +1432,42 @@ function findBetterBuyableGear(lv) {
   return best;
 }
 
-/** 强化候选：背包中可强化装备 + 强化石数量满足最低档 + 金币足够 */
+/** 可合成的最强装备：材料/金币/等级满足，且严格强于当前穿戴（元数据驱动，与购买互补） */
+function bestCraftableGear(lv) {
+  const S = S_.S;
+  let best = null;
+  for (const r of craftRecipes()) {
+    const d = itemDefById(r.resultItemId);
+    if (!d || d.type !== 'equip') continue;
+    if (!craftableNow(r)) continue; // 材料 + 金币 + 等级 全部满足
+    const slot = slotNumber(d.slot);
+    if (!slot) continue;
+    const cur = S.equip && S.equip[slot];
+    const curScore = cur && cur.itemId ? equipScore(itemDefById(cur.itemId)) * (1 + (cur.enhance || 0) * 0.15) : 0;
+    const newScore = equipScore(d);
+    if (newScore > curScore + 0.5) {
+      if (!best || newScore > best.score) best = { recipe: r, itemId: r.resultItemId, slot, score: newScore };
+    }
+  }
+  return best;
+}
+
+/** 强化候选：优先当前已穿戴装备（提升实际战力），其次背包装备；强化石/金币足够 */
 function pickEnhanceCandidate() {
   const S = S_.S;
-  const bag = S.equipBag || [];
   const enhCfg = S_.gamedata && S_.gamedata.enhance;
   if (!enhCfg || !enhCfg.levels || !enhCfg.levels.length) return null;
-  const lv0 = enhCfg.levels[0];
-  for (const ins of bag) {
-    if (ins.locked) continue;
+  // 已穿戴装备（6 槽）：优先强化当前战力，按评分降序（先强化最强装备）
+  const worn = [];
+  for (const slot of [1, 2, 3, 4, 5, 6]) {
+    const e = S.equip && S.equip[slot];
+    if (e && e.itemId && !e.locked) worn.push(e);
+  }
+  worn.sort((a, b) => (equipScore(itemDefById(b.itemId)) - equipScore(itemDefById(a.itemId))));
+  // 背包装备：作为已穿戴的后备
+  const bag = S.equipBag || [];
+  const candidates = worn.concat(bag.filter(x => !x.locked));
+  for (const ins of candidates) {
     const lvl = ins.enhance || 0;
     const nextLv = enhCfg.levels[lvl];
     if (!nextLv) continue; // 已满级
@@ -1427,26 +1496,110 @@ function equipBestInSlot(slotNum) {
 }
 
 // ---------------------------------------------------------------------------
-// 技能选择（数据驱动：挑伤害最高、已学习的技能）
+// 技能系统（数据驱动：已学技能 × gamedata 技能属性 → 冷却/距离/效果类型判定）
 // ---------------------------------------------------------------------------
-function bestOffensiveSkill(mp) {
+function skillDefById(id) {
+  const skills = S_.gamedata && S_.gamedata.skills;
+  if (!skills) return null;
+  // /api/gamedata 的 skills 是 {skills:[...], starterSkills:[...]} 嵌套对象，本地 json 为数组，兼容两者
+  const arr = Array.isArray(skills) ? skills : (Array.isArray(skills.skills) ? skills.skills : Object.values(skills));
+  if (!Array.isArray(arr)) return null;
+  return arr.find(s => s && s.id === id) || null;
+}
+/** 已学会的技能定义列表（learnedSkills 是服务端权威的已学技能 + 冷却） */
+function learnedSkillDefs() {
+  const learned = S_.S.learnedSkills || [];
+  const out = [];
+  for (const l of learned) {
+    const d = skillDefById(l.id);
+    if (d) out.push({ def: d, cdMs: l.cdMs || 0 });
+  }
+  return out;
+}
+/** 减益类型（与服务端 skills.h SkillDef::isDebuff 一致，元数据 buffType 判定） */
+function isDebuffType(t) {
+  return t === 'move_slow' || t === 'bleed' || t === 'def_down' || t === 'atk_down' || t === 'stun';
+}
+/** 技能功能效果分类：damage 伤害 / heal 回复 / debuff 减益 / buff 增益 / none */
+function skillKind(s) {
+  if (!s) return 'none';
+  if ((s.heal || 0) > 0 || s.buffType === 'regen') return 'heal';          // 回复（瞬间治疗/持续回血）
+  if ((s.dmgMul || 0) > 0 || (s.flatDmg || 0) > 0) return 'damage';        // 伤害
+  if (s.buffType && s.buffType !== 'none' && (s.buffDur || s.buffDurSec || 0) > 0) {
+    return isDebuffType(s.buffType) ? 'debuff' : 'buff';                   // 减益 / 增益
+  }
+  return 'none';
+}
+/** 技能冷却是否就绪：读服务端权威 cdMs（learnedSkills），并做 per-skill 本地节流 */
+function skillReady(s) {
+  const S = S_.S;
+  const l = (S.learnedSkills || []).find(x => x.id === s.id);
+  if (l && (l.cdMs || 0) > CFG.SKILL_CD_TOL_MS) return false;
+  const lastAt = S_._skillAt[s.id] || -1e9; // 首次施放视为就绪
+  const minGap = Math.max(s.cooldownMs || 3000, 2000);
+  return performance.now() - lastAt >= minGap;
+}
+/** 施放技能并登记：本地节流 + 前摇走位锁定（有前摇的技能锁定期间不走位） */
+function castSkill(s, targetWid, x, z) {
+  const S = S_.S;
+  S_.net.sendCastSkill(s.id, targetWid, x, z);
+  S_._skillAt[s.id] = performance.now();
+  if ((s.castTimeMs || 0) > 0) S_._castLockUntil = performance.now() + CFG.CAST_LOCK_MS;
+}
+/** 战斗技能候选评分：伤害口径（dmgMul×100+flatDmg，兼容旧 damage）+ 减益价值加权 */
+function skillOffenseScore(s) {
+  const dmg = s.damage !== undefined ? s.damage : (s.dmgMul || 0) * 100 + (s.flatDmg || 0);
+  let score = dmg;
+  if (isDebuffType(s.buffType)) score += (s.buffValue || 0) * 10; // 撕裂/迟缓等持续减益的价值
+  return score;
+}
+/** 选最佳进攻技能（伤害/减益）：蓝量够、冷却就绪、目标在施法距离内（元数据 range 判定） */
+function bestOffensiveSkill(mp, dist) {
   const S = S_.S;
   const learned = S.learnedSkills || [];
   if (!learned.length) return null;
-  const skills = S_.gamedata && S_.gamedata.skills;
-  if (!skills) return null;
-  const arr = Array.isArray(skills) ? skills : Object.values(skills);
-  let best = null, bestDmg = 0;
-  for (const s of arr) {
-    if (!learned.find(l => l.id === s.id)) continue;
+  let best = null, bestScore = 0;
+  for (const l of learned) {
+    const s = skillDefById(l.id);
+    if (!s) continue;
     if (s.id === 1000 || s.id >= 2000) continue; // 排除普攻与怪物技能
-    // 伤害口径：gamedata 用 dmgMul（攻击倍数）+ flatDmg，兼容旧 damage 字段
-    const dmg = s.damage !== undefined ? s.damage : (s.dmgMul || 0) * 100 + (s.flatDmg || 0);
-    if (dmg <= 0) continue;
-    if (mp !== undefined && (s.mana || 0) > mp) continue; // 蓝量不足不用，避免服务端拒施
-    if (dmg > bestDmg) { bestDmg = dmg; best = s; }
+    const kind = skillKind(s);
+    if (kind !== 'damage' && kind !== 'debuff') continue; // 只要伤害/减益
+    const score = skillOffenseScore(s);
+    if (score <= 0) continue;
+    if ((s.mana || 0) > mp) continue;                                  // 蓝量不足不用
+    if (!skillReady(s)) continue;                                      // 冷却未就绪
+    if (dist !== undefined) {
+      const reach = Math.max(s.range || 5, CFG.ATK_RANGE);             // 施法距离元数据
+      if (dist > reach) continue;                                      // 超施法距离不施放
+    }
+    if (score > bestScore) { bestScore = score; best = s; }
   }
   return best;
+}
+/** 回复技能（瞬间治疗/持续回血）：冷却就绪且蓝够的第一个 */
+function readyHealSkill(mp) {
+  for (const l of (S_.S.learnedSkills || [])) {
+    const s = skillDefById(l.id);
+    if (!s) continue;
+    if (skillKind(s) !== 'heal') continue;
+    if ((s.mana || 0) > mp) continue;
+    if (!skillReady(s)) continue;
+    return s;
+  }
+  return null;
+}
+/** 自身增益技能（攻击/防御/移速等，非回复非减益）：冷却就绪的第一个 */
+function readySelfBuffSkill(mp) {
+  for (const l of (S_.S.learnedSkills || [])) {
+    const s = skillDefById(l.id);
+    if (!s) continue;
+    if (skillKind(s) !== 'buff') continue;
+    if ((s.mana || 0) > mp) continue;
+    if (!skillReady(s)) continue;
+    return s;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
