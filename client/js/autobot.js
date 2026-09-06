@@ -56,6 +56,11 @@ const S_ = {
   _skipWids: new Map(), // wid -> 跳过截止时间（幽灵怪/异常目标容错）
   _pickupTries: new Map(), // 掉落物 wid -> 连续拾取次数（拾取无响应容错）
 
+  // 低血逃生 / 恢复
+  _lastFleePotAt: 0,    // 残血喝血瓶节流时间戳
+  _lastFleeLogAt: 0,    // 残血无法补给时的日志限频时间戳
+  _fleeSafeCount: 0,    // 已判定安全的连续轮数（避免抖动）
+
   // 走位攻击 / 空洞绕行
   _kiteUntil: 0,        // 攻击后走位窗口截止时间（期间横向移动躲避怪物攻击）
   _kiteSide: 1,         // 走位绕圈方向（交替）
@@ -70,6 +75,7 @@ const S_ = {
     itemsCrafted: 0,
     enhanceOk: 0,
     goldEarned: 0,
+    flees: 0,           // 残血逃跑次数
     startedAt: 0,
   },
 
@@ -96,6 +102,11 @@ const CFG = {
   HP_POTION_KEEP: 6,       // 血瓶保有量
   MP_POTION_KEEP: 4,       // 蓝瓶保有量
   HP_USE_AT: 0.6,          // 血量低于 60% 时喝血瓶
+  HP_FLEE_AT: 0.35,        // 血量低于 35% 判定残血：停止战斗，先逃跑后恢复
+  HP_SAFE_AT: 0.75,        // 恢复到 75% 以上视为安全，结束逃生状态
+  FLEE_SAFE_DIST: 14,      // 距最近威胁怪物超过该距离视为安全（可安心恢复）
+  FLEE_DIST: 16,           // 逃跑落点距离（远离威胁的径向距离）
+  FLEE_USE_POT_CD: 900,    // 残血喝血瓶节流（服务端用物品冷却余量）
   GOLD_RESERVE: 300,       // 补给/强化预留金币
   ENHANCE_MIN_LV: 3,       // 达到该等级后开始强化装备
   GRIND_MIN_EXP: 0.5,      // 经验条过半才优先刷怪（否则先做任务）
@@ -156,14 +167,15 @@ export async function start() {
   saveState();
 }
 
-/** 暂停 */
+/** 暂停：停止一切自动行为（移动/攻击/技能/对话/购买），等手动恢复 */
 export function pause() {
   if (!S_.running) return;
   S_.paused = true;
   clearGoal();
   stopCombat();
-  if (S_.S && S_.S.input) S_.S.input.clickTarget = null;
-  log('⏸️ 自动化测试已暂停');
+  // 彻底停止移动：清目标点 + A* 路径 + 长按跟随（仅清 clickTarget 会残留寻路路径继续走）
+  if (S_.S && S_.S.input) S_.S.input.clearMovement();
+  log('⏸️ 自动化测试已暂停（已停止移动与施放技能）');
   emitStatus();
   saveState();
 }
@@ -174,9 +186,9 @@ export function reset() {
   S_.paused = false;
   clearGoal();
   stopCombat();
-  if (S_.S && S_.S.input) S_.S.input.clickTarget = null;
+  if (S_.S && S_.S.input) S_.S.input.clearMovement();
   S_.skippedQuests.clear();
-  S_.stats = { questsDone: 0, monstersKilled: 0, itemsBought: 0, itemsCrafted: 0, enhanceOk: 0, goldEarned: 0, startedAt: 0 };
+  S_.stats = { questsDone: 0, monstersKilled: 0, itemsBought: 0, itemsCrafted: 0, enhanceOk: 0, goldEarned: 0, flees: 0, startedAt: 0 };
   try { localStorage.removeItem('ew_autobot'); } catch (e) {}
   log('♻️ 自动化测试已重置');
   emitStatus();
@@ -231,6 +243,10 @@ export function tick(now) {
   } else {
     S_._lastManualInputAt = 0;
   }
+
+  // ── 0. 残血检测：血量低于阈值 → 停止战斗，先逃跑脱离威胁，再恢复（喝血瓶/商店补给） ──
+  // 逃生期间占用本决策轮，不推进任何其他目标；恢复安全后自动回到正常流程
+  if (handleLowHp(performance.now())) return;
 
   const selfPos = S.predictor.predicted();
   const self = { x: selfPos.x, z: selfPos.z };
@@ -744,13 +760,110 @@ function findClearOffset(x, z, ux, uz) {
 }
 
 // ---------------------------------------------------------------------------
-// 战斗走位（kiting）：攻击后横向绕圈移动，避免站着被怪打死
+// 残血逃生与恢复（handleLowHp 由 tick 顶层调用）
+// 流程：残血 → 停止战斗 → 有威胁先径向逃跑 → 脱离威胁后喝血瓶恢复 /
+//       无血瓶则前往商店补给 → 血量回到安全线后结束逃生，恢复原决策。
 // ---------------------------------------------------------------------------
 function lowHpNow() {
   const S = S_.S, st = S.playerStats || {};
   return !!(st.maxHp && st.hp / st.maxHp < 0.35);
 }
 
+/**
+ * 残血处理。返回 true 表示本决策轮已被逃生/恢复占用。
+ */
+function handleLowHp(now) {
+  const S = S_.S;
+  const st = S.playerStats || {};
+  if (!st.maxHp || st.hp === undefined) return false;
+  const ratio = st.hp / st.maxHp;
+  if (ratio >= CFG.HP_FLEE_AT) { S_._fleeSafeCount = 0; return false; } // 血量健康，正常决策
+
+  // 残血：立即停止战斗（不再普攻/放技能）
+  if (S_.attackWid) {
+    stopCombat();
+    log('🚨 残血，停止战斗');
+  }
+
+  // 1) 附近有威胁怪物且未脱离 → 径向逃跑（远离最近威胁）
+  const threat = nearestMonster();
+  if (threat) {
+    const self = S.predictor.predicted();
+    const d = Math.hypot(threat.x - self.x, threat.z - self.z);
+    if (d < CFG.FLEE_SAFE_DIST) {
+      fleeFrom(threat, d);
+      return true;
+    }
+  }
+
+  // 2) 已脱离威胁（安全区）→ 恢复
+  S_._fleeSafeCount++;
+  // 2a) 有血瓶 → 喝血瓶恢复（带节流，等待生效）
+  const pot = potionOf('hp');
+  if (pot && invCount(pot.id) > 0) {
+    if (now - S_._lastFleePotAt > CFG.FLEE_USE_POT_CD) {
+      S_.net.sendUseItem(pot.id, 1);
+      S_._lastFleePotAt = now;
+      log('❤️ 残血恢复：使用血瓶');
+    }
+    return true; // 恢复中：本轮不做其他事，等血量回升
+  }
+  // 2b) 无血瓶 → 前往商店补给 / 合成血瓶（交给 goal 流程执行）
+  if (!S_.goal || (S_.goal.type !== 'buyConsumable' && S_.goal.type !== 'craftConsumable')) {
+    const buy = findShopEntryFor('hp');
+    const craft = findCraftFor('hp');
+    if (buy) {
+      setGoal({ type: 'buyConsumable', itemId: buy.itemId, count: CFG.HP_POTION_KEEP });
+      log('⚠️ 残血且无血瓶，前往商店补给');
+    } else if (craft) {
+      setGoal({ type: 'craftConsumable', recipeId: craft.recipeId, count: 1 });
+      log('⚠️ 残血且无血瓶，前往合成补给');
+    } else {
+      // 商店与合成均无血瓶：限频提示，保持"恢复中"状态等待转机（捡药/刷新商店）
+      if (now - S_._lastFleeLogAt > 5000) {
+        S_._lastFleeLogAt = now;
+        log('⚠️ 残血且暂无血瓶补给途径，原地警戒待命');
+      }
+      return true;
+    }
+  }
+
+  // 3) 恢复达标 → 结束逃生状态，放行正常决策
+  if (ratio >= CFG.HP_SAFE_AT) {
+    log('💚 血量已恢复安全，继续行动');
+    return false;
+  }
+  return false; // 交给 goal 流程（buyConsumable）去商店
+}
+
+/** 残血逃跑：向远离威胁怪物的方向移动一段距离（落点不可达时扫描绕行） */
+function fleeFrom(threat, dist) {
+  const S = S_.S;
+  const self = S.predictor.predicted();
+  const dx = self.x - threat.x, dz = self.z - threat.z;
+  const d = Math.hypot(dx, dz) || 1;
+  const ux = dx / d, uz = dz / d;
+  let tx = self.x + ux * CFG.FLEE_DIST;
+  let tz = self.z + uz * CFG.FLEE_DIST;
+  if (terrainBlocked(tx, tz)) {
+    const off = findClearOffset(self.x, self.z, ux, uz);
+    if (off) { tx = self.x + off.x * CFG.FLEE_DIST; tz = self.z + off.z * CFG.FLEE_DIST; }
+    else {
+      // 全向被挡 → 就近后退（不超过 8m），仍挡则原地
+      tx = self.x - ux * 8; tz = self.z - uz * 8;
+      if (terrainBlocked(tx, tz)) { S.input.clickTarget = null; return; }
+    }
+  }
+  S.input.clickTarget = { x: tx, z: tz };
+  S_.stats.flees++;
+  S_._fleeSafeCount = 0;
+  emitStatus();
+  log(`🚨 残血逃跑：远离 ${threat.name || '威胁'}（${Math.round(dist)}m）`);
+}
+
+// ---------------------------------------------------------------------------
+// 战斗走位（kiting）：攻击后横向绕圈移动，避免站着被怪打死
+// ---------------------------------------------------------------------------
 function kiteStep(v, radial) {
   const S = S_.S;
   const self = S.predictor.predicted();
@@ -792,7 +905,7 @@ function combatAttack(v) {
   if (stats.hp !== undefined && stats.maxHp && stats.hp / stats.maxHp < CFG.HP_USE_AT) {
     const pot = potionOf('hp');
     if (pot && invCount(pot) > 0) {
-      net.sendUseItem(pot, 1);
+      net.sendUseItem(pot.id, 1);
       log('❤️ 使用血瓶');
     }
   }
@@ -939,7 +1052,12 @@ function pickDropMonster(itemId) {
   const mons = gamedataMonsters();
   const dropKeys = new Set();
   for (const m of mons) {
-    if ((m.drops || []).some(d => d.item === itemId)) dropKeys.add(m.key || m.name);
+    if ((m.drops || []).some(d => d.item === itemId)) {
+      // gamedata 以 key（'goblin'）为主键，但视野实体名是 name（'哥布林'）——
+      // 只加 key 会导致永不匹配、永远找不到掉落怪（collect 卡死根因之一）
+      dropKeys.add(m.key || m.name);
+      if (m.name) dropKeys.add(m.name);
+    }
   }
   let best = null, bd = 1e9;
   for (const v of views().values()) {
@@ -1033,7 +1151,9 @@ function invCount(itemId) {
   return S.inventory[itemId] || 0;
 }
 
-/** 商店条目（shop.json 或 S2C_SHOP 帧），优先 S2C 实时数据 */
+/** 商店条目（shop.json 或 S2C_SHOP 帧），优先 S2C 实时数据。
+ *  注意：gamedata 商店条目字段为 item（如 {"item":2001}），S2C_SHOP 帧为 itemId，
+ *        此处统一映射为 itemId，避免静态表与实时帧匹配不一致。 */
 function shopEntries() {
   const S = S_.S;
   if (S.shopData && S.shopData.entries) return S.shopData.entries;
@@ -1041,7 +1161,9 @@ function shopEntries() {
   if (!d || !d.shops) return [];
   const shops = Array.isArray(d.shops) ? d.shops : Object.values(d.shops);
   const entries = [];
-  for (const sh of shops) for (const e of (sh.entries || [])) entries.push({ ...e, shopId: sh.shopId || 0 });
+  for (const sh of shops) for (const e of (sh.entries || [])) {
+    entries.push({ ...e, itemId: e.itemId !== undefined ? e.itemId : e.item, shopId: sh.shopId || 0 });
+  }
   return entries;
 }
 function shopPrice(itemId) {
