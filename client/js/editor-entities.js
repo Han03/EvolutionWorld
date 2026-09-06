@@ -39,7 +39,7 @@ export function findSpawnAt(px, py) {
 export function addSpawn(wx, wz, opts) {
   const sp = {
     kind: opts.kind,
-    type: (opts.kind === 'monster' || opts.kind === 'elite') ? opts.type : '',
+    type: (opts.kind === 'monster') ? opts.type : '',
     name: opts.kind === 'npc' ? opts.name : '',
     shopId: opts.kind === 'npc' ? (opts.shopId || 0) : 0,
     x: Math.round(wx * 2) / 2,
@@ -64,7 +64,7 @@ export function renderSpawnList() {
   const filtered = S.spawns.map((sp, i) => ({ sp, i })).filter(({ sp }) => {
     if (!S.spawnSearchText) return true;
     const q = S.spawnSearchText;
-    const kindName = sp.kind === 'npc' ? 'npc' : (sp.kind === 'elite' ? 'elite' : '怪物');
+    const kindName = sp.kind === 'npc' ? 'npc' : '怪物';
     const typeName = sp.kind === 'npc' ? (sp.name || '') : (sp.type || '');
     const haystack = (kindName + ' ' + typeName).toLowerCase();
     return haystack.includes(q);
@@ -80,7 +80,7 @@ export function renderSpawnList() {
     const div = document.createElement('div');
     div.className = 'spawn-item' + (i === S.selectedSpawn ? ' sel' : '');
     const st = SPAWN_STYLE[sp.kind] || SPAWN_STYLE.monster;
-    const kindName = sp.kind === 'npc' ? 'NPC' : (sp.kind === 'elite' ? '精英' : '怪物');
+    const kindName = sp.kind === 'npc' ? 'NPC' : '怪物';
     const typeName = sp.kind === 'npc' ? (sp.name || 'NPC') : (sp.type || '-');
     div.innerHTML = `<span class="sp-dot" style="background:${st.color}"></span>
       <span class="sp-txt">${kindName}·${typeName}</span>
@@ -110,7 +110,7 @@ export function openPlaceSpawnModal(wx, wz) {
   const kindLbl = document.createElement('label');
   const kindSp = document.createElement('span'); kindSp.textContent = '放置类型'; kindLbl.appendChild(kindSp);
   const kindSel = document.createElement('select'); kindSel.id = 'place-kind';
-  [{ value: 'monster', text: '怪物' }, { value: 'npc', text: 'NPC' }, { value: 'elite', text: '精英' }]
+  [{ value: 'monster', text: '怪物' }, { value: 'npc', text: 'NPC' }]
     .forEach(o => { const opt = document.createElement('option'); opt.value = o.value; opt.textContent = o.text; kindSel.appendChild(opt); });
   kindLbl.appendChild(kindSel); body.appendChild(kindLbl);
   const typeLbl = document.createElement('label');
@@ -128,7 +128,7 @@ export function openPlaceSpawnModal(wx, wz) {
     const kind = kindSel.value;
     countRow.style.display = kind === 'monster' ? '' : 'none';
     let entries = [];
-    if (kind === 'monster' || kind === 'elite') entries = Object.entries(S.gameCreatures).map(([t, c]) => ({ value: t, text: `${c.name || t} (${t})` }));
+    if (kind === 'monster') entries = Object.entries(S.gameCreatures).map(([t, c]) => ({ value: t, text: `${c.name || t} (${t})` }));
     else if (kind === 'npc') entries = Object.entries(S.gameNpcs).map(([id, n]) => ({ value: id, text: `${n.name || id} (${id})` }));
     if (!entries.length) entries = [{ value: '', text: '（无可用对象，请先在对应面板创建）' }];
     entries.forEach(o => { const opt = document.createElement('option'); opt.value = o.value; opt.textContent = o.text; typeSel.appendChild(opt); });
@@ -314,7 +314,7 @@ export function renderCreatureList() {
 }
 
 function setCreatureFormEnabled(on) {
-  ['cr-type','cr-name','cr-desc','cr-level','cr-moveSpeed','cr-hp','cr-mp','cr-attack','cr-defense','cr-expReward','cr-goldMin','cr-goldMax','cr-skillIds','cr-isElite','cr-aggroRange','cr-chaseSpeed','cr-eliteAttackRange'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
+  ['cr-type','cr-name','cr-desc','cr-level','cr-moveSpeed','cr-radius','cr-hp','cr-mp','cr-attack','cr-defense','cr-expReward','cr-goldMin','cr-goldMax','cr-skillIds','cr-isElite','cr-aggroRange','cr-chaseSpeed','cr-attackRange'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
   const da = $('btn-drop-add'); if (da) da.disabled = !on;
 }
 
@@ -328,38 +328,40 @@ export function renderCreatureForm() {
   $('creature-form').style.opacity = '1'; setCreatureFormEnabled(true);
   $('cr-type').value = S.selectedCreature; $('cr-name').value = cr.name || ''; $('cr-desc').value = cr.desc || '';
   $('cr-level').value = cr.level || 1; $('cr-moveSpeed').value = (cr.moveSpeed != null ? cr.moveSpeed : 1.5);
+  $('cr-radius').value = cr.radius != null ? cr.radius : 0.5;
   $('cr-hp').value = cr.hp || 0; $('cr-mp').value = cr.mp || 0;
   $('cr-attack').value = cr.attack || 0; $('cr-defense').value = cr.defense || 0;
   $('cr-expReward').value = cr.expReward || 0; $('cr-goldMin').value = cr.goldMin || 0; $('cr-goldMax').value = cr.goldMax || 0;
   $('cr-skillIds').value = (cr.skillIds || []).join(',');
   const isElite = !!cr.isElite; $('cr-isElite').checked = isElite;
-  $('cr-elite-fields').classList.toggle('hidden', !isElite);
-  $('cr-aggroRange').value = cr.aggroRange != null ? cr.aggroRange : 18;
-  $('cr-chaseSpeed').value = cr.chaseSpeed != null ? cr.chaseSpeed : 3;
-  $('cr-eliteAttackRange').value = cr.attackRange != null ? cr.attackRange : 2.5;
+  $('cr-aggroRange').value = cr.aggroRange != null ? cr.aggroRange : 10;
+  $('cr-chaseSpeed').value = cr.chaseSpeed != null ? cr.chaseSpeed : 0;
+  $('cr-attackRange').value = cr.attackRange != null ? cr.attackRange : 1.6;
   renderDropList();
 }
 
 export function bindCreatureForm() {
   const cr = () => S.gameCreatures[S.selectedCreature];
-  const num = (id, key, isInt) => { const el = $(id); el.addEventListener('input', () => { const c = cr(); if (!c) return; const v = isInt ? parseInt(el.value, 10) : parseFloat(el.value); c[key] = isNaN(v) ? 0 : v; }); };
-  num('cr-level', 'level', true); num('cr-moveSpeed', 'moveSpeed', false);
+  const num = (id, key, isInt) => { const el = $(id); if (!el) return; el.addEventListener('input', () => { const c = cr(); if (!c) return; const v = isInt ? parseInt(el.value, 10) : parseFloat(el.value); c[key] = isNaN(v) ? 0 : v; }); };
+  num('cr-level', 'level', true); num('cr-moveSpeed', 'moveSpeed', false); num('cr-radius', 'radius', false);
   num('cr-hp', 'hp', false); num('cr-mp', 'mp', false);
   num('cr-attack', 'attack', false); num('cr-defense', 'defense', false);
   num('cr-expReward', 'expReward', true); num('cr-goldMin', 'goldMin', true); num('cr-goldMax', 'goldMax', true);
   const nameEl = $('cr-name');
-  nameEl.addEventListener('input', () => { const c = cr(); if (!c) return; c.name = nameEl.value; });
-  nameEl.addEventListener('change', () => renderCreatureList());
+  if (nameEl) {
+    nameEl.addEventListener('input', () => { const c = cr(); if (!c) return; c.name = nameEl.value; });
+    nameEl.addEventListener('change', () => renderCreatureList());
+  }
   const descEl = $('cr-desc');
-  descEl.addEventListener('input', () => { const c = cr(); if (!c) return; c.desc = descEl.value; });
+  if (descEl) descEl.addEventListener('input', () => { const c = cr(); if (!c) return; c.desc = descEl.value; });
   const skEl = $('cr-skillIds');
-  skEl.addEventListener('input', () => { const c = cr(); if (!c) return; c.skillIds = skEl.value.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0); });
+  if (skEl) skEl.addEventListener('input', () => { const c = cr(); if (!c) return; c.skillIds = skEl.value.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0); });
   const eliteCb = $('cr-isElite');
-  eliteCb.addEventListener('change', () => { const c = cr(); if (!c) return; c.isElite = eliteCb.checked; $('cr-elite-fields').classList.toggle('hidden', !eliteCb.checked); });
-  const numElite = (id, key) => { const el = $(id); el.addEventListener('input', () => { const c = cr(); if (!c) return; const v = parseFloat(el.value); c[key] = isNaN(v) ? 0 : v; }); };
-  numElite('cr-aggroRange', 'aggroRange'); numElite('cr-chaseSpeed', 'chaseSpeed'); numElite('cr-eliteAttackRange', 'attackRange');
+  if (eliteCb) eliteCb.addEventListener('change', () => { const c = cr(); if (!c) return; c.isElite = eliteCb.checked; });
+  const numElite = (id, key) => { const el = $(id); if (!el) return; el.addEventListener('input', () => { const c = cr(); if (!c) return; const v = parseFloat(el.value); c[key] = isNaN(v) ? 0 : v; }); };
+  numElite('cr-aggroRange', 'aggroRange'); numElite('cr-chaseSpeed', 'chaseSpeed'); numElite('cr-attackRange', 'attackRange');
   const typeEl = $('cr-type');
-  typeEl.addEventListener('change', () => {
+  if (typeEl) typeEl.addEventListener('change', () => {
     const oldType = S.selectedCreature; const c = S.gameCreatures[oldType]; if (!c) return;
     const newType = typeEl.value.trim();
     if (!newType) { typeEl.value = oldType; setStatus('生物 ID 不能为空'); return; }

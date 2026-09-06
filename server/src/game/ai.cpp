@@ -121,20 +121,8 @@ static const SkillDef* pickMonsterSkill(World& w, Entity& e, Entity& target, uin
   return fallback;
 }
 
-// 选择精英 AOE 技能（target=AOE，冷却好可用）
-static const SkillDef* pickEliteAoeSkill(World& w, Entity& e, uint64_t nowMs) {
-  for (uint32_t sid : e.skillIds) {
-    const SkillDef* sd = w.data().skill(sid);
-    if (!sd || sd->target != SkillTarget::AOE) continue;
-    auto cdIt = e.skillCd.find(sid);
-    if (cdIt != e.skillCd.end() && nowMs < cdIt->second) continue;
-    return sd;
-  }
-  return nullptr;
-}
-
 // ---------------- 生物（Monster）状态机 ----------------
-// 状态机：游走态(PATROL) ⇄ 仇恨态(CHASE/ATTACK) → 恢复态(RECOVER) → 游走态(PATROL)
+// 游走态(PATROL) ⇄ 仇恨态(CHASE/ATTACK) → 恢复态(RECOVER) → 游走态(PATROL)
 //
 // 游走态：沿确定性 waypoint 环巡逻
 // 仇恨态-追击(CHASE)：被攻击或玩家进入仇恨范围 → 记录当前 waypoint → 追击目标
@@ -172,7 +160,7 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
     for (const auto& pid : w.players()) {
       const Entity* pl = w.findEntity(pid);
       if (!pl || pl->hp <= 0) continue;
-      if (pl->pos.dist2D(e.pos) <= cfg.monsterAggroRange) {
+      if (pl->pos.dist2D(e.pos) <= ai.aggroRange) {
         e.aggro[pl->wid] += 1.0;
         // 记录进入仇恨态时的轨迹点（归位目标）
         ai.recoverWpX = curWpX;
@@ -213,12 +201,12 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
       ai.aiState = AS_RETURN;
       ai.chaseTime = 0;
       ai.invincible = false;
-    } else if (d <= cfg.monsterAttackRange) {
+    } else if (d <= ai.attackRange) {
       // ---- 战斗态：目标在攻击范围内 ----
       ai.aiState = AS_ATTACK;
       ai.chaseTime = 0; // 进入战斗态重置追击计时
       // 技能距离校验：区分「超出技能范围」与「技能冷却中」
-      // monsterAttackRange 是状态切换阈值（1.6m），skill.range 才是实际施放距离（1.2m）
+      // ai.attackRange 是状态切换阈值，skill.range 才是实际施放距离
       // 若不区分，冷却期间 pickMonsterSkill 也返回 null → 怪物会错误地持续逼近
       bool hasInRangeSkill = false;
       for (uint32_t sid : e.skillIds) {
@@ -229,7 +217,7 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
       }
       if (!hasInRangeSkill && d > 0.1) {
         // 所有技能都超出射程 → 继续逼近（而非原地冻结）
-        moveToward(e, target->pos, slowedSpeed(e, ai.speed * 1.8), cfg.monsterAttackRange * 0.5);
+        moveToward(e, target->pos, slowedSpeed(e, ai.chaseSpeed > 0 ? ai.chaseSpeed : ai.speed * 1.8), ai.attackRange * 0.5);
         return;
       }
       // 已进入技能射程 → 站桩输出（冷却中则等待）
@@ -279,7 +267,7 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         ai.invincible = false;
         return;
       }
-      moveToward(e, target->pos, slowedSpeed(e, ai.speed * 1.8), cfg.monsterAttackRange);
+      moveToward(e, target->pos, slowedSpeed(e, ai.chaseSpeed > 0 ? ai.chaseSpeed : ai.speed * 1.8), ai.attackRange);
     }
     return;
   }
@@ -350,131 +338,4 @@ void tickNpcAi(World& w, Entity& e, double dt) {
   }
 }
 
-// ---------------- 世界精英状态机（全区共享） ----------------
-void tickEliteAi(World& w, Entity& e, double dt) {
-  const auto& cfg = w.config();
-  uint64_t nowMs = w.logicNowMs();
-  // DEAD：复活计时（全局推进，不依赖视野）
-  if (e.eliteState == ES_DEAD) {
-    if (nowMs >= e.respawnAtMs) {
-      e.hp = e.maxHp;
-      e.eliteState = ES_IDLE;
-      e.elitePhase = 1;
-      e.eliteTarget = 0;
-      e.aggro.clear();
-      e.pos.x = e.ai.homeX;
-      e.pos.z = e.ai.homeZ;
-      e.pos.y = groundFootY(e.pos.x, e.pos.z, e.radius);
-      e.vel = {0, 0, 0};
-      w.physics().step(e, dt);
-      w.addAliveElite(1);
-      w.pushEvent(proto::EVT_RESPAWN, e.wid, 0, 0, 0);
-      w.markEliteDirty();
-    }
-    return;
-  }
-  // 眩晕：无法移动/攻击（霸体可免疫挂载）
-  const bool eliteStunned = e.hasBuff((uint8_t)BuffType::STUN);
-  // 感知：清理失效仇恨
-  for (auto it = e.aggro.begin(); it != e.aggro.end();) {
-    Entity* pl = w.findByWid(it->first);
-    if (!pl || pl->kind != EntityKind::Player || !pl->active || pl->hp <= 0) it = e.aggro.erase(it);
-    else ++it;
-  }
-  if (eliteStunned) {
-    e.ai.targetVX = 0;
-    e.ai.targetVZ = 0;
-    // IDLE 脱战回血不受眩晕影响
-    if (e.eliteState == ES_IDLE && e.hp < e.maxHp) {
-      e.hp = std::min(e.maxHp, e.hp + cfg.eliteRegenPerSec * dt);
-    }
-    return;
-  }
-  // 前摇中：静止等待（结算由 castSystem → resolveCast 统一处理）
-  if (e.castingSkillId != 0) {
-    e.ai.targetVX = e.ai.targetVZ = 0;
-    return;
-  }
-  // IDLE：脱战回血 + 侦测仇恨
-  if (e.eliteState == ES_IDLE) {
-    if (e.hp < e.maxHp) {
-      e.hp = std::min(e.maxHp, e.hp + cfg.eliteRegenPerSec * dt);
-      w.markEliteDirty();
-    }
-    for (const auto& pid : w.players()) {
-      const Entity* pl = w.findEntity(pid);
-      if (!pl || pl->hp <= 0) continue;
-      if (pl->pos.dist2D(e.pos) <= cfg.eliteAggroRange) {
-        e.aggro[pl->wid] += 10.0 * dt;
-        e.eliteState = ES_ENGAGE;
-        w.markEliteDirty();
-      }
-    }
-  }
-  Entity* target = pickAggroTarget(w, e);
-  if (!target) {
-    if (e.eliteState != ES_IDLE) { e.eliteState = ES_IDLE; w.markEliteDirty(); }
-    e.eliteTarget = 0;
-    e.ai.targetVX = e.ai.targetVZ = 0;
-    return;
-  }
-  if (e.eliteTarget != target->wid) { e.eliteTarget = target->wid; w.markEliteDirty(); }
-  if (e.eliteState != ES_ENGAGE) { e.eliteState = ES_ENGAGE; w.markEliteDirty(); }
-  // 阶段切换（按血量比例：<=65% P2，<=35% P3）
-  uint8_t newPhase = (e.hp / e.maxHp <= 0.35) ? 3 : ((e.hp / e.maxHp <= 0.65) ? 2 : 1);
-  if (newPhase != e.elitePhase) { e.elitePhase = newPhase; w.markEliteDirty(); }
-  double dist = e.pos.dist2D(target->pos);
-  if (dist > cfg.eliteAttackRange) {
-    e.ai.aiState = AS_CHASE;
-    moveToward(e, target->pos, slowedSpeed(e, cfg.eliteChaseSpeed), cfg.eliteAttackRange);
-  } else {
-    e.ai.aiState = AS_ATTACK;
-    e.ai.targetVX = e.ai.targetVZ = 0;
-    if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.eliteAttackCdSec * 1000.0)) {
-      // 普攻（接入技能系统，选第一个非 AOE 技能）
-      const SkillDef* atkSkill = nullptr;
-      for (uint32_t sid : e.skillIds) {
-        const SkillDef* sd = w.data().skill(sid);
-        if (!sd || sd->target == SkillTarget::AOE) continue;
-        auto cdIt = e.skillCd.find(sid);
-        if (cdIt != e.skillCd.end() && nowMs < cdIt->second) continue;
-        atkSkill = sd;
-        break;
-      }
-      if (atkSkill) {
-        e.lastAttackMs = nowMs;
-        e.skillCd[atkSkill->id] = nowMs + (uint64_t)atkSkill->cooldownMs;
-        w.pushEvent(proto::EVT_SKILL, e.wid, atkSkill->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
-        w.applySkillToTarget(e, *target, *atkSkill, 0.9 + rng01() * 0.2);
-        // 位移技能：精英普攻技能后向目标位移
-        if (atkSkill->dashDist > 0) w.executeDash(e, target->pos.x, target->pos.z, atkSkill->dashDist);
-        e.aggro[target->wid] -= target->lastDamageMs == nowMs ? 0 : 0; // 仇恨衰减由 applySkillToTarget 内的 aggro 增长平衡
-      }
-      // 范围技能（AOE，独立冷却，有前摇则进入施放状态）
-      const SkillDef* aoeSkill = pickEliteAoeSkill(w, e, nowMs);
-      if (aoeSkill) {
-        e.skillCd[aoeSkill->id] = nowMs + (uint64_t)aoeSkill->cooldownMs;
-        if (aoeSkill->castTimeMs > 0) {
-          // 有前摇：进入施放状态（广播 EVT_SKILL_CASTING 供客户端显示范围提示）
-          e.castingSkillId = aoeSkill->id;
-          e.castStartMs = nowMs;
-          e.castTargetWid = 0;
-          e.castTx = e.pos.x;
-          e.castTz = e.pos.z;
-          w.pushEvent(proto::EVT_SKILL_CASTING, e.wid, aoeSkill->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
-        } else {
-          w.pushEvent(proto::EVT_SKILL, e.wid, aoeSkill->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
-          const double aoeRange = aoeSkill->radius > 0 ? aoeSkill->radius : 6.0;
-          for (const auto& pid : w.players()) {
-            Entity* pl = w.findEntity(pid);
-            if (!pl || pl->hp <= 0) continue;
-            if (pl->pos.dist2D(e.pos) <= aoeRange) {
-              w.applySkillToTarget(e, *pl, *aoeSkill, 1.0);
-            }
-          }
-        }
-      }
-    }
-  }
-}
 } // namespace ew

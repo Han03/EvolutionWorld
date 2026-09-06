@@ -21,7 +21,7 @@ export class NetworkClient {
     this.onSelf = null;      // 服务端后校验回退
     this.onKick = null;
     this.onDisconnect = null;
-    this.onElite = null;      // 世界精英全局共享状态（S2C_ELITE）
+
     this.onEvent = null;     // 战斗/世界共享事件（S2C_EVENT）
     this.onShop = null;      // 商店列表（S2C_SHOP）
     this.onInventory = null; // 背包/装备/金币（S2C_INVENTORY）
@@ -185,9 +185,7 @@ export class NetworkClient {
           break;
         case MSG.S2C_PING:
           break;
-        case MSG.S2C_ELITE:
-          if (this.onElite) this.onElite(msg);
-          break;
+
         case MSG.S2C_EVENT:
           if (this.onEvent) this.onEvent(msg);
           break;

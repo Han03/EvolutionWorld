@@ -85,16 +85,17 @@ struct MonsterDef {
   int level = 1;
   double hp = 50, mp = 20, attack = 8, defense = 2;
   double moveSpeed = 1.5;            // 移动速度（写入 Entity.ai.speed；对齐 makeMonster 默认 1.5）
+  double radius = 0.5;               // 碰撞半径（米）
   uint32_t expReward = 0;            // 击杀奖励经验（接入玩家升级系统）
   uint32_t goldMin = 1, goldMax = 3;   // 击杀掉落金币区间
   std::vector<DropEntry> drops;        // 掉落物品概率表
   double dropRadius = 1.6;             // 掉落物散布半径
   std::vector<uint32_t> skillIds;      // 该怪物类型可用的技能 ID
-  // ---- 精英扩展（isElite=true 时使用以下字段覆盖 Config 全局默认值）----
-  bool isElite = false;                // 精英标志
-  double aggroRange = 18.0;            // 精英仇恨侦测范围（米）
-  double chaseSpeed = 3.0;             // 精英追击速度（m/s）
-  double attackRange = 2.5;            // 精英攻击范围（米，覆盖怪物默认值）
+  // ---- 战斗 AI 参数（所有怪物均可配置）----
+  double aggroRange = 10.0;            // 仇恨侦测范围（米）
+  double chaseSpeed = 0.0;             // 追击速度（m/s；0=使用 moveSpeed）
+  double attackRange = 1.6;            // 攻击范围（米）
+  bool isElite = false;                // 精英标志（客户端视觉区分：小地图/编辑器紫色标点）
 };
 
 // ---------- NPC 定义已移至 npc.h（NPC 插件模块） ----------

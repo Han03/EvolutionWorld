@@ -26,8 +26,7 @@ export const S = {
   inputAcc: 0,
 
   // 精英
-  eliteStates: new Map(),
-  eliteDisplay: null,
+
 
   // 玩家属性
   playerStats: { maxHp: 100, maxMp: 50, attack: 12, defense: 3, hp: 100, mp: 50, level: 1, exp: 0, expToNext: 100 },

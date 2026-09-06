@@ -42,8 +42,7 @@ private:
 void tickMonsterAi(World& w, Entity& e, double dt);
 // NPC 状态机：IDLE/WANDER（预留 INTERACT）
 void tickNpcAi(World& w, Entity& e, double dt);
-// 世界精英状态机：IDLE（回血/侦测）→ ENGAGE（追击/普攻/AOE/阶段）→ DEAD（复活）
-void tickEliteAi(World& w, Entity& e, double dt);
+
 
 // 工具：选取仇恨最高的存活玩家目标（无则返回 nullptr）
 Entity* pickAggroTarget(World& w, Entity& e);

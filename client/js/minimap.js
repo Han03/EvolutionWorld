@@ -208,12 +208,16 @@ export class Minimap {
         const sy = mid + dz;
 
         let color, radius;
-        switch (e.kind) {
-          case 'player':  color = '#4ade80'; radius = 2.5; break;
-          case 'monster': color = '#f87171'; radius = 2;   break;
-          case 'npc':     color = '#60a5fa'; radius = 2.5; break;
-          case 'item':    color = '#fbbf24'; radius = 1.5; break;
-          default:        color = '#888';    radius = 1.5; break;
+        if (e.isElite) {
+          color = '#a855f7'; radius = 3;
+        } else {
+          switch (e.kind) {
+            case 'player':  color = '#4ade80'; radius = 2.5; break;
+            case 'monster': color = '#f87171'; radius = 2;   break;
+            case 'npc':     color = '#60a5fa'; radius = 2.5; break;
+            case 'item':    color = '#fbbf24'; radius = 1.5; break;
+            default:        color = '#888';    radius = 1.5; break;
+          }
         }
 
         // 发光

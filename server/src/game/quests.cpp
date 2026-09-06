@@ -774,6 +774,7 @@ bool QuestSystem::deserializeQuests(Entity& p, const std::string& json) const {
 
 void QuestSystem::markQuestDirty(const std::string& playerId) {
   questDirty_.insert(playerId);
+  world_.markQuestDirty(playerId); // 同步到 World，确保 netcode tick 补发 S2C_QUEST_PROGRESS
 }
 
 std::vector<uint32_t> QuestSystem::getNextQuestIds(uint32_t completedQuestId) const {

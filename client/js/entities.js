@@ -74,7 +74,6 @@ export class EntityViewManager {
     if (!v) return;
     v.dying = false;
     v.dyingAt = 0;
-    v.leavePending = false;
   }
   /** UPDATE：增量更新（位置已在协议层解码为绝对坐标） */
   applyUpdate(updates) {
@@ -121,12 +120,7 @@ export class EntityViewManager {
       if (!seen.has(wid)) this.views.delete(wid);
     }
   }
-  /** 世界精英全局共享帧（S2C_ELITE）：位置作为另一路权威校正（与实体 UPDATE 一致） */
-  applyElitePos(wid, x, y, z) {
-    const v = this.views.get(wid);
-    if (!v || !this._isAi(v)) return;
-    this._authoritativePos(v, x, y, z, undefined, undefined);
-  }
+
 
   // —— AI 实体：创建 / 权威校正 / 确定性推演 / 快照插值 ——
   _create(e) {
@@ -287,7 +281,7 @@ export class EntityViewManager {
   update(dt) {
     const now = performance.now();
     for (const [wid, v] of this.views) {
-      if (v.dying && v.leavePending && now - v.dyingAt >= this.DEATH_ANIM_MS) {
+      if (v.dying && now - v.dyingAt >= this.DEATH_ANIM_MS) {
         this.views.delete(wid);
         continue;
       }

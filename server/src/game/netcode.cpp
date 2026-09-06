@@ -21,8 +21,8 @@ std::string Netcode::helloFor(const Entity& player) {
   v.seen.clear();
   v.last.clear();
   v.forceSnap = false;
-  // 加入即一致：HELLO 后附当前世界精英全局共享状态
-  return proto::hello(cfg_, player) + w_.eliteFrame(true);
+  // 加入即一致：HELLO 后附自身实体数据
+  return proto::hello(cfg_, player);
 }
 void Netcode::resetPlayer(const std::string& playerId) {
   views_.erase(playerId);
@@ -34,10 +34,8 @@ void Netcode::requestResync(const std::string& playerId) {
 }
 const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
   out_.clear();
-  // 世界共享状态：提取本 tick 事件 + 精英状态帧（变化去重）
+  // 世界共享状态：提取本 tick 事件
   auto sharedEvents = w_.takeSharedEvents();
-  // 精英全局共享状态帧（所有玩家都收到，不论距离——世界精英是全区公共信息）
-  std::string eliteSuffix = w_.eliteFrame(false);
   for (const auto& pid : w_.players()) {
     const Entity* player = w_.findEntity(pid);
     if (!player) continue;
@@ -138,8 +136,8 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
       v.lastSnapTick = tick;
       v.forceSnap = false;
     }
-    // 视野内事件 + 精英全局状态（精英是全区公共信息，不受距离限制）
-    buf += evtBuf + eliteSuffix;
+    // 视野内事件
+    buf += evtBuf;
     // 玩家自身属性/资源变化（战斗掉血/回血/回蓝）：补发 S2C_STATS
     if (w_.statsDirty().count(player->id)) buf += proto::statsFrame(*player);
     // 背包/金币变化（控制台/调试发放）：补发 S2C_INVENTORY

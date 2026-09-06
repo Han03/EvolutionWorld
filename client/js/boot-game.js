@@ -302,29 +302,7 @@ export function findEntityByWid(wid) {
   return null;
 }
 
-// ============================================================================
-// 精英 HUD
-// ============================================================================
-export function updateEliteHud() {
-  const bar = $('elite-bar');
-  if (!bar) return;
-  let pick = null;
-  for (const b of S.eliteStates.values()) {
-    if (b.state === 1 && b.target === net.selfWid) { pick = b; break; }
-  }
-  if (!pick) {
-    for (const b of S.eliteStates.values()) {
-      if (b.state !== 2 && (pick === null || b.hp / b.maxHp < pick.hp / pick.maxHp)) pick = b;
-    }
-  }
-  if (!pick) { bar.style.display = 'none'; return; }
-  S.eliteDisplay = pick;
-  bar.style.display = 'block';
-  $('elite-name').textContent = `${pick.name || '世界精英'} Lv.${pick.phase} ${pick.state === 2 ? '· 已阵亡' : ''}`;
-  const pct = Math.max(0, Math.min(100, (pick.hp / pick.maxHp) * 100));
-  $('elite-fill').style.width = pct + '%';
-  $('elite-hp').textContent = `${Math.round(pick.hp)} / ${Math.round(pick.maxHp)}`;
-}
+// 精英 HUD 已移除（精英与普通怪物一致，不再单独维护 HUD）
 
 // ============================================================================
 // 主循环

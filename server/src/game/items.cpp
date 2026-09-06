@@ -129,6 +129,7 @@ static MonsterDef parseMonsterDef(const std::string& type, const Json& j) {
   d.attack = j.at("attack").asNumber();
   d.defense = j.at("defense").asNumber();
   d.moveSpeed = j.has("moveSpeed") ? j.at("moveSpeed").asNumber() : 1.5;
+  d.radius = j.has("radius") ? j.at("radius").asNumber() : 0.5;
   d.expReward = (uint32_t)(j.has("expReward") ? j.at("expReward").asInt() : 0);
   d.goldMin = (uint32_t)j.at("goldMin").asInt();
   d.goldMax = (uint32_t)j.at("goldMax").asInt();
@@ -146,7 +147,7 @@ static MonsterDef parseMonsterDef(const std::string& type, const Json& j) {
       if (sid) d.skillIds.push_back(sid);
     }
   }
-  // 精英扩展字段（has() 守卫，旧 JSON 无此字段时保持默认 false；兼容旧档 "isBoss"）
+  // 战斗 AI 参数（所有怪物均可配置）+ 精英标志
   if (j.has("isElite")) d.isElite = j.at("isElite").asBool();
   else if (j.has("isBoss")) d.isElite = j.at("isBoss").asBool();
   if (j.has("aggroRange")) d.aggroRange = j.at("aggroRange").asNumber();
@@ -353,6 +354,7 @@ std::string GameData::monstersToJson() const {
     j["attack"] = d.attack;
     j["defense"] = d.defense;
     j["moveSpeed"] = d.moveSpeed;
+    j["radius"] = d.radius;
     j["expReward"] = (int64_t)d.expReward;
     j["goldMin"] = (int64_t)d.goldMin;
     j["goldMax"] = (int64_t)d.goldMax;
@@ -367,13 +369,11 @@ std::string GameData::monstersToJson() const {
     Json sk = Json::array();
     for (uint32_t sid : d.skillIds) sk.push_back(Json((int64_t)sid));
     j["skillIds"] = sk;
-    // 精英扩展字段（仅 isElite=true 时输出）
-    if (d.isElite) {
-      j["isElite"] = true;
-      j["aggroRange"] = d.aggroRange;
-      j["chaseSpeed"] = d.chaseSpeed;
-      j["attackRange"] = d.attackRange;
-    }
+    // 战斗 AI 参数 + 精英标志
+    j["aggroRange"] = d.aggroRange;
+    j["chaseSpeed"] = d.chaseSpeed;
+    j["attackRange"] = d.attackRange;
+    if (d.isElite) j["isElite"] = true;
     obj[type] = j;
   }
   return obj.dump();

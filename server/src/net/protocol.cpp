@@ -152,10 +152,11 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
     w.i16(qVel(e.ai.targetVX));
     w.i16(qVel(e.ai.targetVZ));
     w.u8((uint8_t)std::lround(e.moveScale() * 100.0)); // 0-100%
-    // 怪物生命值（客户端仇恨血条渲染）
+    // 怪物生命值（客户端仇恨血条渲染）+ 精英标志
     if (e.kind == EntityKind::Monster) {
       w.u16((uint16_t)std::lround(e.hp));
       w.u16((uint16_t)std::lround(e.maxHp));
+      w.u8(e.isElite ? 1 : 0);
     }
     // NPC 插件：NPC 实体额外广播 npcId + npcTag（客户端据此渲染交互菜单）
     if (e.kind == EntityKind::Npc) {
@@ -450,21 +451,6 @@ std::string terrainDirtyFrame() {
 }
 
 // ---------- C2S 解码 ----------
-// 世界精英全局共享状态帧（血量/阶段/状态/目标/位置，全区广播）
-std::string eliteState(const Entity& elite) {
-  Writer w;
-  w.u32((uint32_t)elite.wid);
-  w.u8(elite.eliteState);
-  w.u8(elite.elitePhase);
-  w.f32((float)elite.hp);
-  w.f32((float)elite.maxHp);
-  w.i32((int32_t)elite.eliteTarget);
-  w.i32(qAbs(elite.pos.x));
-  w.i16(qAbs(elite.pos.y));
-  w.i32(qAbs(elite.pos.z));
-  w.str(elite.name.empty() ? "WorldElite" : elite.name);
-  return frame(S2C_ELITE, w.data());
-}
 // 战斗/世界共享事件帧
 std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z) {
   Writer w;

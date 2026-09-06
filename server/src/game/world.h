@@ -242,8 +242,7 @@ public:
   void saveInstIdCounter();   // 玩家存档时回写当前水位
   // 生成地面掉落物（控制台测试命令）
   void spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold);
-  // 世界精英状态摘要（控制台查看）
-  Json elitesStatus() const;
+
   // 视野内/全图实体摘要（控制台查看，limit 限制数量）
   Json entitiesStatus(double px, double pz, double range, int limit) const;
   // 取走本 tick 产生的共享事件（netcode 全区广播用，调用后清空）
@@ -255,19 +254,13 @@ public:
     respawnedThisTick_.clear();
     return out;
   }
-  // 构建世界精英全局共享状态帧（force=true 强制；false 且无变化则返回空）
-  std::string eliteFrame(bool force);
-  // 存活精英数量
-  uint32_t aliveEliteCount() const { return aliveElite_; }
-  // 所有世界精英实体（调试/传送用）
-  std::vector<const Entity*> elites() const;
+
   // 世界共享状态辅助（供系统/网络层调用）
   void pushEvent(uint8_t type, uint32_t wid, uint32_t b, int32_t x, int32_t z);
   // 施放结算失败通知（resolveCast 二次校验失败 → 客户端重置冷却）
   void pushCastFailNotif(const std::string& playerId, uint32_t skillId, uint32_t targetWid);
   std::vector<CastFailNotif> takeCastFailNotifs();
-  void markEliteDirty() { eliteDirty_ = true; }
-  void addAliveElite(int d) { aliveElite_ = (uint32_t)((int)aliveElite_ + d); }
+
   // 玩家死亡统一处理（hp=0+死亡标记+复活计时+EVT_DEATH 广播），供普攻/技能/精英/反伤复用
   void killPlayer(Entity& p, Entity* killer);
   // 通用技能效果施加：伤害/Buff/击退/死亡/吸血（玩家→怪物、怪物→玩家 均可用）
@@ -322,7 +315,7 @@ private:
   void applyKnockback(Entity& from, Entity& target, double dist);
   void updateSystems(double dt);
   std::string nextEntityId(const char* prefix);
-  void spawnEliteAt(double homeX, double homeZ, const std::string& type, const std::string& name);
+
   const Config& cfg_;
   uint32_t currentSeed_;   // 当前世界种子（reinit 时可更新）
   SpawnConfig spawns_;   // 生物出生点配置（默认确定性生成，可 JSON 覆盖/编辑器修改）
@@ -349,9 +342,7 @@ private:
   std::unordered_set<std::string> buffsDirty_;
   // 需要补发 S2C_QUEST_PROGRESS 的玩家（任务进度/状态变化）
   std::unordered_set<std::string> questDirty_;
-  std::string eliteFrame_;
-  bool eliteDirty_ = true;
-  uint32_t aliveElite_ = 0;
+
   uint64_t tick_ = 0;
   int64_t entitySeq_ = 0;
   int64_t wireSeq_ = 0;

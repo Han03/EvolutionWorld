@@ -54,7 +54,7 @@ import {
   findNearbyNpc, pickupNearbyDrops, openNpcDialog, closeNpcDialog, refreshNpcDialog,
   interactWithNearestNpc,
   renderSkillBar, renderBuffBar, isSkillLearned, castSkillNow, findEntityByWid,
-  updateEliteHud, loop, debugPrint, closeAllNpcPanels,
+  loop, debugPrint, closeAllNpcPanels,
 } from './boot-game.js';
 
 // ============================================================================
@@ -330,12 +330,7 @@ async function enterWorld(token, username, worldMeta) {
   net.onUpdate = (ups) => S.entities.applyUpdate(ups);
   net.onSnapshot = (snap) => S.entities.applySnapshot(snap.entities);
 
-  // ---- 精英 ----
-  net.onElite = (b) => {
-    S.eliteStates.set(b.wid, b);
-    updateEliteHud();
-    S.entities.applyElitePos(b.wid, b.x, b.y, b.z);
-  };
+
 
   // ---- 世界事件（伤害/死亡/复活/技能效果） ----
   net.onEvent = (ev) => {
@@ -408,12 +403,8 @@ async function enterWorld(token, username, worldMeta) {
     } else if (ev.evtType === EVT.SKILL) {
       const sd = skillDef(ev.b);
       if (sd.radius > 0) {
-        // ENEMY 技能：AOE 从施法者位置扩散，圈画在施法者身上；AOE 技能：圈画在落点
-        const isEnemy = sd.target === 2;
-        const casterEnt0 = isEnemy ? findEntityByWid(ev.wid) : null;
-        const aoeX = casterEnt0 ? casterEnt0.x : ev.x;
-        const aoeZ = casterEnt0 ? casterEnt0.z : ev.z;
-        S.renderer.addSkillEffect({ kind: 'aoe', x: aoeX, z: aoeZ, radius: sd.radius, color: casterColor(ev.wid), durMs: 900 });
+        // 溅射/AOE 圈统一画在落点（ev.x/ev.z = 服务端落点坐标）
+        S.renderer.addSkillEffect({ kind: 'aoe', x: ev.x, z: ev.z, radius: sd.radius, color: casterColor(ev.wid), durMs: 900 });
       }
       // 位移拖尾效果
       if (sd.dashDist > 0) {
@@ -575,7 +566,11 @@ async function enterWorld(token, username, worldMeta) {
   // ---- 任务系统回调 ----
   net.onQuestList = (payload) => { decodeQuestList(new Reader(payload)); if (S.npcDialogOpen) refreshNpcDialog(); };
   net.onQuestProgress = (payload) => { decodeQuestProgress(new Reader(payload)); if (S.npcDialogOpen) refreshNpcDialog(); };
-  net.onQuestResult = (payload) => decodeQuestResult(new Reader(payload));
+  net.onQuestResult = (payload) => {
+    const res = decodeQuestResult(new Reader(payload));
+    // 接受/放弃/提交成功后刷新可接任务列表
+    if (res.code === 0) sendQuestList(net);
+  };
   net.onQuestComplete = (payload) => decodeQuestComplete(new Reader(payload));
   net.onQuestNotify = (payload) => decodeQuestNotify(new Reader(payload));
   net.onNpcDialogue = (msg) => {

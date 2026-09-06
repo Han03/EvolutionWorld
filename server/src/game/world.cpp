@@ -20,7 +20,6 @@ static void moveSystem(World& w, double dt);
 static void aiSystem(World& w, double dt);
 static void castSystem(World& w, double dt);
 static void buffSystem(World& w, double dt);
-static void eliteSystem(World& w, double dt);
 static void respawnSystem(World& w, double dt);
 static void playerRespawnSystem(World& w, double dt);
 static void dropSystem(World& w, double dt);
@@ -42,7 +41,6 @@ World::World(const Config& cfg)
   addSystem(30, "ai", aiSystem);
   addSystem(32, "cast", castSystem);
   addSystem(35, "buff", buffSystem);
-  addSystem(40, "elite", eliteSystem);
   addSystem(50, "respawn", respawnSystem);
   addSystem(55, "player_respawn", playerRespawnSystem);
   addSystem(60, "drop", dropSystem);
@@ -101,47 +99,7 @@ bool World::loadWorldFromStore(Store& s) {
             terrainWalkMaskN(), terrainWalkMaskN(), spawns_.size());
   return ok;
 }
-void World::spawnEliteAt(double hx, double hz, const std::string& type, const std::string& name) {
-  // 数据驱动：从 MonsterDef 读取属性/技能，Config 全局值仅作兜底
-  const MonsterDef* def = type.empty() ? nullptr : data_.monster(type);
-  Entity b = makeMonster(nextEntityId("elite"), type);
-  b.isElite = true;
-  b.radius = 1.4;
-  if (def) {
-    b.monsterType = type;
-    b.name = name.empty() ? def->name : name;
-    b.level = def->level;
-    b.hp = b.maxHp = def->hp;
-    b.mp = b.maxMp = def->mp;
-    b.attack = def->attack;
-    b.defense = def->defense;
-    b.ai.speed = def->moveSpeed;
-    b.skillIds = def->skillIds;
-  } else {
-    b.name = name.empty() ? type : name;
-    b.hp = b.maxHp = cfg_.eliteHp;
-    b.mp = b.maxMp = cfg_.eliteMp;
-    b.attack = cfg_.eliteAttack;
-    b.defense = cfg_.eliteDefense;
-    fprintf(stderr, "[elite] 警告：type=%s 未找到 MonsterDef，使用 Config 兜底\n", type.c_str());
-  }
-  // 在锚点附近找干地出生
-  double bx = hx, bz = hz;
-  bool found = false;
-  for (double r = 0; r <= 80 && !found; r += 4) {
-    for (int k = 0; k < 24; k++) {
-      double a = (double)k / 24.0 * 6.28318;
-      double px = hx + std::cos(a) * r, pz = hz + std::sin(a) * r;
-      if (!terrainBlocked(px, pz) && terrainHeight(px, pz) > kWaterLevel + 1.0) { bx = px; bz = pz; found = true; break; }
-    }
-  }
-  b.pos = {bx, groundFootY(bx, bz, b.radius), bz};
-  b.ai.homeX = bx;
-  b.ai.homeZ = bz;
-  addEntity(std::move(b));
-  aliveElite_++;
-}
-// 按出生点生成一只生物（monster/npc/elite）
+// 按出生点生成一只生物（monster/npc）
 void World::spawnFromPoint(const SpawnPoint& sp) {
   if (sp.kind == SP_MONSTER) {
     // 相同怪物成群：群内围绕锚点小半径散布（确定性），避免完全重叠；
@@ -159,8 +117,6 @@ void World::spawnFromPoint(const SpawnPoint& sp) {
     }
   } else if (sp.kind == SP_NPC) {
     spawnNpcAt(sp);
-  } else if (sp.kind == SP_ELITE) {
-    spawnEliteAt(sp.x, sp.z, sp.type, sp.name);
   }
 }
 // 按出生点生成一个城镇 NPC：就近找干地，可带商店/名称
@@ -225,11 +181,10 @@ void World::reseedCreatures() {
   std::vector<std::string> toRemove;
   for (const auto& [id, e] : entities_) {
     if (e.kind == EntityKind::Player) continue;
-    if (id.rfind("m_", 0) == 0 || id.rfind("n_", 0) == 0 || id.rfind("elite_", 0) == 0)
+    if (id.rfind("m_", 0) == 0 || id.rfind("n_", 0) == 0)
       toRemove.push_back(id);
   }
   for (const auto& id : toRemove) despawnEntity(id);
-  aliveElite_ = 0;
   npcs_->clearSpawned();  // NPC 插件：清空唯一性追踪
   seedWorld();
   fprintf(stderr, "[spawns] 热重载完成：%zu 个出生点 → 重建世界生物\n", spawns_.size());
@@ -419,44 +374,30 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   t->aggro[p->wid] += dmg;  // 仇恨表（世界共享核心状态）
   t->ai.chaseTime = 0;       // 被攻击时重置追击计时，避免追击超时误触发恢复态
   pushEvent(proto::EVT_DAMAGE, t->wid, (uint32_t)dmg, 0, 0);
-  if (t->isElite) markEliteDirty();
   // 荆棘反伤：目标（怪物/精英）若有 THORNS Buff，反弹部分伤害给攻击者
   thornsReflect(*t, *p, dmg);
   if (t->hp <= 0) onVictimDeath(*t, *p, nowMs);
   return true;
 }
-// 目标死亡统一处理（普攻/技能共用）：精英复活 / 普通怪物失活+复活 + 掉落
+// 目标死亡统一处理（普攻/技能共用）：怪物失活+复活计时+掉落（精英与普通怪物一致）
 void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
   victim.hp = 0;
-  // 击杀奖励经验（仅玩家击杀者）：怪物按 expReward，精英无类型配置时兆底
+  // 击杀奖励经验（仅玩家击杀者）：按 MonsterDef.expReward
   if (killer.kind == EntityKind::Player) {
     const MonsterDef* kdef = victim.monsterType.empty() ? nullptr : data_.monster(victim.monsterType);
-    uint32_t exp = kdef ? kdef->expReward : (victim.isElite ? 500u : 0u);
+    uint32_t exp = kdef ? kdef->expReward : 0u;
     if (exp) grantExp(killer, exp);
-    // 任务钩子：击杀怪物后检测任务进度（普攻/技能共用，仅怪物真正死亡时触发）
+    // 任务钩子：击杀怪物后检测任务进度
     quests_->onMonsterKill(killer, victim.monsterType);
   }
-  if (victim.isElite) {
-    victim.eliteState = ES_DEAD;
-    victim.eliteTarget = 0;
-    victim.respawnAtMs = nowMs + (uint64_t)(cfg_.eliteRespawnSec * 1000.0);
-    victim.aggro.clear();
-    victim.buffs.clear();
-    victim.vel = {0, 0, 0};
-    if (aliveElite_ > 0) aliveElite_--;
-    pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
-    markEliteDirty();
-    rollDrops(killer, victim);
-  } else {
-    // 普通怪物死亡：失活 + 本区复活计时 + 掉落
-    rollDrops(killer, victim);
-    victim.active = false;
-    victim.respawnAtMs = nowMs + (uint64_t)(cfg_.monsterRespawnSec * 1000.0);
-    victim.aggro.clear();
-    victim.buffs.clear();
-    victim.vel = {0, 0, 0};
-    pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
-  }
+  // 失活 + 复活计时 + 掉落（精英与普通怪物完全一致）
+  rollDrops(killer, victim);
+  victim.active = false;
+  victim.respawnAtMs = nowMs + (uint64_t)(cfg_.monsterRespawnSec * 1000.0);
+  victim.aggro.clear();
+  victim.buffs.clear();
+  victim.vel = {0, 0, 0};
+  pushEvent(proto::EVT_DEATH, victim.wid, killer.wid, 0, 0);
 }
 // 玩家获得经验：累加 + 循环升级（每级 +20HP/+8MP/+2ATK/+1DEF，升级回满血蓝）
 void World::grantExp(Entity& p, uint32_t amount) {
@@ -566,9 +507,9 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
   // 落点（结算时以落点为准；SELF=施法者位置）
   double gx = tx, gz = tz;
   if (sd.target == SkillTarget::SELF) { gx = caster.pos.x; gz = caster.pos.z; }
-  // AOE 中心：ENEMY 技能从施法者位置扩散（撕咬=怪物身边溅射），AOE 技能从落点扩散
-  double aoeCx = (sd.target == SkillTarget::ENEMY) ? caster.pos.x : gx;
-  double aoeCz = (sd.target == SkillTarget::ENEMY) ? caster.pos.z : gz;
+  // AOE 中心：ENEMY 技能从落点（目标位置）扩散溅射，AOE 技能从落点扩散，SELF 技能从施法者位置
+  double aoeCx = (sd.target == SkillTarget::SELF) ? caster.pos.x : gx;
+  double aoeCz = (sd.target == SkillTarget::SELF) ? caster.pos.z : gz;
   pushEvent(proto::EVT_SKILL, caster.wid, sd.id, proto::qAbs(gx), proto::qAbs(gz));
   const double hr = sd.radius;
   // 施加效果：统一按「施法者 vs 目标」阵营判定（kind != caster.kind = 敌方）
@@ -643,7 +584,6 @@ void World::executeDash(Entity& caster, double tx, double tz, double dist) {
   caster.pos.y = groundFootY(nx, nz, caster.radius);
   // 玩家位移后需主动通知客户端预测器校正，否则客户端不知道位移发生
   if (caster.kind == EntityKind::Player) caster.dashPending = true;
-  if (caster.isElite) markEliteDirty();
 }
 // 打断施放：reason=0 被替换 / 1 移动 / 2 受击（受 castCancelOnHit 约束）；广播 EVT_SKILL_CANCEL
 void World::cancelCast(Entity& e, uint8_t reason) {
@@ -673,7 +613,6 @@ void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& s
   target.aggro[caster.wid] += dmg;
   if (target.kind == EntityKind::Monster) target.ai.chaseTime = 0; // 被攻击时重置追击计时
   pushEvent(proto::EVT_DAMAGE, target.wid, (uint32_t)dmg, 0, 0);
-  if (target.isElite) markEliteDirty();
   // 荆棘反伤（目标有 THORNS 时反弹）
   thornsReflect(target, caster, dmg);
   // 吸血（治疗施法者）
@@ -724,7 +663,6 @@ void World::applyKnockback(Entity& from, Entity& target, double dist) {
   target.pos.x = nx;
   target.pos.z = nz;
   target.pos.y = groundFootY(nx, nz, target.radius); // 落回地表（与其他贴地点同一语义）
-  if (target.isElite) markEliteDirty();
   cancelCastOnHit(target); // 击退视为受击：打断目标前摇（霸体技能 castCancelOnHit=false 不受影响）
   // 位移由 netcode 的 UPDATE/SNAPSHOT 帧自动同步给视野内玩家，无需额外事件
 }
@@ -880,21 +818,6 @@ bool World::killEntity(const std::string& playerId, uint32_t wid) {
 bool World::respawnEntity(const std::string& id) {
   Entity* e = findEntity(id);
   if (!e) return false;
-  if (e->isElite) {
-    e->hp = e->maxHp;
-    e->mp = e->maxMp;
-    e->eliteState = ES_IDLE;
-    e->eliteTarget = 0;
-    e->elitePhase = 1;
-    e->aggro.clear();
-    e->buffs.clear();
-    e->active = true;
-    e->respawnAtMs = 0;
-    aliveElite_++;
-    pushEvent(proto::EVT_RESPAWN, e->wid, 0, 0, 0);
-    markEliteDirty();
-    return true;
-  }
   if (e->kind == EntityKind::Monster && !e->active) {
     e->hp = e->maxHp;
     e->mp = e->maxMp;
@@ -910,7 +833,7 @@ bool World::respawnEntity(const std::string& id) {
 void World::respawnAllMonsters() {
   for (auto& [id, e] : entitiesMut()) {
     if (e.kind != EntityKind::Monster) continue;
-    if (e.isElite && e.active) continue;   // 存活精英不动
+    if (e.active) continue;   // 存活不动
     respawnEntity(id);
   }
 }
@@ -1001,24 +924,6 @@ void World::spawnDropAt(double x, double z, uint32_t itemId, uint32_t gold) {
     spawnDrop(sx, sz, itemId, gold);
   }
 }
-Json World::elitesStatus() const {
-  Json arr = Json::array();
-  for (const auto& [id, e] : entities_) {
-    if (!e.isElite) continue;
-    Json j = Json::object();
-    j["name"] = e.name;
-    j["wid"] = (int64_t)e.wid;
-    j["state"] = (int64_t)e.eliteState;
-    j["phase"] = (int64_t)e.elitePhase;
-    j["hp"] = e.hp;
-    j["maxHp"] = e.maxHp;
-    j["active"] = e.active;
-    j["x"] = e.pos.x;
-    j["z"] = e.pos.z;
-    arr.push_back(std::move(j));
-  }
-  return arr;
-}
 Json World::entitiesStatus(double px, double pz, double range, int limit) const {
   Json arr = Json::array();
   int n = 0;
@@ -1053,8 +958,13 @@ void World::applyMonsterStats(Entity& m, const std::string& type) {
   m.mp = m.maxMp = def->mp;
   m.attack = def->attack;
   m.defense = def->defense;
-  m.ai.speed = def->moveSpeed;  // 移动速度（AI 巡逻/追击用）
+  m.radius = def->radius;
+  m.ai.speed = def->moveSpeed;
+  m.ai.chaseSpeed = def->chaseSpeed;
+  m.ai.aggroRange = def->aggroRange;
+  m.ai.attackRange = def->attackRange;
   m.skillIds = def->skillIds;
+  m.isElite = def->isElite;
 }
 // 怪物死亡掉落：金币 + 概率表物品（掉落物生成在世界，可拾取）
 void World::rollDrops(Entity& killer, Entity& victim) {
@@ -1564,25 +1474,7 @@ std::vector<CastFailNotif> World::takeCastFailNotifs() {
   castFailNotifs_.clear();
   return out;
 }
-// 世界精英全局共享状态帧（dirty 去重；force 用于 HELLO 加入即一致）
-std::string World::eliteFrame(bool force) {
-  if (!force && !eliteDirty_) return "";
-  eliteDirty_ = false;
-  std::string out;
-  for (auto& [id, e] : entities_) {
-    (void)id;
-    if (e.isElite && e.active) out += proto::eliteState(e);
-  }
-  return out;
-}
-std::vector<const Entity*> World::elites() const {
-  std::vector<const Entity*> out;
-  for (auto& [id, e] : entities_) {
-    (void)id;
-    if (e.isElite) out.push_back(&e);
-  }
-  return out;
-}
+
 // ---------------- 系统实现 ----------------
 static void inputSystem(World& w, double dt) {
   const auto& cfg = w.config();
@@ -1730,7 +1622,6 @@ static void aiSystem(World& w, double dt) {
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
     if (e.kind == EntityKind::Player || !e.active) continue;
-    if (e.isElite) continue; // 精英走 eliteSystem（全局，不走 LOD）
     if (!sched.shouldTick(w, e, tick)) continue; // AOI 激活 + 时间片 + 距离分级
     if (e.kind == EntityKind::Monster) tickMonsterAi(w, e, dt);
     else tickNpcAi(w, e, dt);
@@ -1748,21 +1639,12 @@ static void dropSystem(World& w, double) {
   for (const auto& id : expire) w.despawnDrop(id);
 }
 
-// 世界精英状态机：全区共享（Idle 回血/侦测 → Engage 追击/普攻/范围技能 → Dead 复活计时）
-static void eliteSystem(World& w, double dt) {
-  if (w.testFlags().monstersPaused) return;  // 测试：全局冻结精英 AI（站桩测试）
-  for (auto& [id, e] : w.entitiesMut()) {
-    (void)id;
-    if (!e.isElite || !e.active) continue;
-    tickEliteAi(w, e, dt); // 精英仅 3 只，每 tick 全量（全局共享状态需确定性推进）
-  }
-}
-// 普通怪物死亡复活
+// 普通怪物死亡复活（精英与普通怪物一致）
 static void respawnSystem(World& w, double) {
   uint64_t nowMs = w.logicNowMs();
   for (auto& [id, e] : w.entitiesMut()) {
     (void)id;
-    if (e.kind == EntityKind::Player || e.isElite) continue;
+    if (e.kind == EntityKind::Player) continue;
     if (!e.active && nowMs >= e.respawnAtMs) {
       e.hp = e.maxHp;
       e.active = true;

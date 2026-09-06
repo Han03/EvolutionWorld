@@ -1471,13 +1471,13 @@ export class WebGLRenderer {
   _drawSpawnMarkers(ctx, scale) {
     const cw = this.canvas.clientWidth;
     const ch = this.canvas.clientHeight;
-    const COLORS = { monster: '#e5484d', npc: '#3b82f6', boss: '#a855f7' };
+    const COLORS = { monster: '#e5484d', npc: '#3b82f6', elite: '#a855f7', boss: '#a855f7' };
 
     for (const sp of this._spawnMarkers) {
       const sx = (sp.x - this.cam.cx) * scale + cw / 2;
       const sy = (sp.z - this.cam.cz) * scale + ch / 2;
       const color = COLORS[sp.kind] || COLORS.monster;
-      const r = (sp.kind === 'boss' ? 1.8 : 1.2) * scale;
+      const r = ((sp.kind === 'boss' || sp.kind === 'elite') ? 1.8 : 1.2) * scale;
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;

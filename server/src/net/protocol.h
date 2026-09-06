@@ -270,8 +270,7 @@ std::string selfCorrection(const std::string& reason, const Entity& p, uint32_t 
 std::string ping(uint32_t ts);
 std::string kick(const std::string& reason);
 std::string error(uint8_t code, const std::string& msg);
-// 世界共享状态（精英全区广播 + 战斗事件）
-std::string eliteState(const Entity& elite);
+// 世界共享状态（战斗事件）
 std::string eventFrame(uint8_t evtType, uint32_t wid, uint32_t b, int32_t x, int32_t z);
 
 // 世界共享状态编码：S2C_SHOP / S2C_INVENTORY / S2C_STATS / S2C_LOOT

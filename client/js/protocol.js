@@ -314,7 +314,7 @@ export function decodeEntityFull(r, refX, refY, refZ) {
   }
   // AI 意图块（怪物/NPC/精英，与服务端 writeEntityFull 对应）：半径 + aiState + 目标速度 + 速度倍率
   let radius = 0, aiState = 0, tx = 0, tz = 0, speedMult = 100;
-  let hp = 0, maxHp = 0;
+  let hp = 0, maxHp = 0, isElite = false;
   let npcId = '', npcTag = 0;
   if (kind === KIND.MONSTER || kind === KIND.NPC) {
     radius = dq(r.u16());
@@ -322,10 +322,11 @@ export function decodeEntityFull(r, refX, refY, refZ) {
     tx = dq(r.i16());
     tz = dq(r.i16());
     speedMult = r.u8();
-    // 怪物生命值（服务端 writeEntityFull 对齐）
+    // 怪物生命值 + 精英标志（服务端 writeEntityFull 对齐）
     if (kind === KIND.MONSTER) {
       hp = r.u16();
       maxHp = r.u16();
+      isElite = r.u8() !== 0;
     }
   }
   // NPC 插件：NPC 实体额外携带 npcId + npcTag（客户端据此渲染交互菜单）
@@ -340,7 +341,7 @@ export function decodeEntityFull(r, refX, refY, refZ) {
     name, itemId, gold,
     dropInstId, dropEnhance,
     radius, aiState, tx, tz, speedMult,
-    hp, maxHp,
+    hp, maxHp, isElite,
     npcId, npcTag,
   };
 }
@@ -435,19 +436,7 @@ export function parseS2C(type, payload, refX, refY, refZ) {
       const ts = r.u32();
       return { type, ts };
     }
-    case MSG.S2C_ELITE: {
-      const wid = r.u32();
-      const state = r.u8();
-      const phase = r.u8();
-      const hp = r.f32();
-      const maxHp = r.f32();
-      const target = r.i32();
-      const x = dq(r.i32());
-      const y = dq(r.i16());
-      const z = dq(r.i32());
-      const name = r.str();
-      return { type, wid, state, phase, hp, maxHp, target, x, y, z, name };
-    }
+
     case MSG.S2C_SHOP: {
       const shopId = r.u32();
       const name = r.str();

@@ -549,14 +549,13 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
   }
   if (path == "/api/debug/elites" && req.method == "GET" && getenv("EW_DEBUG")) {
     Json arr = Json::array();
-    for (const Entity* b : world_.elites()) {
+    for (const auto& [id, e] : world_.entities()) {
+      if (!e.isElite) continue;
       Json j = Json::object();
-      j["id"] = b->id; j["wid"] = (int64_t)b->wid; j["name"] = b->name;
-      j["x"] = b->pos.x; j["y"] = b->pos.y; j["z"] = b->pos.z;
-      j["hp"] = b->hp; j["maxHp"] = b->maxHp;
-      j["state"] = (int64_t)b->eliteState;
-      j["phase"] = (int64_t)b->elitePhase;
-      j["target"] = (int64_t)b->eliteTarget;
+      j["id"] = id; j["wid"] = (int64_t)e.wid; j["name"] = e.name;
+      j["x"] = e.pos.x; j["y"] = e.pos.y; j["z"] = e.pos.z;
+      j["hp"] = e.hp; j["maxHp"] = e.maxHp;
+      j["active"] = e.active;
       arr.push_back(j);
     }
     Json r = Json::object(); r["elites"] = arr;

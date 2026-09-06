@@ -54,20 +54,6 @@ struct CityInfo {
   int islandIdx;     // 所在大岛下标
 };
 
-// 在可通行格集合中找最接近 (tx,tz) 且到参考点距离落在 [minD,maxD] 的格；找不到返回 -1
-static int nearestCell(const std::vector<Cell>& walk, double tx, double tz,
-                       double refX, double refZ, double minD, double maxD) {
-  int best = -1;
-  double bd = 1e18;
-  for (size_t i = 0; i < walk.size(); i++) {
-    const Cell& c = walk[i];
-    if (c.d < minD || c.d > maxD) continue;
-    double dd = std::hypot(cellX(c.gx) - tx, cellZ(c.gz) - tz);
-    if (dd < bd) { bd = dd; best = (int)i; }
-  }
-  return best;
-}
-
 bool generateWorld(World& w, const Config& cfg) {
   setTerrainSeed((int32_t)w.seed());
   int N = gMaskN, OFF = gMaskOff;   // 默认值，岛屿生成后根据实际占地重算
@@ -466,7 +452,9 @@ bool generateWorld(World& w, const Config& cfg) {
       }
       if (pick < 0) continue;
 
-      int cnt = gMin + (int)(rng.next() * (float)(gMax - gMin + 1));
+      // 精英生物（isElite=true）只生成 1 个，普通怪物成群生成
+      const MonsterDef* mdef = w.data().monster(type);
+      int cnt = (mdef && mdef->isElite) ? 1 : (gMin + (int)(rng.next() * (float)(gMax - gMin + 1)));
       if (cnt > gMax) cnt = gMax;
       SpawnPoint sp;
       sp.kind = SP_MONSTER;
@@ -476,30 +464,6 @@ bool generateWorld(World& w, const Config& cfg) {
       sp.count = cnt;
       list.push_back(sp);
       anchors.push_back({ sp.x, sp.z });
-    }
-  }
-
-  // ---- 6c) 精英：远境均匀分布，取最强怪物类型 ----
-  int nElite = cfg.eliteCount > 0 ? cfg.eliteCount : 3;
-  if (!walk.empty()) {
-    for (int i = 0; i < nElite; i++) {
-      double ang = (double)i / (double)nElite * kTwoPi + rng.next() * 0.5;
-      double rr = maxR * 0.82;
-      double tx = std::cos(ang) * rr, tz = std::sin(ang) * rr;
-      int idx = nearestCell(walk, tx, tz, 0.0, 0.0, maxR * 0.60, maxR);
-      if (idx < 0) idx = nearestCell(walk, tx, tz, 0.0, 0.0, maxR * 0.40, maxR);
-      if (idx < 0) idx = nearestCell(walk, tx, tz, 0.0, 0.0, freeR, maxR);
-      if (idx < 0) continue;
-      double bx = cellX(walk[idx].gx), bz = cellZ(walk[idx].gz);
-      if (inAnyCity(bx, bz, 5.0)) continue;
-      SpawnPoint sp;
-      sp.kind = SP_ELITE;
-      std::string eliteType = (T > 0) ? typesByLevel[T - 1].second : std::string();
-      auto it = w.data().monsters().find(eliteType);
-      sp.type = eliteType;
-      sp.name = (it != w.data().monsters().end()) ? it->second.name : eliteType;
-      sp.x = bx; sp.z = bz;
-      list.push_back(sp);
     }
   }
 

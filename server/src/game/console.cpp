@@ -123,16 +123,18 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     return true;
   }
   if (cmd == "elite") {
-    Json arr = w.elitesStatus();
-    for (const auto& j : arr.asArray()) {
+    int count = 0;
+    for (const auto& [id, e] : w.entities()) {
+      if (!e.isElite) continue;
       std::ostringstream os;
-      os << "[精英] " << j.at("name").asString() << " wid=" << j.at("wid").asInt()
-         << " 状态=" << j.at("state").asInt() << " 阶段=" << j.at("phase").asInt()
-         << " hp=" << j.at("hp").asInt() << "/" << j.at("maxHp").asInt()
-         << " 激活=" << (j.at("active").asBool() ? "是" : "否")
-         << " @" << j.at("x").asNumber() << "," << j.at("z").asNumber();
+      os << "[精英] " << e.name << " wid=" << e.wid
+         << " hp=" << (int)e.hp << "/" << (int)e.maxHp
+         << " 激活=" << (e.active ? "是" : "否")
+         << " @" << (int)e.pos.x << "," << (int)e.pos.z;
       out(os.str());
+      count++;
     }
+    if (!count) out("当前无精英生物");
     return true;
   }
   if (cmd == "status") {
