@@ -275,9 +275,10 @@ export function tick(now) {
       const d = Math.hypot(v.x - self.x, v.z - self.z);
       const lowHp = lowHpNow();
       if (d > CFG.ATK_RANGE + 0.8) {
-        // 太远：低血先拉开（喝血瓶回血），否则追上去
+        // 太远：低血先拉开（喝血瓶回血），否则追上去；追击同时放远程技能
         if (lowHp) kiteStep(v, true);
         else {
+          castCombatSkills(v); // 远程技能（狙击 20m 等）边追边消耗，不必贴脸才放
           const r = goto(v.x, v.z, 'chase');
           if (!r.ok) { // 目标不可达/无路（空洞隔开）→ 放弃换目标
             log(`⚠️ 目标 wid=${S_.attackWid} 不可达（${r.reason}），放弃`);
@@ -292,12 +293,14 @@ export function tick(now) {
         kiteStep(v, true);
       } else if (now < S_.kiteUntil) {
         if (now < S_._castLockUntil) {
-          // 技能前摇锁定：原地不动，避免 cancelOnMove 打断施法
+          // 移动打断技能的前摇锁定：原地等前摇结算
           S.input.clickTarget = null;
         } else {
-          // 攻击冷却中：走位躲避（绕圈；低血径向拉开）
+          // 攻击冷却中：持续走位躲避（绕圈；低血/贴身径向拉开）
           kiteStep(v, lowHp);
         }
+        // 移动施法：走位窗口内同步放技能（服务端支持移动中施法，边走边放）
+        castCombatSkills(v);
       } else {
         S.input.clickTarget = null;
         // 幽灵容错：hp 长时间无变化（服务端已失活但视图残留）→ 放弃换目标
@@ -608,6 +611,8 @@ function advanceGoal(now) {
       }
       const d = Math.hypot(target.x - self.x, target.z - self.z);
       if (d > CFG.ATK_RANGE + 0.8) {
+        // 追击途中先放远程技能（狙击 range 20m 等），边追边消耗
+        castCombatSkills(target);
         const r = goto(target.x, target.z, 'kill');
         if (!r.ok) {
           log(`⚠️ 目标怪不可达（${r.reason}），换目标`);
@@ -921,6 +926,19 @@ function fleeFrom(threat, dist) {
 // ---------------------------------------------------------------------------
 // 战斗走位（kiting）：攻击后横向绕圈移动，避免站着被怪打死
 // ---------------------------------------------------------------------------
+/** 从自身出发按方向向量扫描 8 个角度（45° 步进，径向优先）找可走落点 */
+function findEscapePoint(self, ux, uz, dist) {
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const ex = ux * cos - uz * sin;
+    const ez = ux * sin + uz * cos;
+    const tx = self.x + ex * dist, tz = self.z + ez * dist;
+    if (!circleBlocked(tx, tz, 0.5)) return { x: tx, z: tz };
+  }
+  return null;
+}
+
 function kiteStep(v, radial) {
   const S = S_.S;
   const self = S.predictor.predicted();
@@ -929,15 +947,15 @@ function kiteStep(v, radial) {
   const ux = dx / dist, uz = dz / dist;
   let tx, tz;
   if (radial) {
-    // 低血/贴身：径向远离怪物（逃跑拉开）
-    tx = self.x + ux * 3.2; tz = self.z + uz * 3.2;
+    // 低血/贴身：径向远离怪物；落点被挡则旋转角度绕行（避免卡墙/卡怪原地挨打）
+    const p = findEscapePoint(self, ux, uz, 3.2);
+    if (!p) { S.input.clickTarget = null; return; }
+    tx = p.x; tz = p.z;
   } else if (dist < 2.6) {
     // 偏近（未到贴身线但已进入威胁区）：先径向退到安全距离，再绕圈
-    tx = self.x + ux * 3.0; tz = self.z + uz * 3.0;
-    if (circleBlocked(tx, tz, 0.5)) {
-      tx = self.x - ux * 2.2; tz = self.z - uz * 2.2;
-      if (circleBlocked(tx, tz, 0.5)) { S.input.clickTarget = null; return; }
-    }
+    const p = findEscapePoint(self, ux, uz, 3.0);
+    if (!p) { S.input.clickTarget = null; return; }
+    tx = p.x; tz = p.z;
   } else {
     // 绕圈：垂直攻击方向横移（保持可攻击距离附近打转）
     S_._kiteSide = -S_._kiteSide;
@@ -949,57 +967,66 @@ function kiteStep(v, radial) {
     }
   }
   if (circleBlocked(tx, tz, 0.5)) {
-    // 双向都挡 → 径向退，仍挡则原地
-    tx = self.x - ux * 2.2; tz = self.z - uz * 2.2;
-    if (circleBlocked(tx, tz, 0.5)) { S.input.clickTarget = null; return; }
+    // 兜底：角度扫描找可走点，仍无 → 原地
+    const p = findEscapePoint(self, ux, uz, 2.2);
+    if (!p) { S.input.clickTarget = null; return; }
+    tx = p.x; tz = p.z;
   }
   S.input.clickTarget = { x: tx, z: tz };
 }
 
 // ---------------------------------------------------------------------------
-// 战斗辅助
+// 战斗辅助（移动施法模式：走位与放技能并行，避免站桩挨打）
 // ---------------------------------------------------------------------------
 function combatAttack(v) {
   const now = performance.now();
   const net = S_.net;
   const S = S_.S;
-  const st = S.playerStats || {};
-  const mp = st.mp !== undefined ? st.mp : 0;
-
-  // 血量偏低（未到残血逃跑线）→ 优先用免费治疗技能，血瓶兜底
-  if (st.hp !== undefined && st.maxHp && st.hp / st.maxHp < CFG.HP_USE_AT) {
-    const hs = readyHealSkill(mp);
-    if (hs) {
-      const self = S.predictor.predicted();
-      castSkill(hs, 0, self.x, self.z);
-      log(`💚 战斗中使用回复技能 ${hs.name}`);
-    } else {
-      const pot = potionOf('hp');
-      if (pot && invCount(pot) > 0) {
-        net.sendUseItem(pot.id, 1);
-        log('❤️ 使用血瓶');
-      }
-    }
-  }
 
   // 普攻为主（稳定命中、即时伤害；服务端权威判定）
   if (now - S_.lastAttackAt >= CFG.ATK_CD_MS) {
     net.sendAttack(v.wid, 0);
     S_.lastAttackAt = now;
-    // 攻击后进入走位窗口：冷却期间横向绕圈躲避怪物攻击，不站着对打
+    // 攻击后进入走位窗口：冷却期间持续走位躲避怪物攻击，不站着对打
     S_.kiteUntil = now + Math.max(CFG.ATK_CD_MS - 150, 420);
   }
-  // 进攻技能为辅：按元数据判定冷却就绪 + 目标在施法距离内 + 蓝量够（不阻塞普攻）
-  const distToTarget = Math.hypot(v.x - S.predictor.predicted().x, v.z - S.predictor.predicted().z);
+  // 移动施法：走位与技能施放并行（服务端已支持移动中施法，不站桩）
+  castCombatSkills(v);
+}
+
+/** 施放战斗技能（回复/进攻/增益）：按元数据冷却/距离/蓝量判定，移动中可施放 */
+function castCombatSkills(v, mp) {
+  const now = performance.now();
+  const S = S_.S;
+  const st = S.playerStats || {};
+  if (mp === undefined) mp = st.mp !== undefined ? st.mp : 0;
+  const self = S.predictor.predicted();
+  const distToTarget = v ? Math.hypot(v.x - self.x, v.z - self.z) : Infinity;
+
+  // 血量偏低（未到残血逃跑线）→ 优先免费回复技能，血瓶兜底
+  if (st.hp !== undefined && st.maxHp && st.hp / st.maxHp < CFG.HP_USE_AT) {
+    const hs = readyHealSkill(mp);
+    if (hs) {
+      castSkill(hs, 0, self.x, self.z);
+      log(`💚 战斗中使用回复技能 ${hs.name}`);
+    } else {
+      const pot = potionOf('hp');
+      if (pot && invCount(pot) > 0) {
+        S_.net.sendUseItem(pot.id, 1);
+        log('❤️ 使用血瓶');
+      }
+    }
+  }
+
+  // 进攻技能：冷却就绪 + 目标在施法距离内 + 蓝量够
   const skill = bestOffensiveSkill(mp, distToTarget);
   if (skill) {
-    castSkill(skill, v.wid, v.x, v.z);
+    castSkill(skill, v ? v.wid : 0, v ? v.x : self.x, v ? v.z : self.z);
     log(`🔥 施放技能 ${skill.name}（伤害/减益，距离 ${Math.round(distToTarget)}m）`);
   }
   // 自身增益技能：冷却好了顺手补（战斗属性提升，减少受伤）
   const buff = readySelfBuffSkill(mp);
   if (buff && now - (S_._lastBuffAt || -1e9) > CFG.BUFF_REFRESH_MS) {
-    const self = S.predictor.predicted();
     castSkill(buff, 0, self.x, self.z);
     S_._lastBuffAt = now;
     log(`✨ 施放增益技能 ${buff.name}`);
@@ -1539,12 +1566,12 @@ function skillReady(s) {
   const minGap = Math.max(s.cooldownMs || 3000, 2000);
   return performance.now() - lastAt >= minGap;
 }
-/** 施放技能并登记：本地节流 + 前摇走位锁定（有前摇的技能锁定期间不走位） */
+/** 施放技能并登记：本地节流；仅"移动打断"技能（cancelOnMove>0）锁走位等前摇，移动施法技能不站桩 */
 function castSkill(s, targetWid, x, z) {
   const S = S_.S;
   S_.net.sendCastSkill(s.id, targetWid, x, z);
   S_._skillAt[s.id] = performance.now();
-  if ((s.castTimeMs || 0) > 0) S_._castLockUntil = performance.now() + CFG.CAST_LOCK_MS;
+  if (s.cancelOnMove > 0) S_._castLockUntil = performance.now() + CFG.CAST_LOCK_MS;
 }
 /** 战斗技能候选评分：伤害口径（dmgMul×100+flatDmg，兼容旧 damage）+ 减益价值加权 */
 function skillOffenseScore(s) {
