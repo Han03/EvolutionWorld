@@ -512,45 +512,51 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
   double aoeCz = (sd.target == SkillTarget::SELF) ? caster.pos.z : gz;
   pushEvent(proto::EVT_SKILL, caster.wid, sd.id, proto::qAbs(gx), proto::qAbs(gz));
   const double hr = sd.radius;
-  // 施加效果：统一按「施法者 vs 目标」阵营判定（kind != caster.kind = 敌方）
-  switch (sd.effect) {
-    case SkillEffect::DAMAGE: {
-      // ① 单目标必中（targetWid 指向的实体）
-      if (primaryTarget && primaryTarget->active && primaryTarget->hp > 0) {
-        applySkillToTarget(caster, *primaryTarget, sd, 0.9 + rng01() * 0.2);
+  // 施加效果：效果由字段驱动，三种效果独立叠加
+  const bool hasDamage = (sd.dmgMul > 0 || sd.flatDmg > 0);
+  const bool hasHeal   = (sd.heal > 0);
+  const bool hasBuff   = (sd.buffType != BuffType::NONE && sd.buffDurSec > 0);
+  // ① 伤害（对异阵营，与 target 类型无关）
+  if (hasDamage) {
+    // 单目标必中（targetWid 指向的实体）
+    if (primaryTarget && primaryTarget->active && primaryTarget->hp > 0) {
+      applySkillToTarget(caster, *primaryTarget, sd, 0.9 + rng01() * 0.2);
+    }
+    // AOE 扩散：对范围内异阵营实体施加效果（跳过施法者自身 + 主目标避免重复）
+    if (sd.radius > 0) {
+      for (auto& [id, e] : entities_) {
+        (void)id;
+        if (!e.active || e.kind == caster.kind) continue;  // 同阵营跳过
+        if (primaryTarget && e.wid == primaryTarget->wid) continue;  // 主目标已受击
+        if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
+        applySkillToTarget(caster, e, sd, 0.9 + rng01() * 0.2);
       }
-      // ② AOE 扩散：对范围内异阵营实体施加效果（跳过施法者自身 + 主目标避免重复）
+    }
+  }
+  // ② 瞬间治疗（始终作用于施法者）
+  if (hasHeal) {
+    caster.hp = std::min(caster.maxHp, caster.hp + sd.heal);
+    if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
+  }
+  // ③ 持续 buff：增益→施法者自身，减益→中心点周围异阵营
+  if (hasBuff) {
+    if (SkillDef::isDebuff(sd.buffType)) {
+      // 减益：对中心点周围异阵营实体施加
       if (sd.radius > 0) {
-        for (auto& [id, e] : entities_) {
-          (void)id;
-          if (!e.active || e.kind == caster.kind) continue;  // 同阵营跳过
-          if (primaryTarget && e.wid == primaryTarget->wid) continue;  // 主目标已受击
-          if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
-          applySkillToTarget(caster, e, sd, 0.9 + rng01() * 0.2);
-        }
-      }
-      break;
-    }
-    case SkillEffect::HEAL: {
-      caster.hp = std::min(caster.maxHp, caster.hp + sd.heal);
-      if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
-      break;
-    }
-    case SkillEffect::BUFF: {
-      if (sd.target == SkillTarget::SELF) {
-        applyBuff(caster, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
-      } else if (sd.radius > 0) {
-        // 减益：对范围内异阵营实体施加
         for (auto& [id, e] : entities_) {
           (void)id;
           if (!e.active || e.kind == caster.kind) continue;
           if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
           applyBuff(e, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
         }
+      } else if (primaryTarget && primaryTarget->active && primaryTarget->hp > 0) {
+        // 单目标减益（enemy 类型，radius=0）
+        applyBuff(*primaryTarget, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
       }
-      break;
+    } else {
+      // 增益：给施法者自身
+      applyBuff(caster, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
     }
-    default: break;
   }
   // 位移技能：有主目标时向目标位移，否则向落点位移
   if (sd.dashDist > 0) {
@@ -620,9 +626,13 @@ void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& s
     caster.hp = std::min(caster.maxHp, caster.hp + dmg * sd.lifesteal);
     if (caster.kind == EntityKind::Player) markStatsDirty(caster.id);
   }
-  // 附带减益（减速/流血/减防/减攻/眩晕等，按 BuffType 配置）
-  if (sd.buffType != BuffType::NONE && sd.buffDurSec > 0 && target.active) {
-    applyBuff(target, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+  // 附带 buff：减益给目标，增益给施法者
+  if (sd.buffType != BuffType::NONE && sd.buffDurSec > 0) {
+    if (SkillDef::isDebuff(sd.buffType)) {
+      if (target.active) applyBuff(target, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+    } else {
+      applyBuff(caster, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
+    }
   }
   // 击退：沿 caster→target 方向位移（霸体免疫）
   if (sd.knockback > 0 && target.active) {
@@ -1589,7 +1599,11 @@ static void buffSystem(World& w, double dt) {
       if (it->type == (uint8_t)BuffType::REGEN && it->remainSec > 0 && e.hp > 0) {
         double before = std::floor(e.hp);
         e.hp = std::min(e.maxHp, e.hp + it->value * dt);
-        if (std::floor(e.hp) != before) statsChanged = true;
+        double healed = std::floor(e.hp) - before;
+        if (healed > 0) {
+          w.pushEvent(proto::EVT_HEAL, e.wid, (uint32_t)healed, 0, 0);
+          statsChanged = true;
+        }
       }
       // 流血（BLEED）：每秒损失 value 点生命（DoT，不致死演示保护：最低 1 HP）
       if (it->type == (uint8_t)BuffType::BLEED && it->remainSec > 0 && e.hp > 1) {

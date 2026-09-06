@@ -1,8 +1,8 @@
 // skills.h - 技能系统（大型网游规模，数据驱动）
 //
 // 设计要点：
-//  - 技能定义 SkillDef 按 ID 管理：名称/描述/图标/目标类型/耗蓝/冷却/范围/AOE 半径/效果
-//  - 效果类型：伤害（单目标/AOE）、治疗、Buff（增益/减益）
+//  - 技能定义 SkillDef 按 ID 管理：名称/描述/图标/目标类型/耗蓝/冷却/范围/AOE 半径
+//  - 效果由字段驱动：dmgMul/flatDmg→伤害、heal→治疗、buffType+buffValue+buffDur→增益，可叠加
 //  - 冷却服务端权威（skillId -> readyAtMs），客户端只展示
 //  - Buff 系统：攻击/防御/移速/回血/反伤，随技能施放挂载，buffSystem 每 tick 衰减
 //  - 数据驱动：内置默认技能 + 可选 JSON 覆盖（data/skills.json）
@@ -19,13 +19,6 @@ enum class SkillTarget : uint8_t {
   SELF = 1,  // 自身为中心（治疗/增益/以自身为圆心的范围）
   ENEMY = 2, // 落点为中心（旧：单目标伤害/减益，现：落点 radius 命中）
   AOE = 3,   // 区域（以客户端落点为中心的范围伤害/减益）
-};
-// ---------- 技能效果 ----------
-enum class SkillEffect : uint8_t {
-  NONE = 0,
-  DAMAGE = 1, // 伤害（范围命中，dmgMul×攻击 + flatDmg）
-  HEAL = 2,   // 治疗（SELF）
-  BUFF = 3,   // 挂载 Buff（增益/减益，按范围命中目标）
 };
 // ---------- Buff 类型（可叠加语义：同类型同技能刷新，不同类型并存） ----------
 enum class BuffType : uint8_t {
@@ -49,7 +42,6 @@ struct SkillDef {
   std::string desc;
   std::string icon;              // 客户端缩略图标识
   SkillTarget target = SkillTarget::SELF;
-  SkillEffect effect = SkillEffect::NONE;
   double manaCost = 0;           // 耗蓝
   uint32_t cooldownMs = 0;       // 冷却（毫秒，服务端权威）
   double range = 0;              // 目标距离（ENEMY/AOE）
@@ -69,10 +61,9 @@ struct SkillDef {
   bool castCancelOnHit = true;    // 前摇期间受击是否打断
   // 显示辅助
   static const char* targetName(SkillTarget t);
-  static const char* effectName(SkillEffect e);
   static const char* buffName(BuffType b);
   static SkillTarget targetFromStr(const std::string& s);
-  static SkillEffect effectFromStr(const std::string& s);
   static BuffType buffFromStr(const std::string& s);
+  static bool isDebuff(BuffType b);  // 减益→true（对异阵营），增益→false（对自身）
 };
 } // namespace ew

@@ -905,7 +905,14 @@ export async function saveQuests() {
 // 技能配置
 // ============================================================================
 const SKILL_TARGET_NAMES = { self: '自身', enemy: '敌方', aoe: '区域' };
-const SKILL_EFFECT_NAMES = { damage: '伤害', heal: '治疗', buff: '增益' };
+const SKILL_BUFF_NAMES = { atk: '攻击', def: '防御', move_slow: '减速', regen: '回血', thorns: '反伤', bleed: '流血', def_down: '减防', atk_down: '减攻', stun: '眩晕', super_armor: '霸体', speed: '加速' };
+function skillEffectLabel(s) {
+  const parts = [];
+  if ((s.dmgMul || 0) > 0 || (s.flatDmg || 0) > 0) parts.push('伤害');
+  if ((s.heal || 0) > 0) parts.push('治疗');
+  if (s.buffType && s.buffType !== 'none' && (s.buffDur || 0) > 0) parts.push(SKILL_BUFF_NAMES[s.buffType] || s.buffType);
+  return parts.length ? parts.join('+') : '无';
+}
 
 export function renderSkillList() {
   const q = S.skillSearchText.toLowerCase();
@@ -918,7 +925,7 @@ export function renderSkillList() {
     const div = document.createElement('div');
     div.className = 'cfg-item' + (realIdx === S.selectedSkill ? ' sel' : '');
     const tgt = SKILL_TARGET_NAMES[s.target] || s.target;
-    const eff = SKILL_EFFECT_NAMES[s.effect] || s.effect;
+    const eff = skillEffectLabel(s);
     div.innerHTML = `<span class="cfg-ico">✨</span><span class="cfg-nm">${esc(s.name) || '(未命名)'}</span><span class="cfg-id">#${s.id} ${tgt}·${eff}</span>`;
     div.addEventListener('click', () => { S.selectedSkill = realIdx; renderSkillList(); renderSkillForm(); });
     box.appendChild(div);
@@ -926,7 +933,7 @@ export function renderSkillList() {
 }
 
 function setSkillFormEnabled(on) {
-  ['sk-id','sk-name','sk-desc','sk-icon','sk-target','sk-effect','sk-mana','sk-cooldownMs','sk-range','sk-radius','sk-dmgMul','sk-flatDmg','sk-heal','sk-lifesteal','sk-buffType','sk-buffValue','sk-buffDur','sk-castTimeMs','sk-knockback','sk-dashDist','sk-superArmor','sk-cancelOnMove','sk-cancelOnHit','sk-starterSkills'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
+  ['sk-id','sk-name','sk-desc','sk-icon','sk-target','sk-mana','sk-cooldownMs','sk-range','sk-radius','sk-dmgMul','sk-flatDmg','sk-heal','sk-lifesteal','sk-buffType','sk-buffValue','sk-buffDur','sk-castTimeMs','sk-knockback','sk-dashDist','sk-superArmor','sk-cancelOnMove','sk-cancelOnHit','sk-starterSkills'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
 }
 
 export function renderSkillForm() {
@@ -935,7 +942,6 @@ export function renderSkillForm() {
   $('skill-form').style.opacity = '1'; setSkillFormEnabled(true);
   $('sk-id').value = s.id; $('sk-name').value = s.name || ''; $('sk-desc').value = s.desc || '';
   $('sk-icon').value = s.icon || ''; $('sk-target').value = s.target || 'self';
-  $('sk-effect').value = s.effect || 'damage';
   $('sk-mana').value = s.mana || 0; $('sk-cooldownMs').value = s.cooldownMs || 0;
   $('sk-range').value = s.range || 0; $('sk-radius').value = s.radius || 0;
   $('sk-dmgMul').value = s.dmgMul || 0; $('sk-flatDmg').value = s.flatDmg || 0;
@@ -969,8 +975,6 @@ export function bindSkillForm() {
   iconEl.addEventListener('change', () => renderSkillList());
   const tgtEl = $('sk-target');
   tgtEl.addEventListener('change', () => { const o = sk(); if (!o) return; o.target = tgtEl.value; renderSkillList(); });
-  const effEl = $('sk-effect');
-  effEl.addEventListener('change', () => { const o = sk(); if (!o) return; o.effect = effEl.value; renderSkillList(); });
   const btEl = $('sk-buffType');
   btEl.addEventListener('change', () => { const o = sk(); if (!o) return; o.buffType = btEl.value; });
   $('sk-superArmor').addEventListener('change', () => { const o = sk(); if (!o) return; o.superArmor = $('sk-superArmor').checked ? 1 : 0; });
@@ -994,15 +998,10 @@ export function newSkill() {
       { value: 'self', text: '自身' },
       { value: 'aoe', text: '区域' },
     ]},
-    { key: 'effect', label: '效果', type: 'select', options: [
-      { value: 'damage', text: '伤害', selected: true },
-      { value: 'heal', text: '治疗' },
-      { value: 'buff', text: '增益' },
-    ]},
   ], (v) => {
     if (!v.name.trim()) { setStatus('名称不能为空'); return; }
     if (S.gameSkills.some(s => (s.id | 0) === v.id)) { setStatus(`技能 ID ${v.id} 已存在`); return; }
-    S.gameSkills.push({ id: v.id, name: v.name, desc: '', icon: 's_new', target: v.target, effect: v.effect, mana: 0, cooldownMs: 3000, range: 3, radius: 0, dmgMul: 1.0, flatDmg: 0, heal: 0, buffType: 'none', buffValue: 0, buffDur: 0, lifesteal: 0, castTimeMs: 0, cancelOnMove: 1, cancelOnHit: 1, knockback: 0, dashDist: 0, superArmor: 0 });
+    S.gameSkills.push({ id: v.id, name: v.name, desc: '', icon: 's_new', target: v.target, mana: 0, cooldownMs: 3000, range: 3, radius: 0, dmgMul: 1.0, flatDmg: 0, heal: 0, buffType: 'none', buffValue: 0, buffDur: 0, lifesteal: 0, castTimeMs: 0, cancelOnMove: 1, cancelOnHit: 1, knockback: 0, dashDist: 0, superArmor: 0 });
     S.selectedSkill = S.gameSkills.length - 1;
     renderSkillList(); renderSkillForm();
   });

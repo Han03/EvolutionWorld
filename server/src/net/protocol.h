@@ -140,6 +140,7 @@ enum EvtType : uint8_t {
   EVT_DROP    = 5,   // 掉落：wid 掉落物实体, b itemId, x 金币量
   EVT_SKILL_CASTING = 6, // 技能前摇开始：wid 施法者, b skillId, x/z 施放落点（客户端画前摇圈）
   EVT_SKILL_CANCEL   = 7, // 技能前摇被打断：wid 施法者, b skillId, x 打断原因(1移动/2受击)
+  EVT_HEAL      = 8,   // 治疗：wid 目标, b 治疗值, x 保留
 };
 // ---------- 精英状态位（S2C_ELITE.state，与 entity.h EliteState 一致） ----------
 constexpr uint8_t ELITE_IDLE = 0;

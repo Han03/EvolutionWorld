@@ -51,7 +51,7 @@ export const MSG = {
   S2C_WAREHOUSE: 0xE4, S2C_WAREHOUSE_RESULT: 0xE5, S2C_SELL_RESULT: 0xE6,
 };
 // 世界共享事件类型（S2C_EVENT 首字节）
-export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7 };
+export const EVT = { DAMAGE: 1, DEATH: 2, RESPAWN: 3, SKILL: 4, DROP: 5, SKILL_CASTING: 6, SKILL_CANCEL: 7, HEAL: 8 };
 // 精英状态（S2C_ELITE.state）
 export const ELITE_STATE = { IDLE: 0, ENGAGE: 1, DEAD: 2 };
 export const MASK = { POS: 0x01, VEL: 0x02, STATE: 0x04, INTENT: 0x08 };

@@ -260,7 +260,6 @@ bool GameData::loadFromJson(const std::string& dir) {
           s.desc = j.at("desc").asString();
           s.icon = j.at("icon").asString();
           s.target = SkillDef::targetFromStr(j.at("target").asString());
-          s.effect = SkillDef::effectFromStr(j.at("effect").asString());
           s.manaCost = j.at("mana").asNumber();
           s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
           s.range = j.at("range").asNumber();
@@ -488,14 +487,6 @@ static const char* targetToString(SkillTarget t) {
     default: return "self";
   }
 }
-static const char* effectToString(SkillEffect e) {
-  switch (e) {
-    case SkillEffect::DAMAGE: return "damage";
-    case SkillEffect::HEAL: return "heal";
-    case SkillEffect::BUFF: return "buff";
-    default: return "none";
-  }
-}
 
 std::string GameData::skillsToJson() const {
   // 按 ID 排序输出
@@ -512,7 +503,6 @@ std::string GameData::skillsToJson() const {
     j["desc"] = d.desc;
     j["icon"] = d.icon;
     j["target"] = targetToString(d.target);
-    j["effect"] = effectToString(d.effect);
     j["mana"] = d.manaCost;
     j["cooldownMs"] = (int64_t)d.cooldownMs;
     j["range"] = d.range;
@@ -552,7 +542,6 @@ bool GameData::replaceSkills(const Json& obj) {
       s.desc = j.at("desc").asString();
       s.icon = j.at("icon").asString();
       s.target = SkillDef::targetFromStr(j.at("target").asString());
-      s.effect = SkillDef::effectFromStr(j.at("effect").asString());
       s.manaCost = j.at("mana").asNumber();
       s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
       s.range = j.at("range").asNumber();

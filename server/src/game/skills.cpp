@@ -11,14 +11,6 @@ const char* SkillDef::targetName(SkillTarget t) {
     default: return "未知";
   }
 }
-const char* SkillDef::effectName(SkillEffect e) {
-  switch (e) {
-    case SkillEffect::DAMAGE: return "伤害";
-    case SkillEffect::HEAL: return "治疗";
-    case SkillEffect::BUFF: return "增益";
-    default: return "无";
-  }
-}
 const char* SkillDef::buffName(BuffType b) {
   switch (b) {
     case BuffType::ATK: return "攻击提升";
@@ -41,12 +33,6 @@ SkillTarget SkillDef::targetFromStr(const std::string& s) {
   if (s == "aoe") return SkillTarget::AOE;
   return SkillTarget::SELF;
 }
-SkillEffect SkillDef::effectFromStr(const std::string& s) {
-  if (s == "damage") return SkillEffect::DAMAGE;
-  if (s == "heal") return SkillEffect::HEAL;
-  if (s == "buff") return SkillEffect::BUFF;
-  return SkillEffect::NONE;
-}
 BuffType SkillDef::buffFromStr(const std::string& s) {
   if (s == "atk") return BuffType::ATK;
   if (s == "def") return BuffType::DEF;
@@ -60,5 +46,17 @@ BuffType SkillDef::buffFromStr(const std::string& s) {
   if (s == "super_armor" || s == "armor") return BuffType::SUPER_ARMOR;
   if (s == "speed") return BuffType::SPEED;
   return BuffType::NONE;
+}
+bool SkillDef::isDebuff(BuffType b) {
+  switch (b) {
+    case BuffType::MOVE_SLOW:
+    case BuffType::BLEED:
+    case BuffType::DEF_DOWN:
+    case BuffType::ATK_DOWN:
+    case BuffType::STUN:
+      return true;
+    default:
+      return false;
+  }
 }
 } // namespace ew

@@ -364,6 +364,15 @@ async function enterWorld(token, username, worldMeta) {
           S.renderer.addSkillEffect({ kind: 'float', x: dmgTarget.x, z: dmgTarget.z, text: `-${dmgVal}`, color: '#ef4444', durMs: 1000 });
         }
       }
+    } else if (ev.evtType === EVT.HEAL) {
+      // 治疗飘字（buff 持续回血）：服务端权威治疗值
+      const healTarget = findEntityByWid(ev.wid);
+      if (healTarget) {
+        const healVal = Math.round(ev.b);
+        if (healVal > 0) {
+          S.renderer.addSkillEffect({ kind: 'float', x: healTarget.x, z: healTarget.z, text: `+${healVal}`, color: '#4ade80', durMs: 1000 });
+        }
+      }
     } else if (ev.evtType === EVT.SKILL_CASTING) {
       const sd = skillDef(ev.b);
       if (sd.target === 2) {
