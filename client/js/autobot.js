@@ -93,6 +93,10 @@ const S_ = {
   _collectGotoX: 0,     // 收集任务：前往掉落怪区的探索点（复用至到达/超时）
   _collectGotoZ: 0,
   _collectGotoAt: 0,
+  _spawns: null,        // 生物投放数据（GET /api/spawns，数据驱动：怪/城坐标）
+  _spawnsAt: 0,         // 最近一次成功拉取时间
+  _spawnsLoading: false,
+  _spawnSkip: new Map(),// 投放点 -> 跳过截止时间（goto 失败后 60s 内不再前往）
   _logBuf: [],
 };
 
@@ -655,7 +659,24 @@ function advanceGoal(now) {
       if (goalComplete(g)) { finishGoal(); return; }
       const target = pickKillTarget(g.key);
       if (!target) {
-        // 目标怪不在视野：去最近可能的区域（杀任意怪/探索）
+        // 目标怪不在视野：优先按投放数据坐标前往（数据驱动）；无则打最近任意怪
+        if (ensureSpawns()) {
+          const pt = nearestSpawnPoint(g.key);
+          if (pt) {
+            const d2 = Math.hypot(self.x - pt.x, self.z - pt.z);
+            if (d2 > CFG.MOVE_REACH) {
+              const r = goto(pt.x, pt.z, 'kill');
+              if (!r.ok) {
+                S_._spawnSkip.set(pt.x + ',' + pt.z, performance.now() + 60000);
+                const any2 = nearestMonster();
+                if (any2) { const r2 = goto(any2.x, any2.z, 'hunt'); if (!r2.ok) finishGoal(); }
+                return;
+              }
+              return;
+            }
+          }
+        }
+        // 投放数据未就绪/无投放点 → 打最近任意怪
         const any = nearestMonster();
         if (any) {
           const r = goto(any.x, any.z, 'hunt');
@@ -726,12 +747,33 @@ function advanceGoal(now) {
         combatAttack(target);
         return;
       }
-      // 3) 视野无掉落怪：按掉落怪等级带主动前往怪物区（数据驱动，不打无收益怪）
+      // 3) 视野无掉落怪：优先按投放数据坐标前往（数据驱动）；否则按等级带探索
       const dropInfo = dropMonsterInfo(g.itemId);
       if (dropInfo) {
-        // 怪区估算：主城外 免怪半径 + 等级×带宽 ± 随机（服务端按距主城距离分档投放，近弱远强）
+        // 3a) 投放数据坐标优先（精准）：前往最近未跳过的掉落怪投放点
+        if (ensureSpawns()) {
+          const pt = nearestSpawnPoint(dropInfo.key || '*');
+          const now = performance.now();
+          if (pt) {
+            if (S_._collectGotoAt && now < S_._collectGotoAt &&
+                Math.hypot(self.x - S_._collectGotoX, self.z - S_._collectGotoZ) > 6) {
+              const r2 = goto(S_._collectGotoX, S_._collectGotoZ, 'collect');
+              if (!r2.ok) { S_._collectGotoAt = 0; }
+              return;
+            }
+            S_._collectGotoX = pt.x; S_._collectGotoZ = pt.z;
+            S_._collectGotoAt = now + 25000;
+            log(`🔍 前往投放点 (${pt.x.toFixed(0)},${pt.z.toFixed(0)}) 寻找掉落怪 ${dropInfo.key || dropInfo.name || ''}`);
+            const r = goto(pt.x, pt.z, 'collect');
+            if (!r.ok) {
+              S_._spawnSkip.set(pt.x + ',' + pt.z, now + 60000);
+              S_._collectGotoAt = 0;
+            }
+            return;
+          }
+        }
+        // 3b) 投放数据未就绪/无该怪投放 → 等级带探索（免怪半径 + 等级×带宽 ± 随机）
         const base = CFG.MONSTER_FREE_R + dropInfo.level * CFG.MONSTER_BAND_M;
-        // 复用进行中的探索点（未到达/未超时），避免每轮换方向原地打转
         if (S_._collectGotoAt && performance.now() < S_._collectGotoAt &&
             Math.hypot(self.x - S_._collectGotoX, self.z - S_._collectGotoZ) > 6) {
           const r2 = goto(S_._collectGotoX, S_._collectGotoZ, 'collect');
@@ -743,7 +785,7 @@ function advanceGoal(now) {
         S_._collectGotoX = Math.cos(ang) * dist;
         S_._collectGotoZ = Math.sin(ang) * dist;
         S_._collectGotoAt = performance.now() + 25000;
-        log(`🔍 视野无掉落怪（Lv${dropInfo.level} 掉落区 ${dist.toFixed(0)}m），前往探索`);
+        log(`🔍 无投放数据，按等级带探索 ${dist.toFixed(0)}m（Lv${dropInfo.level} 掉落区）`);
         const r = goto(S_._collectGotoX, S_._collectGotoZ, 'collect');
         if (!r.ok) { S_._collectGotoAt = 0; }
         return;
@@ -1302,7 +1344,7 @@ function dropMonsterInfo(itemId) {
     if ((m.drops || []).some(d => Number(d.item) === Number(itemId))) {
       const lv = (m.level || 1) | 0;
       if (!best || lv < best.level) {
-        best = { level: lv, keys: new Set([m.key, m.name].filter(Boolean)) };
+        best = { level: lv, key: m.key || '', name: m.name || '', keys: new Set([m.key, m.name].filter(Boolean)) };
       }
     }
   }
@@ -1471,6 +1513,46 @@ function gamedataMonsters() {
   return Object.entries(m).map(([key, v]) => ({ ...v, key }));
 }
 function gamedataMonster(key) { return gamedataMonsters().find(x => x.key === key || x.name === key); }
+
+// ---------------------------------------------------------------------------
+// 生物投放数据查询（GET /api/spawns，数据驱动：视野内无目标时按投放坐标主动前往）
+// ---------------------------------------------------------------------------
+/** 确保投放数据可用（非阻塞拉取；120s 缓存）。返回是否已有可用数据 */
+function ensureSpawns() {
+  if (S_._spawnsLoading) return false;
+  if (S_._spawns && performance.now() - S_._spawnsAt < 120000) return true;
+  S_._spawnsLoading = true;
+  fetch('/api/spawns').then(r => r.json()).then(d => {
+    S_._spawns = Array.isArray(d && d.spawns) ? d.spawns : [];
+    S_._spawnsAt = performance.now();
+  }).catch(() => { S_._spawnsAt = 0; }).finally(() => { S_._spawnsLoading = false; });
+  return !!(S_._spawns && performance.now() - S_._spawnsAt < 120000);
+}
+
+/** 指定怪物类型（key，'*'=全部）的投放坐标列表 */
+function spawnPositions(typeKey) {
+  if (!S_._spawns) return [];
+  return S_._spawns
+    .filter(s => s.kind === 'monster' && (typeKey === '*' || s.type === typeKey))
+    .map(s => ({ x: s.x, z: s.z }));
+}
+
+/** 视野无目标时：查投放数据取最近可用投放点；无则返回 null
+ *  typeKey：怪物 key 或 '*'（任意怪） */
+function nearestSpawnPoint(typeKey) {
+  const self = S_.S && S_.S.predictor ? S_.S.predictor.predicted() : null;
+  const pts = spawnPositions(typeKey);
+  if (!pts.length) return null;
+  const now = performance.now();
+  let best = null, bd = 1e9;
+  for (const p of pts) {
+    const key = p.x + ',' + p.z;
+    if (S_._spawnSkip.has(key) && S_._spawnSkip.get(key) > now) continue;
+    const d = self ? Math.hypot(self.x - p.x, self.z - p.z) : 0;
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
 function gamedataNpcs() { const d = S_.gamedata; if (!d) return []; const n = d.npcs; return Array.isArray(n) ? n : Object.values(n || {}); }
 function craftRecipes() { const d = S_.gamedata; if (!d || !d.craft) return []; return d.craft.recipes || d.craft; }
 function itemDefById(id) { return gamedataItems().find(x => x.id === id); }
@@ -1857,6 +1939,9 @@ export function __testSkill(skillId, wid, x, z) {
 }
 export function __testSetGamedata(gd) { S_.gamedata = gd || null; return !!S_.gamedata; }
 export function __testDropMonsterInfo(itemId) { return dropMonsterInfo(itemId); }
+export function __testSetSpawns(sp) { S_._spawns = sp || null; S_._spawnsAt = performance.now(); return !!S_._spawns; }
+export function __testSpawnPositions(typeKey) { return spawnPositions(typeKey); }
+export function __testNearestSpawnPoint(typeKey) { return nearestSpawnPoint(typeKey); }
 export function __autobotDebug() {
   pullQuestViews();
   return {
