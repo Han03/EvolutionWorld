@@ -461,14 +461,16 @@ async function enterEditor(j) {
   refreshUndoButtons();
 
   S.running = true;
-  requestAnimationFrame(frame);
-  requestAnimationFrame(panKeyLoop);
+  // 单 rAF 主循环：先处理 WASD 平移输入，再渲染，避免双 rAF 争抢主线程
+  requestAnimationFrame(editorLoop);
 }
 
-function panKeyLoop(ts) {
+// 编辑器主循环（panKey + frame 合并，单 rAF 驱动）
+function editorLoop(ts) {
   if (!S.running) return;
   panKey(ts);
-  requestAnimationFrame(panKeyLoop);
+  frame(ts);
+  requestAnimationFrame(editorLoop);
 }
 
 function requireRelogin(reason) {

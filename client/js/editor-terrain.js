@@ -77,7 +77,8 @@ export function frame() {
     S.tr.setBrushPreview(0, 0, 0);
   }
   S.tr.render();
-  requestAnimationFrame(frame);
+  // 不再自驱动 rAF：由 editor.js 主循环（editorLoop：panKey + frame）统一驱动，
+  // 避免双 rAF 争抢主线程导致 WASD 输入无响应。
 }
 
 // ============================================================================

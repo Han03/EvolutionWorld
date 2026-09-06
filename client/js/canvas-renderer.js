@@ -60,6 +60,8 @@ export class WebGLRenderer {
     this._clickIndicators = [];
     this._gridVisible = false;
     this.heightColorMode = false;  // 高度色带着色模式（编辑器）
+    this._terrainCache = null;     // 低缩放地形离屏缓存 {canvas,cx,cz,scale,dpr,iw,ih,heightColorMode}
+    this._terrainDirty = true;     // 地形/编辑/mask 变化置脏，触发缓存重建
     this._selfPos = null; // {x, z} 自身位置（交互按键提示用）
     this._bounce = new Map();
     this._bounceActive = new Set();
@@ -194,13 +196,16 @@ export class WebGLRenderer {
     ctx.fillRect(0, 0, cw, ch);
 
     if (scale < 2) {
-      // ── 低缩放快速路径：ImageData 像素直写 + 跳过不可见的叠加层 ──
-      // 视角拉高时可见格数可达 65K+，逐格 fillRect 开销远超像素写入。
+      // ── 低缩放快速路径：离屏地形缓存 blit + 跳过不可见的叠加层 ──
+      // 视角拉高时可见格数可达 65K+，逐格采样（fbm）+ 全屏 ImageData 每帧重建开销巨大。
+      // 地形层结果缓存到 2× 视口离屏 canvas，仅编辑/mask 变化或相机移出缓存范围时重建，
+      // 每帧渲染 = 一次 1:1 drawImage blit（零逐格循环）。
       // voidGrid / water 在亚像素尺度下不可见，直接跳过。
-      this._drawTerrainFast(ctx, cw, ch, scale);
+      this._drawTerrainFastCached(ctx, cw, ch, scale);
       if (this._gridVisible) this._drawGrid(ctx, cw, ch, scale);
     } else {
       // ── 正常路径 ──
+      this._terrainCache = null; // 释放低缩放缓存（zoom≥2 用逐格 fillRect，无需离屏）
       this._drawVoidGrid(ctx, cw, ch, scale);
       this._drawTerrain(ctx, cw, ch, scale);
       this._drawWater(ctx, cw, ch, scale);
@@ -1593,34 +1598,77 @@ export class WebGLRenderer {
   // 公共方法
   // ════════════════════════════════════════════════════════
 
-  // ── 低缩放快速地形渲染（ImageData 像素直写） ──
+  // ── 低缩放地形渲染（离屏缓存 + 1:1 blit） ──
   // 视角拉高（scale<2）时，每格 <2px，逐格 fillRect 的 Canvas 2D 开销
   // （路径构建 + 样式设置 + 光栅化）远超直接像素写入。
-  // 此方法将全部可见地形一次性写入 ImageData 缓冲区，单次 putImageData 上屏。
-  // 同时内联颜色计算，消除每格的对象创建（terrainColor 返回 {r,g,b}）和冗余缓存查找。
-  _drawTerrainFast(ctx, cw, ch, scale) {
-    const mn = walkMaskN(), moff = walkMaskOff();
-    if (mn <= 0) return;
-
+  // 本方法把全部可见地形一次性采样到 2× 视口的离屏 canvas，仅当：
+  //   · 地形被编辑 / mask 重载（invalidateTerrain 置脏）
+  //   · 相机中心移出缓存允许范围（0.45×半视口宽）
+  //   · 缩放档位 / 画布尺寸 / 高度着色模式变化
+  // 时重建；每帧渲染 = 一次 1:1 drawImage blit，零逐格循环。
+  _drawTerrainFastCached(ctx, cw, ch, scale) {
     const iw = this.canvas.width;
     const ih = this.canvas.height;
-    const imgData = ctx.createImageData(iw, ih);
-    const data = imgData.data;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cache = this._terrainCache;
+
+    // 相机中心允许偏移（世界单位）：缓存放大 2×，中心可漂移 ≤0.45×半视口宽
+    const driftX = (cw / 2 / scale) * 0.45;
+    const driftZ = (ch / 2 / scale) * 0.45;
+    const needRebuild = !cache || this._terrainDirty ||
+      cache.iw !== iw || cache.ih !== ih || cache.scale !== scale || cache.dpr !== dpr ||
+      cache.heightColorMode !== this.heightColorMode ||
+      Math.abs(this.cam.cx - cache.cx) > driftX || Math.abs(this.cam.cz - cache.cz) > driftZ;
+
+    if (needRebuild) {
+      const iw2 = Math.max(2, iw * 2);
+      const ih2 = Math.max(2, ih * 2);
+      const off = document.createElement('canvas');
+      off.width = iw2; off.height = ih2;
+      const octx = off.getContext('2d');
+      const imgData = octx.createImageData(iw2, ih2);
+      this._sampleTerrainTo(imgData.data, iw2, ih2, this.cam.cx, this.cam.cz, scale, dpr);
+      octx.putImageData(imgData, 0, 0);
+      this._terrainCache = {
+        canvas: off, cx: this.cam.cx, cz: this.cam.cz,
+        scale, dpr, iw, ih, heightColorMode: this.heightColorMode,
+      };
+      this._terrainDirty = false;
+      this._useCache(ctx, iw, ih, scale, dpr);
+      return;
+    }
+
+    this._useCache(ctx, iw, ih, scale, dpr);
+  }
+
+  // 从离屏缓存 1:1 像素 blit 到主画布（整数偏移防亚像素闪烁）
+  _useCache(ctx, iw, ih, scale, dpr) {
+    const cache = this._terrainCache;
+    if (!cache) return;
+    const px = Math.round((this.cam.cx - cache.cx) * scale * dpr + iw / 2);
+    const py = Math.round((this.cam.cz - cache.cz) * scale * dpr + ih / 2);
+    ctx.drawImage(cache.canvas, px, py, iw, ih, 0, 0, iw, ih);
+  }
+
+  // 低缩放地形采样：把以 (cx,cz) 为中心、物理尺寸 iw×ih 的地形逐格写入 ImageData
+  // （与旧 _drawTerrainFast 采样逻辑一致，参数化供缓存重建复用）
+  _sampleTerrainTo(data, iw, ih, cx, cz, scale, dpr) {
+    const mn = walkMaskN(), moff = walkMaskOff();
+    if (mn <= 0) return;
 
     // 背景填充（不透明白）
     for (let i = 0; i < data.length; i += 4) {
       data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = 255;
     }
 
+    const cw = iw / dpr, ch = ih / dpr;
     const halfW = cw / 2 / scale;
     const halfH = ch / 2 / scale;
-    const giMin = Math.max(0, Math.floor(this.cam.cx - halfW) + moff);
-    const giMax = Math.min(mn - 1, Math.ceil(this.cam.cx + halfW) + moff);
-    const gjMin = Math.max(0, Math.floor(this.cam.cz - halfH) + moff);
-    const gjMax = Math.min(mn - 1, Math.ceil(this.cam.cz + halfH) + moff);
+    const giMin = Math.max(0, Math.floor(cx - halfW) + moff);
+    const giMax = Math.min(mn - 1, Math.ceil(cx + halfW) + moff);
+    const gjMin = Math.max(0, Math.floor(cz - halfH) + moff);
+    const gjMax = Math.min(mn - 1, Math.ceil(cz + halfH) + moff);
 
-    const cx = this.cam.cx, cz = this.cam.cz;
     const subPx = scale < 1; // 亚像素：多格映射到同一像素，需取后者
 
     for (let gj = gjMin; gj <= gjMax; gj++) {
@@ -1682,11 +1730,9 @@ export class WebGLRenderer {
         }
       }
     }
-
-    ctx.putImageData(imgData, 0, 0);
   }
 
-  invalidateTerrain() { /* 2D 每帧重绘，无需脏标记 */ }
+  invalidateTerrain() { this._terrainDirty = true; this._terrainCache = null; }
 
   resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);

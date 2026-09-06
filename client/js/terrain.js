@@ -60,7 +60,7 @@ export function fbm2(x, z, octaves = 5) {
 //     否则地形边界处「客户端放行、服务端拒绝」→ terrain_blocked 回退。
 let _tCache = new Map();
 let _bCache = new Map();
-const CACHE_MAX = 60000;   // 桶数上限：超限整体清空，防无界增长（缓存永不逐帧清理）
+const CACHE_MAX = 131072;   // 桶数上限：超限整体清空，防无界增长（缓存永不逐帧清理）
 function _tKey(x, z) { return ((Math.round(x * 10)) * 10007 + Math.round(z * 10)); }
 /** 清除地形缓存（编辑操作/mask 重载后调用） */
 export function invalidateTerrainCache() { _tCache.clear(); _bCache.clear(); }
