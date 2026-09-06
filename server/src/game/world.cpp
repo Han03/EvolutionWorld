@@ -1529,7 +1529,8 @@ static void moveEntityCollide(World& w, Entity& e, double tx, double tz, double 
   w.physics().setHorizontalVelocity(e, tx, tz, dt);
   w.physics().step(e, dt);
   // 静态地形碰撞：目标位圆盘与不可通行（湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
-  if (w.collision().circleBlocked(e.pos.x, e.pos.z, e.radius)) {
+  // 恢复态（AS_RECOVER）跳过地形碰撞：怪物无敌归位过程中不应被空洞/悬崖卡住
+  if (e.ai.aiState != AS_RECOVER && w.collision().circleBlocked(e.pos.x, e.pos.z, e.radius)) {
     w.collision().slideMove(e, ox, oz, e.pos.x, e.pos.z);
   }
   // 贴地重算（滑动后地表可能变化）
