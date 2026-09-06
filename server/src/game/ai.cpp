@@ -150,20 +150,10 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
     ai.targetVZ = 0;
     return;
   }
-  // 前摇结算：怪物施放中的技能到期后结算
+  // 前摇中：静止等待（结算由 castSystem → resolveCast 统一处理）
   if (e.castingSkillId != 0) {
-    const SkillDef* csd = w.data().skill(e.castingSkillId);
-    if (csd && nowMs >= e.castStartMs + (uint64_t)csd->castTimeMs) {
-      Entity* ct = w.findByWid(e.castTargetWid);
-      if (ct && ct->active && ct->hp > 0) {
-        w.pushEvent(proto::EVT_SKILL, e.wid, csd->id, proto::qAbs(ct->pos.x), proto::qAbs(ct->pos.z));
-        w.applySkillToTarget(e, *ct, *csd, 0.9 + rng01() * 0.2);
-      }
-      e.castingSkillId = 0;
-    } else {
-      ai.targetVX = ai.targetVZ = 0; // 前摇中静止
-      return;
-    }
+    ai.targetVX = ai.targetVZ = 0;
+    return;
   }
   // 感知：清理失效仇恨（离线/死亡玩家）
   for (auto it = e.aggro.begin(); it != e.aggro.end();) {
@@ -226,8 +216,24 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
     } else if (d <= cfg.monsterAttackRange) {
       // ---- 战斗态：目标在攻击范围内 ----
       ai.aiState = AS_ATTACK;
-      ai.targetVX = ai.targetVZ = 0;
       ai.chaseTime = 0; // 进入战斗态重置追击计时
+      // 技能距离校验：区分「超出技能范围」与「技能冷却中」
+      // monsterAttackRange 是状态切换阈值（1.6m），skill.range 才是实际施放距离（1.2m）
+      // 若不区分，冷却期间 pickMonsterSkill 也返回 null → 怪物会错误地持续逼近
+      bool hasInRangeSkill = false;
+      for (uint32_t sid : e.skillIds) {
+        const SkillDef* sd = w.data().skill(sid);
+        if (!sd) continue;
+        double range = sd->range > 0 ? sd->range : 3.0;
+        if (d <= range) { hasInRangeSkill = true; break; }
+      }
+      if (!hasInRangeSkill && d > 0.1) {
+        // 所有技能都超出射程 → 继续逼近（而非原地冻结）
+        moveToward(e, target->pos, slowedSpeed(e, ai.speed * 1.8), cfg.monsterAttackRange * 0.5);
+        return;
+      }
+      // 已进入技能射程 → 站桩输出（冷却中则等待）
+      ai.targetVX = ai.targetVZ = 0;
       if (nowMs - e.lastAttackMs >= (uint64_t)(cfg.monsterAttackCdSec * 1000.0)) {
         const SkillDef* sd = pickMonsterSkill(w, e, *target, nowMs);
         if (sd) {
@@ -239,12 +245,18 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
             e.castTargetWid = target->wid;
             e.castTx = target->pos.x;
             e.castTz = target->pos.z;
+            // ENEMY/AOE 技能：广播目标位置；SELF 技能：广播施法者位置
+            double cx, cz;
+            if (sd->target == SkillTarget::SELF) { cx = e.pos.x; cz = e.pos.z; }
+            else { cx = target->pos.x; cz = target->pos.z; }
             w.pushEvent(proto::EVT_SKILL_CASTING, e.wid, sd->id,
-                        proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
+                        proto::qAbs(cx), proto::qAbs(cz));
           } else {
             w.pushEvent(proto::EVT_SKILL, e.wid, sd->id,
                         proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
             w.applySkillToTarget(e, *target, *sd, 0.9 + rng01() * 0.2);
+            // 位移技能：怪物瞬发技能后向目标位移
+            if (sd->dashDist > 0) w.executeDash(e, target->pos.x, target->pos.z, sd->dashDist);
           }
         }
       }
@@ -378,25 +390,10 @@ void tickEliteAi(World& w, Entity& e, double dt) {
     }
     return;
   }
-  // 前摇结算：精英施放中的技能到期后结算
+  // 前摇中：静止等待（结算由 castSystem → resolveCast 统一处理）
   if (e.castingSkillId != 0) {
-    const SkillDef* csd = w.data().skill(e.castingSkillId);
-    if (csd && nowMs >= e.castStartMs + (uint64_t)csd->castTimeMs) {
-      // AOE 技能：对范围内所有玩家施加效果
-      double aoeRange = csd->radius > 0 ? csd->radius : 6.0;
-      w.pushEvent(proto::EVT_SKILL, e.wid, csd->id, proto::qAbs(e.pos.x), proto::qAbs(e.pos.z));
-      for (const auto& pid : w.players()) {
-        Entity* pl = w.findEntity(pid);
-        if (!pl || pl->hp <= 0) continue;
-        if (pl->pos.dist2D(e.pos) <= aoeRange) {
-          w.applySkillToTarget(e, *pl, *csd, 1.0);
-        }
-      }
-      e.castingSkillId = 0;
-    } else {
-      e.ai.targetVX = e.ai.targetVZ = 0; // 前摇中静止
-      return;
-    }
+    e.ai.targetVX = e.ai.targetVZ = 0;
+    return;
   }
   // IDLE：脱战回血 + 侦测仇恨
   if (e.eliteState == ES_IDLE) {
@@ -449,6 +446,8 @@ void tickEliteAi(World& w, Entity& e, double dt) {
         e.skillCd[atkSkill->id] = nowMs + (uint64_t)atkSkill->cooldownMs;
         w.pushEvent(proto::EVT_SKILL, e.wid, atkSkill->id, proto::qAbs(target->pos.x), proto::qAbs(target->pos.z));
         w.applySkillToTarget(e, *target, *atkSkill, 0.9 + rng01() * 0.2);
+        // 位移技能：精英普攻技能后向目标位移
+        if (atkSkill->dashDist > 0) w.executeDash(e, target->pos.x, target->pos.z, atkSkill->dashDist);
         e.aggro[target->wid] -= target->lastDamageMs == nowMs ? 0 : 0; // 仇恨衰减由 applySkillToTarget 内的 aggro 增长平衡
       }
       // 范围技能（AOE，独立冷却，有前摇则进入施放状态）

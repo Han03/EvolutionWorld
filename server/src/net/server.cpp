@@ -1240,6 +1240,15 @@ void GameServer::handleBinary(Conn& c, const std::string& payload) {
           uint16_t ctm = sd ? (uint16_t)sd->castTimeMs : 0;
           sendTo(c, proto::skillCastFrame(ok, m.skillId, m.targetWid,
                                           proto::qAbs(m.tx), proto::qAbs(m.tz), ctm));
+          // 瞬发位移技能：executeDash 已修改玩家位置，立即发送 correction
+          // 否则客户端预测器不知道位移发生，角色停留在旧位置直到下一次 anticheat 校正
+          Entity* cp = world_.findEntity(c.playerId);
+          if (cp && cp->dashPending) {
+            cp->dashPending = false;
+            sendTo(c, netcode_.correctionFrame(*cp, "skill_dash", (uint32_t)world_.tickCount()));
+            netcode_.requestResync(cp->id);
+            ac_.clearClaim(cp->id); // 清除轨迹缓存，避免 Check C 用旧 claim 误判
+          }
         }
         break;
       }
@@ -1915,6 +1924,21 @@ void GameServer::periodicSavePlayers() {
   }
 }
 void GameServer::broadcastTick() {
+  // 前摇位移技能：castSystem 在 world_.tick() 中结算了 executeDash，
+  // 玩家 dashPending 已置 true，需在广播 tick 数据前发送 correction，
+  // 否则客户端预测器不知道位移发生，角色停留在旧位置
+  for (const auto& pid : world_.players()) {
+    Entity* p = world_.findEntity(pid);
+    if (!p || !p->dashPending) continue;
+    p->dashPending = false;
+    int fd = fdOfPlayer(pid);
+    if (fd < 0) continue;
+    auto it = conns_.find(fd);
+    if (it == conns_.end() || it->second.phase != Conn::Ws) continue;
+    sendTo(it->second, netcode_.correctionFrame(*p, "skill_dash_cast", (uint32_t)world_.tickCount()));
+    netcode_.requestResync(pid);
+    ac_.clearClaim(pid); // 清除轨迹缓存，避免 Check C 用旧 claim 误判
+  }
   const auto& out = netcode_.tickBroadcast();
   for (const auto& [pid, buf] : out) {
     int fd = fdOfPlayer(pid);

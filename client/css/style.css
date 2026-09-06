@@ -124,9 +124,9 @@ html, body {
 .hud-status-chip.warn { color: #ffb74d; border-color: rgba(255,183,77,0.4); background: rgba(255,183,77,0.1); }
 
 .hud-info-block {
+  display: flex; align-items: center; gap: 12px;
   padding: 4px 12px; font-size: 11px; line-height: 1.6;
   color: var(--text-secondary);
-  text-align: right;
 }
 .hud-info-block b { color: var(--gold-light); }
 
@@ -374,17 +374,27 @@ kbd {
 }
 
 /* ══════════════════════════════════════════
-   调试数据打印面板（左侧，协议监控上方，默认收起）
+   左侧面板容器（调试数据 + 协议监控）
+   ══════════════════════════════════════════ */
+#left-panels {
+  position: absolute; left: 14px; bottom: 199px;
+  display: flex; flex-direction: column-reverse;
+  z-index: 30;
+  gap:10px;
+}
+
+/* ══════════════════════════════════════════
+   调试数据打印面板（默认收起）
    ══════════════════════════════════════════ */
 #debug-panel {
-  position: absolute; left: 14px; bottom: 370px;
-  width: 280px; z-index: 30;
+  width: 280px;
   background: rgba(8,12,20,0.6);
   border: 1px solid rgba(201,168,76,0.12);
   border-radius: 6px;
   overflow: hidden; font-size: 10px;
   color: var(--text-dim);
   transition: width 0.2s;
+  margin-bottom: 4px;
 }
 #debug-panel.collapsed { width: auto; }
 #debug-panel.collapsed .debug-body { display: none; }
@@ -448,11 +458,10 @@ kbd {
 .ab-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ══════════════════════════════════════════
-   协议监控面板（左侧，默认收起）
+   协议监控面板（默认收起）
    ══════════════════════════════════════════ */
 #proto-panel {
-  position: absolute; left: 14px; bottom: 199px;
-  width: 280px; z-index: 30;
+  width: 280px;
   background: rgba(8,12,20,0.6);
   border: 1px solid rgba(201,168,76,0.12);
   border-radius: 6px;
@@ -973,34 +982,22 @@ kbd {
 .minimap-toggle {
   position: absolute;
   bottom: -2px; right: -2px;
-  width: 22px; height: 22px;
+  min-width: 22px; height: 22px;
+  padding: 0 4px;
   background: rgba(8,12,20,0.88);
   border: 1px solid rgba(201,168,76,0.35);
-  border-radius: 50%;
+  border-radius: 11px;
   color: var(--gold);
-  font-size: 8px; font-weight: 700;
+  font-size: 9px; font-weight: 700;
   cursor: var(--cursor-pointer);
   display: flex; align-items: center; justify-content: center;
   z-index: 2;
   transition: all 0.15s;
   line-height: 1;
-  padding: 0;
 }
 .minimap-toggle:hover {
   background: rgba(201,168,76,0.18);
   border-color: var(--gold);
-}
-.minimap-container.collapsed {
-  width: 28px; height: 28px;
-  overflow: hidden;
-  border-radius: 50%;
-}
-.minimap-container.collapsed .minimap-canvas { display: none; }
-.minimap-container.collapsed .minimap-toggle {
-  position: static;
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  font-size: 10px;
 }
 
 /* ══════════════════════════════════════════
@@ -1039,6 +1036,34 @@ kbd {
 }
 .quest-track-obj-done { color: #81c784; }
 .quest-track-completable .quest-track-name { color: #81c784; }
+
+/* 任务追踪导航按钮 */
+.qt-nav-btn {
+  display: inline-block; float: right;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 9px; line-height: 1;
+  padding: 2px 4px; margin-top: -1px;
+  transition: color 0.15s, transform 0.15s;
+  pointer-events: auto;
+}
+.qt-nav-btn:hover { color: var(--gold); transform: scale(1.3); }
+.qt-nav-btn.qt-nav-active {
+  color: var(--gold);
+  animation: qt-nav-pulse 1.2s ease-in-out infinite;
+}
+.qt-nav-row {
+  border-left: 2px solid var(--gold);
+  padding-left: 8px;
+  animation: qt-nav-glow 1.5s ease-in-out infinite;
+}
+@keyframes qt-nav-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes qt-nav-glow {
+  0%, 100% { border-left-color: rgba(201,168,76,0.3); }
+  50% { border-left-color: rgba(201,168,76,0.9); }
+}
 
 /* ══════════════════════════════════════════
    任务日志面板

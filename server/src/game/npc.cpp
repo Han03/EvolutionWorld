@@ -58,6 +58,7 @@ bool NpcManager::loadFromJson(const std::string& dir) {
       d.shopId = (int)(jv.has("shopId") ? jv.at("shopId").asInt() : 0);
       d.level = (int)(jv.has("level") ? jv.at("level").asInt() : 1);
       d.wanderRadius = jv.has("wanderRadius") ? jv.at("wanderRadius").asNumber() : 0;
+      d.radius = jv.has("radius") ? jv.at("radius").asNumber() : 0.5;
       if (jv.has("dialogue")) d.dialogue = jv.at("dialogue").asString();
       npcs_[id] = d;
     }
@@ -88,6 +89,7 @@ std::string NpcManager::npcsToJson() const {
     j["shopId"] = (int64_t)d.shopId;
     j["level"] = (int64_t)d.level;
     j["wanderRadius"] = d.wanderRadius;
+    j["radius"] = d.radius;
     j["dialogue"] = d.dialogue;
     obj[id] = j;
   }
@@ -109,6 +111,7 @@ bool NpcManager::replaceNpcs(const Json& obj) {
     d.shopId = (int)(jv.has("shopId") ? jv.at("shopId").asInt() : 0);
     d.level = (int)(jv.has("level") ? jv.at("level").asInt() : 1);
     d.wanderRadius = jv.has("wanderRadius") ? jv.at("wanderRadius").asNumber() : 0;
+    d.radius = jv.has("radius") ? jv.at("radius").asNumber() : 0.5;
     if (jv.has("dialogue")) d.dialogue = jv.at("dialogue").asString();
     next[id] = d;
   }

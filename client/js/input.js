@@ -1,7 +1,7 @@
 /**
  * 输入模块：鼠标点击/长按移动 + A* 自动寻路
  * 固定俯视角 MMO：视角固定，移动直接映射到世界坐标
- * 移动方式：鼠标点击目标点（自动寻路）/ 长按拖拽跟随
+ * 移动方式：鼠标点击目标点（自动寻路）/ 长按拖拽直线跟随
  * 按键系统：通过 KeybindManager 集中管理所有键盘输入
  */
 import { PathFinder } from './pathfind.js';
@@ -109,13 +109,25 @@ export class InputState {
         this._lastCamForTarget = { x: camX, z: camZ };
       }
     }
-    // 有目标 → 根据距离决定策略
+    // 有目标 → 根据模式决定策略
     if (this.clickTarget) {
       const dist = Math.hypot(
         this.clickTarget.x - selfPos.x,
         this.clickTarget.z - selfPos.z
       );
-      
+
+      // 长按跟随：普通模式，笔直向鼠标位置移动（不使用寻路）
+      if (this._mouseHeld) {
+        this.pathfinder.clear();
+        if (dist < 0.3) {
+          return { x: 0, z: 0 };
+        }
+        const dx = this.clickTarget.x - selfPos.x;
+        const dz = this.clickTarget.z - selfPos.z;
+        return { x: dx / dist, z: dz / dist };
+      }
+
+      // 点击移动：根据距离决定策略
       // 短距离（战斗/微操场景 < 8m）：直接直线移动，零延迟
       if (dist < 8.0) {
         this.pathfinder.clear(); // 清除旧路径，避免干扰

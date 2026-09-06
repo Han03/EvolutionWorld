@@ -27,6 +27,10 @@ let questCompleted = []; // 已完成任务 [{questId, category, name, desc}]
 let questPanelOpen = false;
 let questTab = 'active'; // available / active / completed
 let currentNpcFilter = 0; // NPC 过滤模式：0=全部，>0=指定 NPC wid
+let _questNav = null;      // QuestNavigator 实例（由 boot.js 注入）
+
+/** 注入任务导航器（boot.js 初始化后调用） */
+export function setQuestNavigator(nav) { _questNav = nav; }
 
 // ---------- 协议解析 ----------
 
@@ -334,13 +338,14 @@ function renderQuestPanel() {
 }
 
 /** 更新右侧任务追踪 HUD */
-function updateQuestTracker() {
+export function updateQuestTracker() {
   const list = document.getElementById('quest-tracker-list');
   if (!list) return;
   if (questProgress.length === 0) {
     list.innerHTML = '<div class="quest-tracker-empty">按 L 打开任务日志</div>';
     return;
   }
+  const activeNav = _questNav && _questNav.getActiveObjective();
   let html = '';
   for (const q of questProgress) {
     const name = q.name || `任务#${q.questId}`;
@@ -348,10 +353,15 @@ function updateQuestTracker() {
     const completable = q.status === 1;
     html += `<div class="quest-track-item ${completable ? 'quest-track-completable' : ''}">
       <div class="quest-track-name" style="border-left-color:${catColor}">${name}${completable ? ' ✅' : ''}</div>`;
-    for (const obj of q.objectives) {
+    for (let i = 0; i < q.objectives.length; i++) {
+      const obj = q.objectives[i];
       const done = obj.current >= obj.required;
-      html += `<div class="quest-track-obj ${done ? 'quest-track-obj-done' : ''}">
-        ${obj.desc}: ${obj.current}/${obj.required}${done ? ' ✓' : ''}
+      const isNavigating = activeNav && activeNav.questId === q.questId && activeNav.objIndex === i;
+      const navBtn = (!done && _questNav)
+        ? `<button class="qt-nav-btn ${isNavigating ? 'qt-nav-active' : ''}" onclick="window.__questNavigate(${q.questId},${i})" title="自动寻路">▶</button>`
+        : '';
+      html += `<div class="quest-track-obj ${done ? 'quest-track-obj-done' : ''} ${isNavigating ? 'qt-nav-row' : ''}">
+        ${obj.desc}: ${obj.current}/${obj.required}${done ? ' ✓' : ''}${navBtn}
       </div>`;
     }
     html += '</div>';
@@ -394,6 +404,16 @@ export function initQuestUI(net) {
   };
   window.__questAbandon = (questId) => { sendQuestAbandon(net, questId); };
   window.__questTurnIn = (questId) => { sendQuestTurnIn(net, questId, 0); };
+  // 任务导航回调
+  window.__questNavigate = (questId, objIndex) => {
+    if (!_questNav) return;
+    if (_questNav.isNavigating()) {
+      _questNav.cancel();
+    } else {
+      _questNav.navigate(questId, objIndex);
+    }
+    updateQuestTracker();
+  };
   // 初始追踪 HUD
   updateQuestTracker();
 }

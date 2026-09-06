@@ -271,18 +271,29 @@ export function castSkillNow(skillId) {
   }
   let ax = selfPos.x, az = selfPos.z;
   let targetWid = 0;
-  if (sd.target === 2) {
-    if (!best) { toast('无可用目标'); return; }
-    if (sd.range > 0 && bestD > sd.range) { toast(`超出施法距离（${sd.range}m）`); return; }
-    targetWid = best.wid; ax = best.x; az = best.z;
-  } else {
-    if (sd.target === 3 && best) { ax = best.x; az = best.z; }
+  if (sd.target === 2 || sd.target === 3) {
+    if (best && bestD <= sd.range) {
+      // 最近怪物在施法范围内 → 吸附到怪物
+      ax = best.x; az = best.z;
+      if (sd.target === 2) targetWid = best.wid;
+    } else if (S._mouseWorldX != null) {
+      // 空放：落点 = 鼠标方向，限制在技能最远距离
+      const mdx = S._mouseWorldX - selfPos.x;
+      const mdz = S._mouseWorldZ - selfPos.z;
+      const mDist = Math.hypot(mdx, mdz);
+      if (mDist > 1e-3) {
+        const clamp = Math.min(mDist, sd.range) / mDist;
+        ax = selfPos.x + mdx * clamp;
+        az = selfPos.z + mdz * clamp;
+      }
+    }
+    // else: 鼠标未进入画布，落点保持自身位置（脚下空放）
+    // 距离校验（吸附怪物时可能超距）
     if (sd.range > 0) {
       const dist = Math.hypot(ax - selfPos.x, az - selfPos.z);
       if (dist > sd.range) { toast(`超出施法距离（${sd.range}m）`); return; }
     }
   }
-  if (sd.radius > 0) S.renderer.showAoePreview(ax, az, sd.radius, sd.color);
   net.sendCastSkill(skillId, targetWid, ax, az);
 }
 
@@ -354,6 +365,9 @@ export function loop(now) {
   S.entities.setSelf(renderPos.x, renderPos.y, renderPos.z);
   const camPos = renderPos;
 
+  // 任务导航驱动（在实体更新后、渲染前调用）
+  if (S.questNav) S.questNav.tick();
+
   if (S.selfDead) {
     const remain = Math.max(0, PLAYER_RESPAWN_SEC - (performance.now() - S.deathAtMs) / 1000);
     const de = $('death-count');
@@ -404,11 +418,18 @@ export function loop(now) {
 
   S.renderer.setCameraFollow(camPos.x, camPos.z);
   S.renderer.setSelf(camPos.x, camPos.y, camPos.z, net.selfName, S.selfDead);
-  S.renderer.setDirectionTarget(S._mouseWorldX, S._mouseWorldZ);
+  S.renderer.setSelfBuffs(S.myBuffs || []);
+  // 方向指示器：移动时指向移动方向（避免角色走过目标点后箭头翻转）
+  if (mv.x !== 0 || mv.z !== 0) {
+    const mvLen = Math.hypot(mv.x, mv.z);
+    S.renderer.setDirectionTarget(selfPos.x + (mv.x / mvLen) * 5, selfPos.z + (mv.z / mvLen) * 5);
+  } else {
+    S.renderer.setDirectionTarget(S._mouseWorldX, S._mouseWorldZ);
+  }
   S.renderer.setEntities(S.entities.forRender());
   S.renderer.render();
 
-  if (S.minimap) S.minimap.update(selfPos.x, selfPos.z, S.entities.forRender());
+  if (S.minimap) S.minimap.update(renderPos.x, renderPos.z, S.entities.forRender());
 
   S.fpsAcc += dt;
   S.fpsCount++;

@@ -491,6 +491,7 @@ export function renderNpcForm() {
   $('npc-shopId').value = npc.shopId || 0;
   $('npc-level').value = npc.level || 1;
   $('npc-wander').value = npc.wanderRadius || 0;
+  $('npc-radius').value = npc.radius || 0.5;
   $('npc-dialogue').value = npc.dialogue || '';
   updateNpcTagConfig();
 }
@@ -520,6 +521,8 @@ export function bindNpcForm() {
   levelEl.addEventListener('input', () => { const o = npc(); if (!o) return; const v = parseInt(levelEl.value, 10); o.level = isNaN(v) ? 1 : v; });
   const wanderEl = $('npc-wander');
   wanderEl.addEventListener('input', () => { const o = npc(); if (!o) return; const v = parseFloat(wanderEl.value); o.wanderRadius = isNaN(v) ? 0 : v; });
+  const radiusEl = $('npc-radius');
+  radiusEl.addEventListener('input', () => { const o = npc(); if (!o) return; const v = parseFloat(radiusEl.value); o.radius = isNaN(v) ? 0.5 : v; });
   const dialogueEl = $('npc-dialogue');
   dialogueEl.addEventListener('input', () => { const o = npc(); if (!o) return; o.dialogue = dialogueEl.value; });
   const idEl = $('npc-id');
@@ -921,7 +924,7 @@ export function renderSkillList() {
 }
 
 function setSkillFormEnabled(on) {
-  ['sk-id','sk-name','sk-desc','sk-icon','sk-target','sk-effect','sk-mana','sk-cooldownMs','sk-range','sk-radius','sk-dmgMul','sk-flatDmg','sk-heal','sk-lifesteal','sk-buffType','sk-buffValue','sk-buffDur','sk-castTimeMs','sk-knockback','sk-superArmor','sk-cancelOnMove','sk-cancelOnHit','sk-starterSkills'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
+  ['sk-id','sk-name','sk-desc','sk-icon','sk-target','sk-effect','sk-mana','sk-cooldownMs','sk-range','sk-radius','sk-dmgMul','sk-flatDmg','sk-heal','sk-lifesteal','sk-buffType','sk-buffValue','sk-buffDur','sk-castTimeMs','sk-knockback','sk-dashDist','sk-superArmor','sk-cancelOnMove','sk-cancelOnHit','sk-starterSkills'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
 }
 
 export function renderSkillForm() {
@@ -937,7 +940,7 @@ export function renderSkillForm() {
   $('sk-heal').value = s.heal || 0; $('sk-lifesteal').value = s.lifesteal || 0;
   $('sk-buffType').value = s.buffType || 'none'; $('sk-buffValue').value = s.buffValue || 0;
   $('sk-buffDur').value = s.buffDur || 0; $('sk-castTimeMs').value = s.castTimeMs || 0;
-  $('sk-knockback').value = s.knockback || 0;
+  $('sk-knockback').value = s.knockback || 0; $('sk-dashDist').value = s.dashDist || 0;
   $('sk-superArmor').checked = !!s.superArmor;
   $('sk-cancelOnMove').checked = s.cancelOnMove !== 0;
   $('sk-cancelOnHit').checked = s.cancelOnHit !== 0;
@@ -953,7 +956,7 @@ export function bindSkillForm() {
   num('sk-flatDmg', 'flatDmg', false); num('sk-heal', 'heal', false);
   num('sk-lifesteal', 'lifesteal', false); num('sk-buffValue', 'buffValue', false);
   num('sk-buffDur', 'buffDur', false); num('sk-castTimeMs', 'castTimeMs', true);
-  num('sk-knockback', 'knockback', false);
+  num('sk-knockback', 'knockback', false); num('sk-dashDist', 'dashDist', false);
   const nameEl = $('sk-name');
   nameEl.addEventListener('input', () => { const o = sk(); if (!o) return; o.name = nameEl.value; });
   nameEl.addEventListener('change', () => renderSkillList());
@@ -997,7 +1000,7 @@ export function newSkill() {
   ], (v) => {
     if (!v.name.trim()) { setStatus('名称不能为空'); return; }
     if (S.gameSkills.some(s => (s.id | 0) === v.id)) { setStatus(`技能 ID ${v.id} 已存在`); return; }
-    S.gameSkills.push({ id: v.id, name: v.name, desc: '', icon: 's_new', target: v.target, effect: v.effect, mana: 0, cooldownMs: 3000, range: 3, radius: 0, dmgMul: 1.0, flatDmg: 0, heal: 0, buffType: 'none', buffValue: 0, buffDur: 0, lifesteal: 0, castTimeMs: 0, cancelOnMove: 1, cancelOnHit: 1, knockback: 0, superArmor: 0 });
+    S.gameSkills.push({ id: v.id, name: v.name, desc: '', icon: 's_new', target: v.target, effect: v.effect, mana: 0, cooldownMs: 3000, range: 3, radius: 0, dmgMul: 1.0, flatDmg: 0, heal: 0, buffType: 'none', buffValue: 0, buffDur: 0, lifesteal: 0, castTimeMs: 0, cancelOnMove: 1, cancelOnHit: 1, knockback: 0, dashDist: 0, superArmor: 0 });
     S.selectedSkill = S.gameSkills.length - 1;
     renderSkillList(); renderSkillForm();
   });

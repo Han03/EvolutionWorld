@@ -35,6 +35,9 @@ public:
   // 返回 accepted=true 表示位置可采纳，accepted=false 表示不采纳（rate_limit/stale_seq）
   AntiCheatResult process(Entity& p, int64_t seq, double px, double pz, uint64_t nowMs);
   void reset(Entity& p);
+  // 清除指定玩家的轨迹缓存（位移技能/传送等服务端主动改位后调用，
+  // 避免 Check C 轨迹连续性用旧 claim 比较导致误判违规）
+  void clearClaim(const std::string& playerId) { claims_.erase(playerId); }
   // 测试模式：跳过全部校验（频率/序号/轨迹），输入直接接受（由 World::testFlags().antiCheatBypass 驱动）
   void setBypass(bool b) { bypass_ = b; }
 

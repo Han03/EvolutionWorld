@@ -62,6 +62,7 @@ struct SkillDef {
   double buffDurSec = 0;              // Buff 持续时长（秒）
   double lifesteal = 0;           // 吸血比例 0..1（DAMAGE 附加）
   double knockback = 0;           // 击退距离（米）：命中时沿施法者→目标方向击退（霸体免疫）
+  double dashDist = 0;            // 位移距离（米）：施放后施法者沿自身→目标方向位移（撞墙即止）
   bool superArmor = false;        // 霸体：施放该技能期间自身免疫眩晕/击退
   uint16_t castTimeMs = 0;        // 施放时间/前摇（毫秒，0=瞬发）。前摇期间不生效，到期结算
   bool castCancelOnMove = true;   // 前摇期间移动是否打断（大型网游标配；false=不可打断技能）

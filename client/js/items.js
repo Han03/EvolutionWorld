@@ -13,6 +13,7 @@ export const RARITY_COLOR = ['#9e9e9e', '#4caf50', '#2196f3', '#a855f7', '#ff980
 
 // 服务端 icon 字符串键 → emoji（客户端展示）；未命中的键若本身是 emoji 则原样使用
 export const ICON_MAP = {
+  // 物品图标
   helm1: '⛑', helm2: '🪖',
   chest1: '👕', chest2: '🛡',
   pants1: '👖', pants2: '👖',
@@ -23,56 +24,33 @@ export const ICON_MAP = {
   fang: '🦷', badge: '🎖', bone: '🦴', core: '💎',
   estone: '🔩', protect: '🧿',
   iron: '🪨', steel: '⚙️', crystal: '🔮', scale: '🐉', starcore: '🌟',
+  // 玩家技能图标
+  atk: '⚔️', s1: '⚔️', s2: '🔥', s3: '✨', s4: '❄️', s5: '📢',
+  s6: '⚡', s7: '🩸', s8: '🌵', s10: '🛡️', s11: '🩸', s12: '⛏️',
+  s13: '💀', s14: '🌀', s15: '💨', s16: '🔨', s17: '💚',
+  // 怪物技能图标
+  m_atk1: '🦷', m_atk2: '🐾', m_atk3: '🦴', m_atk4: '🗿',
+  // Boss 技能图标
+  b_s1: '💥', b_s2: '🌑',
 };
 
-/** 运行时游戏数据（启动时从 /api/gamedata 拉取，覆盖静态镜像 ITEM_DEFS） */
+/** 运行时游戏数据（启动时从 /api/gamedata 拉取，权威数据在服务端 JSON） */
 export let RUNTIME_ITEMS = {};    // id -> itemDef（已转换 slot/icon）
 export let RUNTIME_MONSTERS = {}; // type -> monsterDef
 export let RUNTIME_ENHANCE = null; // 强化配置（maxLevel/stoneItemId/protectStoneItemId/attrPerLevel*/levels[]）
 export let RUNTIME_DECOMPOSE = null; // 分解配置（stoneItemId/rules[{rarity,goldReturnRate,enhanceStoneRate,results[]}]）
 export let RUNTIME_CRAFT = null;   // 合成配方表（recipes[{recipeId,name,npcTag,resultItemId,resultCount,goldCost,levelReq,hidden,materials[]}]）
 export let RUNTIME_WAREHOUSE = null; // 仓库配置（initialSlots/slotsPerPage/maxSlots/expandBaseCost/expandCostMul/maxGold）
-
-/** itemId -> { name, type, slot, icon, price, hpBonus, mpBonus, attackBonus, defenseBonus, restoreHp, restoreMp } */
-export let ITEM_DEFS = {
-  1001: { name: '皮帽', type: 'equip', slot: 1, icon: '⛑', price: 8, defenseBonus: 1 },
-  1002: { name: '铁盔', type: 'equip', slot: 1, icon: '⛑', price: 30, defenseBonus: 3, hpBonus: 10 },
-  1101: { name: '布衣', type: 'equip', slot: 2, icon: '👕', price: 10, defenseBonus: 1 },
-  1102: { name: '锁子甲', type: 'equip', slot: 2, icon: '🛡', price: 35, defenseBonus: 3, hpBonus: 15 },
-  1201: { name: '皮裤', type: 'equip', slot: 3, icon: '👖', price: 9, defenseBonus: 1 },
-  1202: { name: '钢裤', type: 'equip', slot: 3, icon: '👖', price: 28, defenseBonus: 2, hpBonus: 5 },
-  1301: { name: '皮手套', type: 'equip', slot: 4, icon: '🧤', price: 9, attackBonus: 1 },
-  1302: { name: '钢手套', type: 'equip', slot: 4, icon: '🧤', price: 28, attackBonus: 2, hpBonus: 5 },
-  1401: { name: '皮靴', type: 'equip', slot: 5, icon: '🥾', price: 8, defenseBonus: 1 },
-  1402: { name: '钢靴', type: 'equip', slot: 5, icon: '🥾', price: 26, defenseBonus: 2, hpBonus: 5 },
-  1501: { name: '青铜剑', type: 'equip', slot: 6, icon: '⚔', price: 12, attackBonus: 2 },
-  1502: { name: '铁剑', type: 'equip', slot: 6, icon: '⚔', price: 40, attackBonus: 5 },
-  1503: { name: '烈焰剑', type: 'equip', slot: 6, icon: '🔥', price: 120, attackBonus: 9, hpBonus: 10 },
-  2001: { name: '小血瓶', type: 'consumable', icon: '🧪', price: 5, restoreHp: 30 },
-  2002: { name: '大血瓶', type: 'consumable', icon: '🧪', price: 15, restoreHp: 80 },
-  2101: { name: '小蓝瓶', type: 'consumable', icon: '🔵', price: 5, restoreMp: 30 },
-  2102: { name: '大蓝瓶', type: 'consumable', icon: '🔵', price: 15, restoreMp: 80 },
-  3001: { name: '狼牙', type: 'quest', icon: '🦷', price: 4 },
-  3002: { name: '哥布林徽记', type: 'quest', icon: '🎖', price: 8 },
-  3003: { name: '骷髅碎片', type: 'quest', icon: '🦴', price: 12 },
-  3004: { name: '石像鬼之核', type: 'quest', icon: '💎', price: 25 },
-  4001: { name: '铁屑', type: 'material', icon: '🪨', price: 3 },
-  4002: { name: '精钢碎片', type: 'material', icon: '⚙️', price: 8 },
-  4003: { name: '魔晶', type: 'material', icon: '🔮', price: 20 },
-  4004: { name: '龙鳞', type: 'material', icon: '🐉', price: 50 },
-  4005: { name: '星辰核心', type: 'material', icon: '🌟', price: 120 },
-  4006: { name: '强化石', type: 'material', icon: '🔩', price: 50 },
-  4007: { name: '保护符', type: 'material', icon: '🧿', price: 200 },
-};
+export let RUNTIME_SKILLS = {};      // 技能表（启动时从 /api/gamedata 拉取，权威数据在服务端 skills.json）
 
 /** icon 解析：字符串键 → emoji；未命中且本身非空则原样（兼容直接填 emoji） */
 export function resolveIcon(icon) {
   if (!icon) return '❔';
   return ICON_MAP[icon] || icon;
 }
-/** 物品定义：优先运行时表（/api/gamedata），回退静态镜像，再回退占位 */
+/** 物品定义：运行时表（/api/gamedata）→ 占位 */
 export function itemDef(id) {
-  return RUNTIME_ITEMS[id] || ITEM_DEFS[id] || { name: `物品#${id}`, type: 'unknown', icon: '❔', price: 0 };
+  return RUNTIME_ITEMS[id] || { name: `物品#${id}`, type: 'unknown', icon: '❔', price: 0 };
 }
 export function itemName(id) {
   return itemDef(id).name;
@@ -191,6 +169,11 @@ export function applyGameData(data) {
       };
     }
     RUNTIME_ITEMS = next;
+    // 填充渲染器物品名映射
+    if (typeof window !== 'undefined') {
+      window.__itemNames = {};
+      for (const [id, d] of Object.entries(RUNTIME_ITEMS)) window.__itemNames[id] = d.name;
+    }
   }
   if (data.monsters && typeof data.monsters === 'object') {
     const nm = {};
@@ -215,40 +198,51 @@ export function applyGameData(data) {
   if (data.warehouse && typeof data.warehouse === 'object' && (data.warehouse.initialSlots | 0) > 0) {
     RUNTIME_WAREHOUSE = data.warehouse;
   }
+  // 技能表（权威数据服务端 skills.json）：target 字符串→数字，合并客户端专属字段（key/color/fxType）
+  if (data.skills && typeof data.skills === 'object') {
+    const skillArr = Array.isArray(data.skills) ? data.skills
+      : (data.skills.skills && Array.isArray(data.skills.skills)) ? data.skills.skills : null;
+    if (skillArr) {
+      const TARGET_MAP = { self: 1, enemy: 2, aoe: 3 };
+      const next = {};
+      for (const s of skillArr) {
+        const id = s.id | 0;
+        if (!id) continue;
+        const cl = SKILL_FX_TYPE[id];
+        next[id] = {
+          name: s.name || `技能#${id}`,
+          desc: s.desc || '',
+          icon: resolveIcon(s.icon),
+          target: TARGET_MAP[s.target] || 1,
+          castMs: s.castTimeMs | 0,
+          radius: s.radius || 0,
+          mana: s.mana || 0,
+          range: s.range || 0,
+          cooldownMs: s.cooldownMs || 0,
+          dmgMul: s.dmgMul || 0,
+          flatDmg: s.flatDmg || 0,
+          heal: s.heal || 0,
+          lifesteal: s.lifesteal || 0,
+          knockback: s.knockback || 0,
+          dashDist: s.dashDist || 0,
+          fxType: cl || 'physical',
+        };
+      }
+      RUNTIME_SKILLS = next;
+    }
+  }
 }
-/** 技能元数据（镜像服务端 skills.json 默认值；权威数据在服务端，仅用于展示/客户端预校验） */
-export const SKILL_DEFS = {
-  // castMs=前摇毫秒, radius=命中半径(0=近战贴身 1.2m), mana=耗蓝, range=施法距离(0=无限制), cooldownMs=冷却毫秒
-  // target: 1=SELF, 2=ENEMY, 3=AOE（与服务端 SkillTarget 枚举对齐）
-  1000: { name: '普通攻击', icon: '⚔️', color: '#e0e0e0', desc: '100% 攻击伤害', key: 'J', target: 2, castMs: 200, radius: 0, mana: 0, range: 3.2, cooldownMs: 500 },
-  1001: { name: '冲刺斩', icon: '⚔️', color: '#ff6b35', desc: '220% 攻击伤害', key: '1', target: 2, castMs: 0, radius: 0, mana: 8, range: 3.5, cooldownMs: 3000 },
-  1002: { name: '烈焰冲击', icon: '🔥', color: '#ff3d2e', desc: '150% AOE 伤害', key: '2', target: 3, castMs: 600, radius: 4, mana: 15, range: 10, cooldownMs: 6000 },
-  1003: { name: '治疗之光', icon: '✨', color: '#7ef9ff', desc: '恢复 60 生命', key: '3', target: 1, castMs: 500, radius: 0, mana: 15, range: 0, cooldownMs: 8000 },
-  1004: { name: '冰霜新星', icon: '❄️', color: '#6dd5ff', desc: '120% AOE + 减速', key: '4', target: 3, castMs: 800, radius: 4, mana: 18, range: 10, cooldownMs: 10000 },
-  1005: { name: '战吼', icon: '📢', color: '#ffd166', desc: '攻击 +8（10s）', key: '5', target: 1, castMs: 400, radius: 0, mana: 10, range: 0, cooldownMs: 12000 },
-  1006: { name: '雷霆一击', icon: '⚡', color: '#fff35b', desc: '300% 伤害（落点命中）', key: '6', target: 2, castMs: 1000, radius: 0, mana: 25, range: 4.5, cooldownMs: 12000 },
-  1007: { name: '吸血打击', icon: '🩸', color: '#c44dff', desc: '180% + 吸血 35%', key: '7', target: 2, castMs: 300, radius: 0, mana: 12, range: 3.5, cooldownMs: 6000 },
-  1008: { name: '荆棘护体', icon: '🌵', color: '#6bd968', desc: '反弹伤害 20%（8s）', key: '8', target: 1, castMs: 600, radius: 0, mana: 12, range: 0, cooldownMs: 15000 },
-  // 大型网游扩展：控制/减益/增益/击退
-  1010: { name: '铁壁守护', icon: '🛡️', color: '#8ab4f8', desc: '防御+15 霸体·不可打断 8s', key: '9', target: 1, castMs: 800, radius: 0, mana: 15, range: 0, cooldownMs: 18000 },
-  1011: { name: '撕裂', icon: '🩸', color: '#e53935', desc: '130% AOE + 流血 10/s·5s', key: '0', target: 3, castMs: 700, radius: 4, mana: 14, range: 10, cooldownMs: 9000 },
-  1012: { name: '破甲斩', icon: '⛏️', color: '#ffb74d', desc: '140% AOE + 减防12·6s', key: '-', target: 3, castMs: 600, radius: 3, mana: 15, range: 8, cooldownMs: 10000 },
-  1013: { name: '虚弱咒印', icon: '💀', color: '#9575cd', desc: 'AOE 减攻8·8s', key: '=', target: 3, castMs: 500, radius: 4, mana: 12, range: 10, cooldownMs: 12000 },
-  1014: { name: '震荡波', icon: '🌀', color: '#4dd0e1', desc: '100% AOE + 眩晕2s', key: 'q', target: 3, castMs: 800, radius: 3.5, mana: 18, range: 9, cooldownMs: 14000 },
-  1015: { name: '疾风步', icon: '💨', color: '#69f0ae', desc: '移速+50%·8s', key: 'R', target: 1, castMs: 300, radius: 0, mana: 8, range: 0, cooldownMs: 12000 },
-  1016: { name: '猛击', icon: '🔨', color: '#ffca28', desc: '180% AOE + 击退6m', key: 'T', target: 3, castMs: 500, radius: 3, mana: 16, range: 8, cooldownMs: 10000 },
-  1017: { name: '生命涌动', icon: '💚', color: '#81c784', desc: '回血 25/s·8s', key: 'Y', target: 1, castMs: 400, radius: 0, mana: 14, range: 0, cooldownMs: 16000 },
-  // ---- 怪物专属技能 ----
-  2001: { name: '撕咬', icon: '🦷', color: '#f87171', desc: '100% + 流血', key: '', castMs: 400, radius: 3, mana: 0, range: 3 },
-  2002: { name: '利爪挥击', icon: '🐾', color: '#f87171', desc: '100% + 减速', key: '', castMs: 500, radius: 3, mana: 0, range: 3 },
-  2003: { name: '骨刺投掷', icon: '🦴', color: '#f87171', desc: '90% + 减防', key: '', castMs: 600, radius: 5, mana: 0, range: 5 },
-  2004: { name: '石像冲击', icon: '🗿', color: '#f87171', desc: '120% + 击退', key: '', castMs: 700, radius: 3, mana: 0, range: 3 },
-  // ---- Boss 专属技能 ----
-  2100: { name: '地裂冲击', icon: '💥', color: '#f87171', desc: '80% AOE + 击退3m', key: '', castMs: 1500, radius: 6, mana: 0, range: 0 },
-  2101: { name: '暗影波动', icon: '🌑', color: '#f87171', desc: '60% AOE + 减速35%', key: '', castMs: 2000, radius: 8, mana: 0, range: 0 },
+/** 客户端专属特效类型——服务端 skills.json 不存在此数据，仅客户端需要 */
+const SKILL_FX_TYPE = {
+  1000: 'slash', 1001: 'snipe', 1002: 'inferno', 1003: 'heal',
+  1004: 'frost', 1005: 'physical', 1006: 'thunder', 1007: 'lifesteal',
+  1008: 'holy', 1010: 'physical', 1011: 'physical', 1012: 'physical',
+  1013: 'shadow', 1014: 'physical', 1015: 'physical', 1016: 'physical',
+  1017: 'holy',
 };
+/** 技能定义：运行时表（/api/gamedata）→ 占位 */
 export function skillDef(id) {
-  return SKILL_DEFS[id] || { name: `技能#${id}`, icon: '❔', color: '#aaa', desc: '', key: '', cooldownMs: 0 };
+  return RUNTIME_SKILLS[id] || { name: `技能#${id}`, icon: '❔', desc: '', cooldownMs: 0 };
 }
 export function skillName(id) {
   return skillDef(id).name;

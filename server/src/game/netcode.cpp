@@ -152,6 +152,15 @@ const std::unordered_map<std::string, std::string>& Netcode::tickBroadcast() {
     if (w_.questDirty().count(player->id)) buf += w_.quests().questProgressFrame(*player);
     if (!buf.empty()) out_[player->id] = std::move(buf);
   }
+  // 施放结算失败通知：定向发给目标玩家（S2C_SKILL_CAST ok=0，客户端重置冷却）
+  for (auto& nf : w_.takeCastFailNotifs()) {
+    // 构建 S2C_SKILL_CAST ok=0 帧
+    std::string failFrame = proto::skillCastFrame(false, nf.skillId, nf.targetWid, 0, 0, 0);
+    // 写入该玩家的输出缓冲（追加或新建）
+    auto it = out_.find(nf.playerId);
+    if (it != out_.end()) it->second += failFrame;
+    else out_[nf.playerId] = failFrame;
+  }
   w_.clearStatsDirty();
   w_.clearInvDirty();
   w_.clearSkillsDirty();

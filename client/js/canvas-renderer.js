@@ -4,13 +4,14 @@ import {
   terrainHeight, terrainBlocked, terrainColor,
   WATER_LEVEL, walkMaskN, walkMaskOff,
 } from './terrain.js';
+import { skillDef } from './items.js';
 
 // ════════════════════════════════════════════════════════════
 // 常量
 // ════════════════════════════════════════════════════════════
 
 const BASE_PX_PER_UNIT = 10;   // 基础像素/世界单位（zoom=1 时）
-const MAX_SKILL = 64;
+const MAX_SKILL = 128;
 const BOUNCE_MIN_SPD  = 0.35;
 const BOUNCE_IDLE_AMP = 0.35;
 const BOUNCE_AMP      = 0.35;
@@ -63,6 +64,7 @@ export class WebGLRenderer {
     this._bounce = new Map();
     this._bounceActive = new Set();
     this._lastBuildMs = 0;
+    this._selfBuffs = [];
 
     // ---- Label overlay (entity names) ----
     this._labelBox = document.createElement('div');
@@ -136,6 +138,7 @@ export class WebGLRenderer {
     this._dirTarget = (x != null && z != null) ? { x, z } : null;
   }
   setEntities(list) { this._entities = list; }
+  setSelfBuffs(buffs) { this._selfBuffs = buffs || []; }
   addClickRipple(x, z) {
     this._clickIndicators.push({ x, z, time: performance.now() });
     if (this._clickIndicators.length > 16) this._clickIndicators.shift(); // 防止堆积
@@ -157,12 +160,6 @@ export class WebGLRenderer {
   clearCasting(wid) {
     for (let i = this._effects.length - 1; i >= 0; i--)
       if (this._effects[i].kind === 'cast' && this._effects[i].wid === wid) this._effects.splice(i, 1);
-  }
-  showAoePreview(x, z, radius, color) {
-    this._effects.push({
-      kind: 'aoe', wid: -1, x, z, radius,
-      color: color || '#ff6b35', startMs: performance.now(), durMs: 1200,
-    });
   }
   fxSnapshot() {
     return this._effects.map(e => ({ kind: e.kind, x: +e.x.toFixed(1), z: +e.z.toFixed(1), radius: e.radius, color: e.color, durMs: e.durMs }));
@@ -501,7 +498,7 @@ export class WebGLRenderer {
 
     for (const e of this._entities) {
       const color = COLORS[e.kind] || COLORS.monster;
-      const r = e.kind === 'item' ? 0.4 : 0.55;
+      const r = e.kind === 'item' ? 0.4 : (e.radius || 0.55);
       const bn = (e.kind === 'item' || e.dying) ? 0 : this._bounceOffset(e.wid, e.x, e.z, dt);
       drawCircle(e.x, e.z + bn * 0.3, r, color, e.dying);
 
@@ -534,6 +531,19 @@ export class WebGLRenderer {
       const bn = s.dead ? 0 : this._bounceOffset('self', s.x, s.z, dt);
       drawCircle(s.x, s.z + bn * 0.3, 0.55, '#ff8c1a', s.dead);
 
+      // 霸体状态：金色脉冲护盾光环
+      if (!s.dead && this._selfBuffs.some(b => b.type === 10)) {
+        const asx = (s.x - this.cam.cx) * scale + this.canvas.clientWidth / 2;
+        const asy = (s.z - this.cam.cz) * scale + this.canvas.clientHeight / 2;
+        const asr = 0.55 * scale;
+        const pulse = 0.5 + 0.3 * Math.sin(nowMs / 300);
+        ctx.strokeStyle = `rgba(255,215,0,${pulse})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(asx, asy, asr * 1.35, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
       // 方向指示器：玩家外圈指向鼠标方向的三角箭头
       if (this._dirTarget && !s.dead) {
         const dx = this._dirTarget.x - s.x;
@@ -561,6 +571,66 @@ export class WebGLRenderer {
           ctx.restore();
         }
       }
+    }
+
+    // Buff 图标 + 状态视觉（需要 self 引用）
+    const s = this._self;
+    if (s && this._selfBuffs.length > 0 && !s.dead) {
+      const sx = (s.x - this.cam.cx) * scale + this.canvas.clientWidth / 2;
+      const sy = (s.z - this.cam.cz) * scale + this.canvas.clientHeight / 2;
+      const sr = 0.55 * scale;
+      const iconSize = Math.max(10, Math.min(16, scale * 0.35));
+      const gap = iconSize + 2;
+      const totalW = this._selfBuffs.length * gap;
+      const startX = sx - totalW / 2 + iconSize / 2;
+      const iconY = sy - sr - 18;
+      for (let bi = 0; bi < this._selfBuffs.length; bi++) {
+        const buff = this._selfBuffs[bi];
+        const bx = startX + bi * gap;
+        const isDebuff = buff.type >= 3 && buff.type !== 4 && buff.type !== 5 && buff.type !== 10 && buff.type !== 11;
+        ctx.fillStyle = isDebuff ? 'rgba(220,50,50,0.75)' : 'rgba(50,180,80,0.75)';
+        const rr = iconSize / 2 + 1;
+        ctx.beginPath(); ctx.arc(bx, iconY, rr, 0, Math.PI * 2); ctx.fill();
+        const sd = skillDef(buff.skillId);
+        ctx.font = `${iconSize}px serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(sd.icon || '❔', bx, iconY);
+        if (buff.remainSec > 0) {
+          const ratio = Math.max(0, Math.min(1, buff.remainSec / (sd.cooldownMs ? sd.cooldownMs / 1000 : 10)));
+          ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(bx, iconY, rr + 1.5, -Math.PI / 2, -Math.PI / 2 + ratio * Math.PI * 2); ctx.stroke();
+        }
+      }
+    }
+    // 减速状态：蓝色冰霜粒子拖尾
+    if (s && !s.dead && this._selfBuffs.some(b => b.type === 3)) {
+      const sx = (s.x - this.cam.cx) * scale + this.canvas.clientWidth / 2;
+      const sy = (s.z - this.cam.cz) * scale + this.canvas.clientHeight / 2;
+      const sr = 0.55 * scale;
+      for (let p = 0; p < 3; p++) {
+        const phase = (nowMs / 400 + p * 2.1) % 1;
+        const px = sx + Math.sin(phase * 6.28 + p) * sr * 0.8;
+        const py = sy + sr * 0.5 + phase * sr * 0.6;
+        const a = (1 - phase) * 0.5;
+        ctx.fillStyle = `rgba(100,180,255,${a})`;
+        ctx.beginPath(); ctx.arc(px, py, Math.max(1.5, 2.5 * (1 - phase)), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // 加速状态：绿色风线拖尾
+    if (s && !s.dead && this._selfBuffs.some(b => b.type === 11)) {
+      const sx = (s.x - this.cam.cx) * scale + this.canvas.clientWidth / 2;
+      const sy = (s.z - this.cam.cz) * scale + this.canvas.clientHeight / 2;
+      const sr = 0.55 * scale;
+      ctx.strokeStyle = 'rgba(105,240,174,0.45)'; ctx.lineWidth = 1.5;
+      for (let l = 0; l < 3; l++) {
+        const phase = (nowMs / 300 + l * 1.5) % 1;
+        const ox = -sr * (0.6 + l * 0.3);
+        const oy = (l - 1) * sr * 0.4;
+        const len = sr * 0.6;
+        ctx.globalAlpha = (1 - phase) * 0.6;
+        ctx.beginPath(); ctx.moveTo(sx + ox, sy + oy); ctx.lineTo(sx + ox - len, sy + oy); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
 
     // 清理已离开视野实体的弹跳状态
@@ -601,11 +671,11 @@ export class WebGLRenderer {
       const [r, g, b] = hexRgb(ef.color || '#ffd166');
       let ex = ef.x, ez = ef.z, rad = ef.radius || 1.5;
 
-      // cast 效果：跟随施法者实体位置
+      // cast 效果：追踪施法者实体位置用于扫掠方向，蓄力圈位置（ex/ez）保持落点不变
       let casterX = ex, casterZ = ez;
       if (ef.kind === 'cast' && ef.wid > 0) {
         for (const e of this._entities) {
-          if (e.wid === ef.wid) { casterX = e.x; casterZ = e.z; ex = e.x; ez = e.z; break; }
+          if (e.wid === ef.wid) { casterX = e.x; casterZ = e.z; break; }
         }
       }
 
@@ -648,6 +718,708 @@ export class WebGLRenderer {
           ctx.moveTo(sx, sy);
           ctx.lineTo(edgeX, edgeY);
           ctx.stroke();
+        }
+      } else if (ef.kind === 'dash') {
+        // ── 位移拖尾：从施法者旧位置到目标位置的渐隐线迹 ──
+        // 跟随施法者实体（如果找到），否则用存储的 casterX/casterZ
+        let fromX = ef.x1, fromZ = ef.z1;
+        if (ef.wid > 0) {
+          for (const e of this._entities) {
+            if (e.wid === ef.wid) { fromX = e.x; fromZ = e.z; break; }
+          }
+        }
+        const fsx = (fromX - this.cam.cx) * scale + cw / 2;
+        const fsy = (fromZ - this.cam.cz) * scale + ch / 2;
+        // 拖尾线（从旧位置到落点）
+        ctx.strokeStyle = rgbStr(r, g, b, alpha * 0.9);
+        ctx.lineWidth = 3 * (1 - life * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(fsx, fsy);
+        ctx.lineTo(sx, sy);
+        ctx.stroke();
+        // 落点闪光圆
+        const flashR = sr * (1 + life * 0.5);
+        ctx.fillStyle = rgbStr(r, g, b, alpha * 0.25);
+        ctx.beginPath();
+        ctx.arc(sx, sy, flashR, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (ef.kind === 'float') {
+        // ── 伤害/治疗飘字：上升 + 渐隐 + 弹出缩放 ──
+        const floatY = sy - life * 45;
+        const [fr, fg, fb] = hexRgb(ef.color || '#ef4444');
+        const popScale = life < 0.15 ? 0.6 + (life / 0.15) * 0.6 : 1.2 - life * 0.25;
+        const fontSize = Math.max(10, Math.round(16 * popScale));
+        ctx.font = `bold ${fontSize}px "PingFang SC","Microsoft YaHei",sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = rgbStr(fr, fg, fb, alpha);
+        ctx.fillText(ef.text || '', sx, floatY);
+      } else if (ef.kind === 'projectile') {
+        // ── 追踪射线：施法者 → 目标的飞行弹体 + 元素特效尾迹 ──
+        // 玩家自身射线：实时追踪玩家当前位置（移动时射线起点跟随）
+        // 怪物射线：固定起点（this._self 不是施法者，距离检查排除）
+        let curX1 = ef.x1, curZ1 = ef.z1;
+        if (this._self) {
+          const dStart = Math.hypot(ef.x1 - this._self.x, ef.z1 - this._self.z);
+          if (dStart < 3) { curX1 = this._self.x; curZ1 = this._self.z; }
+        }
+        const dx = ef.x2 - curX1, dz = ef.z2 - curZ1;
+        const px = curX1 + dx * life;
+        const pz = curZ1 + dz * life;
+        const psx = (px - this.cam.cx) * scale + cw / 2;
+        const psy = (pz - this.cam.cz) * scale + ch / 2;
+        const ang = Math.atan2(dz, dx);
+        const fxAng = ef.initAng !== undefined ? ef.initAng : ang; // 元素特效使用初始角度（避免移动时方向混乱）
+        const pat = ef.pattern || 'ring';
+        const fadeIn = Math.min(1, life * 6);  // 快速淡入
+
+        // ── 通用尾迹基线（所有元素共享的渐隐拖尾） ──
+        const trailCount = 4;
+        for (let t = 0; t < trailCount; t++) {
+          const tFrac = (t + 1) / (trailCount + 1);
+          const segLen = 0.08;
+          const la = Math.min(tFrac, life);
+          const lb = Math.min(tFrac + segLen, life);
+          const lax = curX1 + dx * la, laz = curZ1 + dz * la;
+          const lbx = curX1 + dx * lb, lbz = curZ1 + dz * lb;
+          const lsx1 = (lax - this.cam.cx) * scale + cw / 2;
+          const lsy1 = (laz - this.cam.cz) * scale + ch / 2;
+          const lsx2 = (lbx - this.cam.cx) * scale + cw / 2;
+          const lsy2 = (lbz - this.cam.cz) * scale + ch / 2;
+          const ta = alpha * (0.5 - t * 0.1) * fadeIn;
+          ctx.strokeStyle = rgbStr(r, g, b, ta);
+          ctx.lineWidth = (3.5 - t * 0.7) * fadeIn;
+          ctx.beginPath(); ctx.moveTo(lsx1, lsy1); ctx.lineTo(lsx2, lsy2); ctx.stroke();
+        }
+
+        // ── 元素专属弹头 + 粒子 ──
+        if (pat === 'fire') {
+          // 火焰弹头：橙黄脉动核心 + 火星粒子尾迹
+          const pulse = 1 + Math.sin(life * 28) * 0.2;
+          const headR = 5 * pulse * fadeIn;
+          // 外层火舌光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 3);
+          grd.addColorStop(0, rgbStr(1, 0.9, 0.3, alpha * 0.6 * fadeIn));
+          grd.addColorStop(0.35, rgbStr(1, 0.5, 0.05, alpha * 0.3 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 3, 0, Math.PI * 2); ctx.fill();
+          // 白色热核
+          ctx.fillStyle = rgbStr(1, 0.95, 0.8, alpha * 0.95 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.4, 0, Math.PI * 2); ctx.fill();
+          // 火星粒子（沿尾迹散布）
+          for (let s = 0; s < 5; s++) {
+            const sparkLife = (life - s * 0.06 + 1) % 1;
+            const sparkT = sparkLife * 0.7;
+            const spx = curX1 + dx * sparkT + Math.sin(life * 18 + s * 2.3) * 0.25;
+            const spz = curZ1 + dz * sparkT + Math.cos(life * 18 + s * 2.3) * 0.25;
+            const ssx = (spx - this.cam.cx) * scale + cw / 2;
+            const ssy = (spz - this.cam.cz) * scale + ch / 2;
+            const sa = (1 - sparkT / 0.7) * alpha * 0.7 * fadeIn;
+            ctx.fillStyle = rgbStr(1, 0.6 + s * 0.06, 0.1, sa);
+            ctx.beginPath(); ctx.arc(ssx, ssy, Math.max(1, 2.5 * (1 - sparkT)), 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'ice') {
+          // 冰霜弹头：蓝白晶体核心 + 冰晶碎片旋转
+          const headR = 5 * fadeIn;
+          // 冰蓝光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 2.5);
+          grd.addColorStop(0, rgbStr(0.7, 0.9, 1, alpha * 0.65 * fadeIn));
+          grd.addColorStop(0.5, rgbStr(0.4, 0.7, 1, alpha * 0.2 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 2.5, 0, Math.PI * 2); ctx.fill();
+          // 白色冰核
+          ctx.fillStyle = rgbStr(0.9, 0.97, 1, alpha * 0.95 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.35, 0, Math.PI * 2); ctx.fill();
+          // 旋转冰晶碎片
+          for (let c = 0; c < 4; c++) {
+            const cAng = life * 8 + c * Math.PI / 2;
+            const cDist = headR * (1.2 + Math.sin(life * 12 + c) * 0.4);
+            const cx2 = psx + Math.cos(cAng) * cDist;
+            const cy2 = psy + Math.sin(cAng) * cDist;
+            const csz = Math.max(1.5, 3 * fadeIn * (1 - c * 0.15));
+            ctx.fillStyle = rgbStr(0.8, 0.95, 1, alpha * 0.7 * fadeIn);
+            ctx.save(); ctx.translate(cx2, cy2); ctx.rotate(cAng);
+            ctx.beginPath(); ctx.moveTo(0, -csz); ctx.lineTo(csz * 0.5, 0); ctx.lineTo(0, csz); ctx.lineTo(-csz * 0.5, 0); ctx.closePath();
+            ctx.fill(); ctx.restore();
+          }
+        } else if (pat === 'lightning') {
+          // 雷电弹头：电黄锯齿核心 + 电弧分支
+          const headR = 4.5 * fadeIn;
+          // 电弧光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 3);
+          grd.addColorStop(0, rgbStr(1, 1, 0.85, alpha * 0.7 * fadeIn));
+          grd.addColorStop(0.3, rgbStr(0.7, 0.7, 1, alpha * 0.25 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 3, 0, Math.PI * 2); ctx.fill();
+          // 白热核心
+          ctx.fillStyle = rgbStr(1, 1, 0.95, alpha * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.35, 0, Math.PI * 2); ctx.fill();
+          // 电弧分支（沿尾迹方向锯齿）
+          ctx.strokeStyle = rgbStr(0.8, 0.85, 1, alpha * 0.6 * fadeIn);
+          ctx.lineWidth = 1.5 * fadeIn;
+          for (let bolt = 0; bolt < 2; bolt++) {
+            const boltDir = bolt === 0 ? 1 : -1;
+            ctx.beginPath();
+            const perpX = -Math.sin(ang) * boltDir;
+            const perpZ = Math.cos(ang) * boltDir;
+            let bx = psx, by = psy;
+            ctx.moveTo(bx, by);
+            for (let seg = 1; seg <= 3; seg++) {
+              const segFrac = seg / 3;
+              const jitter = (Math.sin(life * 30 + bolt * 5 + seg * 3) * 6 + 4) * segFrac;
+              bx = psx - Math.cos(ang) * seg * 8 + perpX * jitter;
+              by = psy - Math.sin(ang) * seg * 8 + perpZ * jitter;
+              ctx.lineTo(bx, by);
+            }
+            ctx.stroke();
+          }
+        } else if (pat === 'smoke') {
+          // 暗影弹头：暗紫黑核心 + 烟雾缭绕
+          const headR = 5 * fadeIn;
+          // 暗紫光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 2.5);
+          grd.addColorStop(0, rgbStr(0.4, 0.15, 0.5, alpha * 0.6 * fadeIn));
+          grd.addColorStop(0.5, rgbStr(0.2, 0.05, 0.3, alpha * 0.25 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 2.5, 0, Math.PI * 2); ctx.fill();
+          // 暗核
+          ctx.fillStyle = rgbStr(0.6, 0.2, 0.7, alpha * 0.9 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.4, 0, Math.PI * 2); ctx.fill();
+          // 烟雾粒子
+          for (let p = 0; p < 4; p++) {
+            const pAng = life * 3 + p * Math.PI / 2;
+            const pDist = headR * (1 + Math.sin(life * 6 + p * 1.7) * 0.5);
+            const ppx = psx + Math.cos(pAng) * pDist;
+            const ppy = psy + Math.sin(pAng) * pDist;
+            const pr = Math.max(2, (3 + p) * fadeIn * (0.6 + Math.sin(life * 8 + p) * 0.3));
+            ctx.fillStyle = rgbStr(0.3, 0.1, 0.4, alpha * 0.2 * fadeIn);
+            ctx.beginPath(); ctx.arc(ppx, ppy, pr, 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'holy') {
+          // 圣光弹头：金色放射核心 + 光线射线
+          const headR = 5 * fadeIn;
+          // 金色光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 3);
+          grd.addColorStop(0, rgbStr(1, 0.95, 0.7, alpha * 0.7 * fadeIn));
+          grd.addColorStop(0.4, rgbStr(1, 0.8, 0.3, alpha * 0.2 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 3, 0, Math.PI * 2); ctx.fill();
+          // 白色圣核
+          ctx.fillStyle = rgbStr(1, 1, 0.95, alpha * 0.95 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.35, 0, Math.PI * 2); ctx.fill();
+          // 放射光线
+          ctx.strokeStyle = rgbStr(1, 0.9, 0.5, alpha * 0.5 * fadeIn);
+          ctx.lineWidth = 1.5 * fadeIn;
+          for (let ray = 0; ray < 6; ray++) {
+            const rayAng = ray * Math.PI / 3 + life * 4;
+            const rayLen = headR * (1.8 + Math.sin(life * 15 + ray * 2) * 0.6);
+            ctx.beginPath();
+            ctx.moveTo(psx + Math.cos(rayAng) * headR * 0.5, psy + Math.sin(rayAng) * headR * 0.5);
+            ctx.lineTo(psx + Math.cos(rayAng) * rayLen, psy + Math.sin(rayAng) * rayLen);
+            ctx.stroke();
+          }
+        } else if (pat === 'snipe') {
+          // 狙击弹头：明亮箭矢 + 发光拖尾
+          const headR = 4.5 * fadeIn;
+          // 橙色光晕（狙击使用橙色主色调）
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 3.5);
+          grd.addColorStop(0, rgbStr(1, 0.85, 0.4, alpha * 0.75 * fadeIn));
+          grd.addColorStop(0.3, rgbStr(1, 0.6, 0.15, alpha * 0.35 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 3.5, 0, Math.PI * 2); ctx.fill();
+          // 箭矢形状（菱形弹头，沿飞行方向拉伸）使用初始角度
+          const arrowLen = headR * 2.2;
+          const arrowWid = headR * 0.6;
+          ctx.fillStyle = rgbStr(1, 0.95, 0.8, alpha * 0.95 * fadeIn);
+          ctx.save(); ctx.translate(psx, psy); ctx.rotate(fxAng);
+          ctx.beginPath();
+          ctx.moveTo(arrowLen, 0);          // 箭尖
+          ctx.lineTo(0, arrowWid);           // 上翼
+          ctx.lineTo(-arrowLen * 0.4, 0);    // 箭尾凹口
+          ctx.lineTo(0, -arrowWid);          // 下翼
+          ctx.closePath(); ctx.fill();
+          // 箭矢白色高光核心
+          ctx.fillStyle = rgbStr(1, 1, 1, alpha * 0.9 * fadeIn);
+          ctx.beginPath();
+          ctx.moveTo(arrowLen * 0.6, 0);
+          ctx.lineTo(0, arrowWid * 0.4);
+          ctx.lineTo(-arrowLen * 0.2, 0);
+          ctx.lineTo(0, -arrowWid * 0.4);
+          ctx.closePath(); ctx.fill();
+          ctx.restore();
+          // 发光拖尾线（沿飞行反方向的明亮光带）使用初始角度
+          const trailAng = fxAng + Math.PI;
+          ctx.strokeStyle = rgbStr(1, 0.8, 0.3, alpha * 0.6 * fadeIn);
+          ctx.lineWidth = 2.5 * fadeIn;
+          ctx.beginPath();
+          ctx.moveTo(psx, psy);
+          ctx.lineTo(psx + Math.cos(trailAng) * headR * 4, psy + Math.sin(trailAng) * headR * 4);
+          ctx.stroke();
+          // 拖尾边缘渐隐细线
+          ctx.strokeStyle = rgbStr(1, 0.7, 0.2, alpha * 0.3 * fadeIn);
+          ctx.lineWidth = 1.2 * fadeIn;
+          for (let tl = 0; tl < 2; tl++) {
+            const off = (tl === 0 ? 1 : -1) * 2;
+            const perpX = -Math.sin(fxAng) * off;
+            const perpZ = Math.cos(fxAng) * off;
+            ctx.beginPath();
+            ctx.moveTo(psx + perpX, psy + perpZ);
+            ctx.lineTo(psx + perpX + Math.cos(trailAng) * headR * 3, psy + perpZ + Math.sin(trailAng) * headR * 3);
+            ctx.stroke();
+          }
+        } else if (pat === 'lifesteal') {
+          // 吸血弹头：暗红脉动核心 + 生命吸取粒子（反向流动）
+          const pulse = 1 + Math.sin(life * 20) * 0.25;
+          const headR = 5 * pulse * fadeIn;
+          // 暗红/紫色光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 3);
+          grd.addColorStop(0, rgbStr(0.6, 0.1, 0.2, alpha * 0.7 * fadeIn));
+          grd.addColorStop(0.4, rgbStr(0.4, 0.05, 0.3, alpha * 0.35 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 3, 0, Math.PI * 2); ctx.fill();
+          // 脉动核心（深红色）
+          ctx.fillStyle = rgbStr(0.8, 0.15, 0.25, alpha * 0.9 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.5, 0, Math.PI * 2); ctx.fill();
+          // 白色高光点
+          ctx.fillStyle = rgbStr(1, 0.8, 0.85, alpha * 0.8 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.2, 0, Math.PI * 2); ctx.fill();
+          // 生命吸取粒子（从目标方向流向施法者，反向流动）
+          const drainAng = fxAng + Math.PI; // 反向（目标→施法者）使用初始角度
+          for (let p = 0; p < 5; p++) {
+            const pLife = (life * 3 + p * 0.2) % 1;
+            const pDist = headR * (1 + pLife * 3);
+            const ppx = psx + Math.cos(drainAng) * pDist + Math.sin(life * 12 + p * 1.5) * 3;
+            const ppy = psy + Math.sin(drainAng) * pDist + Math.cos(life * 12 + p * 1.5) * 3;
+            const pSize = Math.max(1.5, 3 * (1 - pLife) * fadeIn);
+            const pAlpha = (1 - pLife) * alpha * 0.6 * fadeIn;
+            // 暗红色粒子
+            ctx.fillStyle = rgbStr(0.7, 0.1, 0.2, pAlpha);
+            ctx.beginPath(); ctx.arc(ppx, ppy, pSize, 0, Math.PI * 2); ctx.fill();
+          }
+          // 暗影能量线（螺旋缠绕）
+          ctx.strokeStyle = rgbStr(0.5, 0.05, 0.3, alpha * 0.4 * fadeIn);
+          ctx.lineWidth = 1.5 * fadeIn;
+          ctx.beginPath();
+          for (let s = 0; s < 8; s++) {
+            const t = s / 8;
+            const spiralAng = drainAng + t * Math.PI * 2 + life * 8;
+            const spiralR = headR * (0.5 + t * 2);
+            const spx = psx + Math.cos(spiralAng) * spiralR;
+            const spy = psy + Math.sin(spiralAng) * spiralR;
+            if (s === 0) ctx.moveTo(spx, spy);
+            else ctx.lineTo(spx, spy);
+          }
+          ctx.stroke();
+        } else if (pat === 'thunder') {
+          // 雷霆弹头：从天而降的强烈雷电 + 多分支闪电
+          const headR = 6 * fadeIn;
+          // 强烈的电蓝光晕
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 4);
+          grd.addColorStop(0, rgbStr(0.9, 0.95, 1, alpha * 0.8 * fadeIn));
+          grd.addColorStop(0.25, rgbStr(0.5, 0.7, 1, alpha * 0.4 * fadeIn));
+          grd.addColorStop(0.6, rgbStr(0.3, 0.4, 0.9, alpha * 0.15 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 4, 0, Math.PI * 2); ctx.fill();
+          // 白热核心（脉动）
+          const pulse = 1 + Math.sin(life * 35) * 0.3;
+          ctx.fillStyle = rgbStr(1, 1, 1, alpha * 0.95 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.4 * pulse, 0, Math.PI * 2); ctx.fill();
+          // 电蓝色内核
+          ctx.fillStyle = rgbStr(0.6, 0.8, 1, alpha * 0.85 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.6 * pulse, 0, Math.PI * 2); ctx.fill();
+          // 多分支闪电（从核心向外放射）
+          ctx.strokeStyle = rgbStr(0.8, 0.9, 1, alpha * 0.7 * fadeIn);
+          ctx.lineWidth = 2 * fadeIn;
+          for (let bolt = 0; bolt < 4; bolt++) {
+            const boltAng = bolt * Math.PI / 2 + life * 12;
+            const boltLen = headR * (1.5 + Math.sin(life * 20 + bolt * 2) * 0.8);
+            ctx.beginPath();
+            let bx = psx, by = psy;
+            ctx.moveTo(bx, by);
+            // 锯齿形闪电路径
+            for (let seg = 1; seg <= 3; seg++) {
+              const segFrac = seg / 3;
+              const jitter = Math.sin(life * 40 + bolt * 3 + seg * 5) * 5 * segFrac;
+              bx = psx + Math.cos(boltAng) * boltLen * segFrac + Math.cos(boltAng + Math.PI / 2) * jitter;
+              by = psy + Math.sin(boltAng) * boltLen * segFrac + Math.sin(boltAng + Math.PI / 2) * jitter;
+              ctx.lineTo(bx, by);
+            }
+            ctx.stroke();
+          }
+          // 从天而降的雷电轨迹（从上方延伸下来的主闪电）
+          const thunderY = psy - headR * 6 * (1 - life * 0.5);
+          ctx.strokeStyle = rgbStr(0.9, 0.95, 1, alpha * 0.6 * fadeIn);
+          ctx.lineWidth = 2.5 * fadeIn;
+          ctx.beginPath();
+          ctx.moveTo(psx + Math.sin(life * 25) * 3, thunderY);
+          // 锯齿形下落路径
+          for (let seg = 1; seg <= 4; seg++) {
+            const segY = thunderY + (psy - thunderY) * (seg / 4);
+            const jitter = Math.sin(life * 30 + seg * 4) * 4;
+            ctx.lineTo(psx + jitter, segY);
+          }
+          ctx.stroke();
+        } else if (pat === 'slash') {
+          // 斩击弹头：简洁明快的近战斩击弧线
+          const headR = 4 * fadeIn;
+          // 白色光晕（简洁）
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 2);
+          grd.addColorStop(0, rgbStr(1, 1, 1, alpha * 0.6 * fadeIn));
+          grd.addColorStop(0.5, rgbStr(0.9, 0.9, 0.95, alpha * 0.2 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 2, 0, Math.PI * 2); ctx.fill();
+          // 白色核心
+          ctx.fillStyle = rgbStr(1, 1, 1, alpha * 0.9 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.4, 0, Math.PI * 2); ctx.fill();
+          // 斩击弧线（沿飞行方向的弧形斩击）使用初始角度
+          const slashAng = fxAng;
+          const slashLen = headR * 2.5;
+          const slashWidth = Math.PI * 0.6; // 弧线张角
+          ctx.strokeStyle = rgbStr(1, 1, 1, alpha * 0.8 * fadeIn);
+          ctx.lineWidth = 2.5 * fadeIn;
+          ctx.beginPath();
+          ctx.arc(psx, psy, slashLen, slashAng - slashWidth, slashAng + slashWidth);
+          ctx.stroke();
+          // 内层细弧线（更亮的斩击边缘）
+          ctx.strokeStyle = rgbStr(1, 0.95, 0.9, alpha * 0.6 * fadeIn);
+          ctx.lineWidth = 1.5 * fadeIn;
+          ctx.beginPath();
+          ctx.arc(psx, psy, slashLen * 0.7, slashAng - slashWidth * 0.8, slashAng + slashWidth * 0.8);
+          ctx.stroke();
+          // 打击火花粒子（2-3 颗小火花）
+          for (let s = 0; s < 3; s++) {
+            const sparkAng = slashAng + (s - 1) * 0.3;
+            const sparkDist = slashLen * (0.8 + Math.sin(life * 15 + s) * 0.2);
+            const spx = psx + Math.cos(sparkAng) * sparkDist;
+            const spy = psy + Math.sin(sparkAng) * sparkDist;
+            const sparkSize = Math.max(1, 2 * (1 - life) * fadeIn);
+            ctx.fillStyle = rgbStr(1, 0.95, 0.8, alpha * 0.7 * (1 - life) * fadeIn);
+            ctx.beginPath(); ctx.arc(spx, spy, sparkSize, 0, Math.PI * 2); ctx.fill();
+          }
+        } else {
+          // 物理/默认：简洁白色弹头 + 运动线条
+          const headR = 4 * fadeIn;
+          const grd = ctx.createRadialGradient(psx, psy, 0, psx, psy, headR * 2);
+          grd.addColorStop(0, rgbStr(1, 1, 1, alpha * 0.7 * fadeIn));
+          grd.addColorStop(0.5, rgbStr(r, g, b, alpha * 0.2 * fadeIn));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(psx, psy, headR * 2, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = rgbStr(1, 1, 1, alpha * 0.9 * fadeIn);
+          ctx.beginPath(); ctx.arc(psx, psy, headR * 0.4, 0, Math.PI * 2); ctx.fill();
+          // 运动线条
+          ctx.strokeStyle = rgbStr(r, g, b, alpha * 0.4 * fadeIn);
+          ctx.lineWidth = 1.5 * fadeIn;
+          for (let ln = 0; ln < 3; ln++) {
+            const off = (ln - 1) * 3;
+            const perpX = -Math.sin(ang) * off;
+            const perpZ = Math.cos(ang) * off;
+            ctx.beginPath();
+            ctx.moveTo(psx + perpX - Math.cos(ang) * 4, psy + perpZ - Math.sin(ang) * 4);
+            ctx.lineTo(psx + perpX - Math.cos(ang) * (10 + ln * 3), psy + perpZ - Math.sin(ang) * (10 + ln * 3));
+            ctx.stroke();
+          }
+        }
+
+        // ── 命中闪光（life > 0.85 时目标端出现扩散光圈） ──
+        if (life > 0.85) {
+          const impactAlpha = (life - 0.85) / 0.15;
+          const impactR = (1.5 + impactAlpha * 1.5) * scale;
+          const isx = (ef.x2 - this.cam.cx) * scale + cw / 2;
+          const isy = (ef.z2 - this.cam.cz) * scale + ch / 2;
+          ctx.strokeStyle = rgbStr(r, g, b, (1 - impactAlpha) * 0.6);
+          ctx.lineWidth = 2 * (1 - impactAlpha);
+          ctx.beginPath(); ctx.arc(isx, isy, impactR, 0, Math.PI * 2); ctx.stroke();
+        }
+      } else if (ef.kind === 'burst') {
+        // ── 元素命中特效：按 pattern 分支渲染 ──
+        const pat = ef.pattern || 'ring';
+        const maxR = sr || 2 * scale;
+        if (pat === 'fire') {
+          const er = maxR * (0.3 + life * 0.9);
+          ctx.strokeStyle = rgbStr(r, g, b, alpha * 0.8);
+          ctx.lineWidth = 3 * (1 - life);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          const ir = maxR * life * 0.5;
+          ctx.fillStyle = rgbStr(1, 0.85, 0.2, alpha * 0.3);
+          ctx.beginPath(); ctx.arc(sx, sy, ir, 0, Math.PI * 2); ctx.fill();
+          for (let s = 0; s < 6; s++) {
+            const ang = (s / 6) * Math.PI * 2 + life * 2;
+            const sd = maxR * (0.2 + life * 0.8);
+            const sparkX = sx + Math.cos(ang) * sd;
+            const sparkY = sy + Math.sin(ang) * sd - life * 20;
+            ctx.fillStyle = rgbStr(1, 0.6, 0.1, alpha * 0.7);
+            ctx.beginPath(); ctx.arc(sparkX, sparkY, Math.max(1, 2.5 * (1 - life)), 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'ice') {
+          for (let ring = 0; ring < 2; ring++) {
+            const rr = maxR * (0.2 + life * (0.7 + ring * 0.3));
+            ctx.strokeStyle = rgbStr(r, g, b, alpha * (0.7 - ring * 0.3));
+            ctx.lineWidth = 2 - ring * 0.5;
+            ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.stroke();
+          }
+          for (let c = 0; c < 6; c++) {
+            const ang = (c / 6) * Math.PI * 2;
+            const cd = maxR * life * 0.9;
+            const cx2 = sx + Math.cos(ang) * cd;
+            const cy2 = sy + Math.sin(ang) * cd;
+            const sz = Math.max(2, 4 * (1 - life));
+            ctx.fillStyle = rgbStr(0.8, 0.95, 1, alpha * 0.6);
+            ctx.save(); ctx.translate(cx2, cy2); ctx.rotate(ang + life * 2);
+            ctx.beginPath(); ctx.moveTo(0, -sz); ctx.lineTo(sz * 0.5, 0); ctx.lineTo(0, sz); ctx.lineTo(-sz * 0.5, 0); ctx.closePath();
+            ctx.fill(); ctx.restore();
+          }
+        } else if (pat === 'lightning') {
+          const topY = sy - maxR * 2.5;
+          ctx.strokeStyle = rgbStr(1, 1, 0.8, alpha * 0.9);
+          ctx.lineWidth = 2.5 * (1 - life * 0.5);
+          ctx.beginPath(); ctx.moveTo(sx + 2, topY);
+          const segs = 5;
+          for (let j = 1; j <= segs; j++) {
+            const t = j / segs;
+            const bx = sx + 2 + (Math.random() - 0.5) * maxR * 0.5 * (1 - t * 0.5);
+            const by = topY + (sy - topY) * t;
+            ctx.lineTo(bx, by);
+          }
+          ctx.stroke();
+          const flashR = maxR * 0.5 * (1 + life * 0.5);
+          ctx.fillStyle = rgbStr(1, 1, 0.9, alpha * 0.4);
+          ctx.beginPath(); ctx.arc(sx, sy, flashR, 0, Math.PI * 2); ctx.fill();
+        } else if (pat === 'smoke') {
+          for (let p = 0; p < 5; p++) {
+            const ang = (p / 5) * Math.PI * 2 + life * 0.5;
+            const dist = maxR * (0.15 + life * 0.7);
+            const px = sx + Math.cos(ang) * dist;
+            const py = sy + Math.sin(ang) * dist - life * 12;
+            const pr = Math.max(2, (3 + p * 1.5) * (0.5 + life * 0.6));
+            ctx.fillStyle = rgbStr(r, g, b, alpha * 0.25);
+            ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'snipe') {
+          // 狙击命中：明亮扩散光圈 + 十字闪光
+          const er = maxR * (0.3 + life * 1.2);
+          // 扩散光圈
+          ctx.strokeStyle = rgbStr(1, 0.85, 0.4, alpha * 0.8);
+          ctx.lineWidth = 3 * (1 - life * 0.6);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          // 内层白色闪光
+          if (life < 0.4) {
+            const flashA = (0.4 - life) / 0.4;
+            ctx.fillStyle = rgbStr(1, 1, 0.9, flashA * 0.6);
+            ctx.beginPath(); ctx.arc(sx, sy, maxR * 0.5 * (1 - life / 0.4), 0, Math.PI * 2); ctx.fill();
+          }
+          // 十字光线
+          ctx.strokeStyle = rgbStr(1, 0.9, 0.5, alpha * 0.7);
+          ctx.lineWidth = 2 * (1 - life);
+          const crossLen = maxR * (0.5 + life * 1.5);
+          ctx.beginPath(); ctx.moveTo(sx - crossLen, sy); ctx.lineTo(sx + crossLen, sy); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(sx, sy - crossLen); ctx.lineTo(sx, sy + crossLen); ctx.stroke();
+        } else if (pat === 'lifesteal') {
+          // 吸血命中：暗红脉动扩散 + 生命吸取粒子
+          const er = maxR * (0.25 + life * 1.1);
+          // 暗红扩散光圈
+          ctx.strokeStyle = rgbStr(0.7, 0.1, 0.2, alpha * 0.8);
+          ctx.lineWidth = 3 * (1 - life * 0.5);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          // 内层紫色闪光
+          if (life < 0.5) {
+            const flashA = (0.5 - life) / 0.5;
+            ctx.fillStyle = rgbStr(0.5, 0.05, 0.3, flashA * 0.5);
+            ctx.beginPath(); ctx.arc(sx, sy, maxR * 0.6 * (1 - life / 0.5), 0, Math.PI * 2); ctx.fill();
+          }
+          // 生命吸取粒子（向外扩散后回收）
+          for (let p = 0; p < 6; p++) {
+            const pAng = (p / 6) * Math.PI * 2 + life * 3;
+            const pDist = maxR * (0.3 + life * 0.8);
+            const ppx = sx + Math.cos(pAng) * pDist;
+            const ppy = sy + Math.sin(pAng) * pDist;
+            const pSize = Math.max(1.5, 3 * (1 - life) );
+            ctx.fillStyle = rgbStr(0.8, 0.15, 0.25, alpha * 0.6 * (1 - life));
+            ctx.beginPath(); ctx.arc(ppx, ppy, pSize, 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'thunder') {
+          // 雷霆命中：强烈电光爆炸 + 多方向闪电扩散
+          const er = maxR * (0.3 + life * 1.3);
+          // 电蓝扩散光圈
+          ctx.strokeStyle = rgbStr(0.6, 0.8, 1, alpha * 0.85);
+          ctx.lineWidth = 3.5 * (1 - life * 0.5);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          // 内层白色强烈闪光
+          if (life < 0.35) {
+            const flashA = (0.35 - life) / 0.35;
+            ctx.fillStyle = rgbStr(1, 1, 1, flashA * 0.7);
+            ctx.beginPath(); ctx.arc(sx, sy, maxR * 0.7 * (1 - life / 0.35), 0, Math.PI * 2); ctx.fill();
+          }
+          // 多方向闪电扩散（8 条锯齿闪电）
+          ctx.strokeStyle = rgbStr(0.8, 0.9, 1, alpha * 0.7);
+          ctx.lineWidth = 2 * (1 - life);
+          for (let bolt = 0; bolt < 8; bolt++) {
+            const boltAng = (bolt / 8) * Math.PI * 2;
+            const boltLen = maxR * (0.5 + life * 1.5);
+            ctx.beginPath();
+            let bx = sx, by = sy;
+            ctx.moveTo(bx, by);
+            for (let seg = 1; seg <= 2; seg++) {
+              const segFrac = seg / 2;
+              const jitter = Math.sin(bolt * 5 + seg * 3) * 4 * segFrac;
+              bx = sx + Math.cos(boltAng) * boltLen * segFrac + Math.cos(boltAng + Math.PI / 2) * jitter;
+              by = sy + Math.sin(boltAng) * boltLen * segFrac + Math.sin(boltAng + Math.PI / 2) * jitter;
+              ctx.lineTo(bx, by);
+            }
+            ctx.stroke();
+          }
+        } else if (pat === 'slash') {
+          // 斩击命中：快速扩散的白色斩击弧线 + 打击火花
+          const er = maxR * (0.3 + life * 1.0);
+          // 白色扩散光圈
+          ctx.strokeStyle = rgbStr(1, 1, 1, alpha * 0.8);
+          ctx.lineWidth = 2.5 * (1 - life * 0.5);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          // 交叉斩击弧线（X 形）
+          ctx.strokeStyle = rgbStr(1, 0.95, 0.9, alpha * 0.7 * (1 - life));
+          ctx.lineWidth = 2 * (1 - life);
+          const slashLen = maxR * (0.6 + life * 0.8);
+          // 第一条弧线
+          ctx.beginPath();
+          ctx.arc(sx, sy, slashLen, -Math.PI * 0.3, Math.PI * 0.3);
+          ctx.stroke();
+          // 第二条弧线（垂直方向）
+          ctx.beginPath();
+          ctx.arc(sx, sy, slashLen * 0.8, Math.PI * 0.2, Math.PI * 0.8);
+          ctx.stroke();
+          // 打击火花（4 颗向外扩散）
+          for (let s = 0; s < 4; s++) {
+            const sparkAng = (s / 4) * Math.PI * 2 + Math.PI / 4;
+            const sparkDist = maxR * (0.4 + life * 0.6);
+            const spx = sx + Math.cos(sparkAng) * sparkDist;
+            const spy = sy + Math.sin(sparkAng) * sparkDist;
+            const sparkSize = Math.max(1.5, 3 * (1 - life));
+            ctx.fillStyle = rgbStr(1, 0.9, 0.7, alpha * 0.6 * (1 - life));
+            ctx.beginPath(); ctx.arc(spx, spy, sparkSize, 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'inferno') {
+          // 烈焰冲击命中：强烈的火焰爆炸 + 火柱扩散 + 火星四溅
+          const er = maxR * (0.3 + life * 1.2);
+          // 外层火焰扩散（橙红色）
+          ctx.fillStyle = rgbStr(1, 0.4, 0.05, alpha * 0.3 * (1 - life));
+          ctx.beginPath(); ctx.arc(sx, sy, er * 1.2, 0, Math.PI * 2); ctx.fill();
+          // 中层火焰（亮橙色）
+          ctx.fillStyle = rgbStr(1, 0.6, 0.1, alpha * 0.4 * (1 - life * 0.5));
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.fill();
+          // 内层火焰核心（黄白色）
+          if (life < 0.5) {
+            const coreA = (0.5 - life) / 0.5;
+            ctx.fillStyle = rgbStr(1, 0.9, 0.4, coreA * 0.6);
+            ctx.beginPath(); ctx.arc(sx, sy, er * 0.5, 0, Math.PI * 2); ctx.fill();
+          }
+          // 火焰边缘锯齿（模拟火舌）
+          ctx.strokeStyle = rgbStr(1, 0.5, 0.05, alpha * 0.7);
+          ctx.lineWidth = 2.5 * (1 - life);
+          ctx.beginPath();
+          for (let i = 0; i < 12; i++) {
+            const ang = (i / 12) * Math.PI * 2 + life * 3;
+            const flameLen = er * (0.8 + Math.sin(life * 15 + i * 2) * 0.3);
+            const fx = sx + Math.cos(ang) * flameLen;
+            const fy = sy + Math.sin(ang) * flameLen;
+            if (i === 0) ctx.moveTo(fx, fy);
+            else ctx.lineTo(fx, fy);
+          }
+          ctx.closePath(); ctx.stroke();
+          // 火星四溅（8 颗向外飞散的火星）
+          for (let s = 0; s < 8; s++) {
+            const sparkAng = (s / 8) * Math.PI * 2 + life * 2;
+            const sparkDist = maxR * (0.5 + life * 1.5);
+            const spx = sx + Math.cos(sparkAng) * sparkDist;
+            const spy = sy + Math.sin(sparkAng) * sparkDist - life * 15; // 向上飘
+            const sparkSize = Math.max(1.5, 3.5 * (1 - life));
+            ctx.fillStyle = rgbStr(1, 0.7 + s * 0.03, 0.1, alpha * 0.7 * (1 - life));
+            ctx.beginPath(); ctx.arc(spx, spy, sparkSize, 0, Math.PI * 2); ctx.fill();
+          }
+        } else if (pat === 'frost') {
+          // 冰霜新星命中：华丽的冰晶爆炸 + 冰刺扩散 + 冰晶碎片
+          const er = maxR * (0.3 + life * 1.1);
+          // 外层冰蓝扩散（淡蓝色光晕）
+          const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, er * 1.3);
+          grd.addColorStop(0, rgbStr(0.7, 0.9, 1, alpha * 0.4 * (1 - life)));
+          grd.addColorStop(0.5, rgbStr(0.5, 0.7, 1, alpha * 0.2 * (1 - life)));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(sx, sy, er * 1.3, 0, Math.PI * 2); ctx.fill();
+          // 内层白色冰核
+          if (life < 0.4) {
+            const coreA = (0.4 - life) / 0.4;
+            ctx.fillStyle = rgbStr(0.9, 0.97, 1, coreA * 0.6);
+            ctx.beginPath(); ctx.arc(sx, sy, er * 0.4, 0, Math.PI * 2); ctx.fill();
+          }
+          // 冰刺扩散（6 根向外延伸的冰刺）
+          ctx.strokeStyle = rgbStr(0.7, 0.9, 1, alpha * 0.8);
+          ctx.lineWidth = 2.5 * (1 - life * 0.5);
+          for (let spike = 0; spike < 6; spike++) {
+            const spikeAng = (spike / 6) * Math.PI * 2 + life * 2;
+            const spikeLen = er * (0.9 + Math.sin(life * 12 + spike) * 0.2);
+            const spikeWid = Math.PI * 0.08; // 冰刺宽度
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(sx + Math.cos(spikeAng - spikeWid) * spikeLen * 0.3, sy + Math.sin(spikeAng - spikeWid) * spikeLen * 0.3);
+            ctx.lineTo(sx + Math.cos(spikeAng) * spikeLen, sy + Math.sin(spikeAng) * spikeLen);
+            ctx.lineTo(sx + Math.cos(spikeAng + spikeWid) * spikeLen * 0.3, sy + Math.sin(spikeAng + spikeWid) * spikeLen * 0.3);
+            ctx.closePath(); ctx.stroke();
+            // 冰刺填充（半透明）
+            ctx.fillStyle = rgbStr(0.8, 0.95, 1, alpha * 0.3 * (1 - life));
+            ctx.fill();
+          }
+          // 冰晶碎片（8 颗旋转扩散的菱形冰晶）
+          for (let c = 0; c < 8; c++) {
+            const cAng = (c / 8) * Math.PI * 2 + life * 3;
+            const cDist = maxR * (0.4 + life * 1.2);
+            const cx2 = sx + Math.cos(cAng) * cDist;
+            const cy2 = sy + Math.sin(cAng) * cDist;
+            const cSize = Math.max(2, 4 * (1 - life));
+            ctx.fillStyle = rgbStr(0.85, 0.95, 1, alpha * 0.7 * (1 - life));
+            ctx.save(); ctx.translate(cx2, cy2); ctx.rotate(cAng + life * 4);
+            ctx.beginPath(); ctx.moveTo(0, -cSize); ctx.lineTo(cSize * 0.5, 0); ctx.lineTo(0, cSize); ctx.lineTo(-cSize * 0.5, 0); ctx.closePath();
+            ctx.fill(); ctx.restore();
+          }
+        } else if (pat === 'heal') {
+          // 治疗之光命中：温暖的治疗光效 + 上升的光粒子
+          const er = maxR * (0.3 + life * 1.0);
+          // 外层金色光晕（温暖的治疗光）
+          const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, er * 1.4);
+          grd.addColorStop(0, rgbStr(1, 0.95, 0.7, alpha * 0.5 * (1 - life)));
+          grd.addColorStop(0.4, rgbStr(0.6, 0.9, 0.5, alpha * 0.25 * (1 - life)));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(sx, sy, er * 1.4, 0, Math.PI * 2); ctx.fill();
+          // 内层白色核心（明亮的治愈之光）
+          if (life < 0.5) {
+            const coreA = (0.5 - life) / 0.5;
+            ctx.fillStyle = rgbStr(1, 1, 0.9, coreA * 0.7);
+            ctx.beginPath(); ctx.arc(sx, sy, er * 0.45, 0, Math.PI * 2); ctx.fill();
+          }
+          // 柔和扩散光圈（淡绿色）
+          ctx.strokeStyle = rgbStr(0.6, 0.95, 0.6, alpha * 0.6 * (1 - life));
+          ctx.lineWidth = 2.5 * (1 - life * 0.5);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          // 上升的光粒子（6 颗向上飘散的光点）
+          for (let p = 0; p < 6; p++) {
+            const pAng = (p / 6) * Math.PI * 2 + life * 1.5;
+            const pDist = maxR * (0.3 + life * 0.8);
+            const ppx = sx + Math.cos(pAng) * pDist * 0.6;
+            const ppy = sy + Math.sin(pAng) * pDist * 0.3 - life * 30; // 向上飘
+            const pSize = Math.max(2, 4 * (1 - life));
+            // 金色/绿色交替的光粒子
+            const isGold = p % 2 === 0;
+            ctx.fillStyle = isGold ? rgbStr(1, 0.9, 0.5, alpha * 0.8 * (1 - life)) : rgbStr(0.6, 0.95, 0.6, alpha * 0.8 * (1 - life));
+            ctx.beginPath(); ctx.arc(ppx, ppy, pSize, 0, Math.PI * 2); ctx.fill();
+            // 光粒子光晕
+            ctx.fillStyle = isGold ? rgbStr(1, 0.95, 0.7, alpha * 0.3 * (1 - life)) : rgbStr(0.7, 1, 0.7, alpha * 0.3 * (1 - life));
+            ctx.beginPath(); ctx.arc(ppx, ppy, pSize * 1.8, 0, Math.PI * 2); ctx.fill();
+          }
+        } else {
+          const er = maxR * (0.2 + life * 1.0);
+          ctx.strokeStyle = rgbStr(r, g, b, alpha * 0.9);
+          ctx.lineWidth = 2.5 * (1 - life * 0.5);
+          ctx.beginPath(); ctx.arc(sx, sy, er, 0, Math.PI * 2); ctx.stroke();
+          if (life < 0.3) {
+            ctx.fillStyle = rgbStr(1, 1, 1, (0.3 - life) * 2);
+            ctx.beginPath(); ctx.arc(sx, sy, maxR * 0.3 * (1 - life / 0.3), 0, Math.PI * 2); ctx.fill();
+          }
         }
       } else {
         // ── 其他效果（AOE 结算等）：简单圆形边框 + 半透明填充 ──

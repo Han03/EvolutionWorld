@@ -30,6 +30,12 @@ struct SharedEvent {
   uint32_t b = 0;      // 次级（击杀者/技能 id）
   int32_t x = 0, z = 0; // 技能落点
 };
+// 施放结算失败通知（resolveCast 二次校验未通过 → 通知客户端重置冷却）
+struct CastFailNotif {
+  std::string playerId; // 目标玩家 id
+  uint32_t skillId = 0;
+  uint32_t targetWid = 0;
+};
 class World {
 public:
   explicit World(const Config& cfg);
@@ -257,12 +263,17 @@ public:
   std::vector<const Entity*> elites() const;
   // 世界共享状态辅助（供系统/网络层调用）
   void pushEvent(uint8_t type, uint32_t wid, uint32_t b, int32_t x, int32_t z);
+  // 施放结算失败通知（resolveCast 二次校验失败 → 客户端重置冷却）
+  void pushCastFailNotif(const std::string& playerId, uint32_t skillId, uint32_t targetWid);
+  std::vector<CastFailNotif> takeCastFailNotifs();
   void markEliteDirty() { eliteDirty_ = true; }
   void addAliveElite(int d) { aliveElite_ = (uint32_t)((int)aliveElite_ + d); }
   // 玩家死亡统一处理（hp=0+死亡标记+复活计时+EVT_DEATH 广播），供普攻/技能/精英/反伤复用
   void killPlayer(Entity& p, Entity* killer);
   // 通用技能效果施加：伤害/Buff/击退/死亡/吸血（玩家→怪物、怪物→玩家 均可用）
   void applySkillToTarget(Entity& caster, Entity& target, const SkillDef& sd, double variance);
+  // 位移技能：施法者沿自身→(tx,tz)方向位移 dist 米（逐步圆盘检测，撞墙即止），落回地表
+  void executeDash(Entity& caster, double tx, double tz, double dist);
   // ---- 社交系统（好友/公会/聊天）----
   FriendSystem& friends() { return *friends_; }
   const FriendSystem& friends() const { return *friends_; }
@@ -326,6 +337,7 @@ private:
   std::vector<std::pair<int, std::pair<std::string, SystemFn>>> systems_;
   // 世界共享状态（精英全局广播 + 战斗事件队列）
   std::vector<SharedEvent> sharedEvents_;
+  std::vector<CastFailNotif> castFailNotifs_;  // 施放结算失败待推送通知
   // 本 tick 刚复活的玩家（需补发校正）
   std::vector<std::string> respawnedThisTick_;
   // 需要补发 S2C_STATS 的玩家（属性/血量/蓝量变化）

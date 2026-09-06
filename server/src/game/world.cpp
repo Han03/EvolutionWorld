@@ -197,6 +197,8 @@ void World::spawnNpcAt(const SpawnPoint& sp) {
       n.level = def->level;
       n.shopId = def->shopId;
       n.ai.wpR = def->wanderRadius;  // 游走半径
+      n.radius = def->radius;         // 碰撞半径
+      n.pos.y = groundFootY(n.pos.x, n.pos.z, n.radius); // 按新半径重算贴地
       if (def->shopId) n.ai.aiState = 0;  // 守店不游走
     } else {
       fprintf(stderr, "[npc] 警告：npcId=%s 未找到定义，回退到 SpawnPoint 字段\n", sp.npcId.c_str());
@@ -485,6 +487,10 @@ bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
 //  - castTimeMs==0：瞬发，直接结算（扣蓝/冷却/效果）
 //  - castTimeMs>0 ：进入前摇（castingSkillId 置位 + 广播 EVT_SKILL_CASTING），
 //                  由 castSystem 到期后 resolveCast；移动/受击打断（cancelCast）
+// 施放距离容差（网络延迟补偿）：客户端预测位置与服务端权威位置存在分歧，
+// 边缘距离判定加 0.5m 容差，减少“客户端认为在范围但服务端拒绝”的误判
+static constexpr double kCastRangeTolerance = 0.5;
+
 bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t targetWid, double tx, double tz) {
   Entity* p = findEntity(playerId);
   if (!p || p->kind != EntityKind::Player || p->dead) return false;  // 死亡不可施放
@@ -500,15 +506,15 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
   // 落点语义：SELF=自身位置；ENEMY/AOE=客户端指定落点
   double gx = tx, gz = tz;
   if (sd->target == SkillTarget::SELF) { gx = p->pos.x; gz = p->pos.z; }
-  else if (sd->range > 0 && p->pos.dist2D({gx, 0, gz}) > sd->range) {
-    return false; // 施法距离（落点距施法者超过 range）
+  else if (sd->range > 0 && p->pos.dist2D({gx, 0, gz}) > sd->range + kCastRangeTolerance) {
+    return false; // 施法距离（落点距施法者超过 range + 容差）
   }
   // 单目标 ENEMY 技能：校验目标实体存在+存活+在施法距离内
   if (sd->target == SkillTarget::ENEMY && targetWid > 0) {
     Entity* tgt = nullptr;
     for (auto& [id, e] : entities_) { (void)id; if (e.wid == targetWid) { tgt = &e; break; } }
     if (!tgt || !tgt->active || tgt->dead) return false;  // 目标无效/已死亡
-    if (sd->range > 0 && p->pos.dist2D(tgt->pos) > sd->range) return false;  // 目标超距
+    if (sd->range > 0 && p->pos.dist2D(tgt->pos) > sd->range + kCastRangeTolerance) return false;  // 目标超距（含容差）
   }
   // 霸体技能：施放即挂 SUPER_ARMOR（免疫眩晕/击退），持续 = 前摇 + 0.5s 尾部余量
   if (sd->superArmor) {
@@ -523,25 +529,34 @@ bool World::beginCast(const std::string& playerId, uint32_t skillId, uint32_t ta
     p->castTargetWid = targetWid;
     p->castTx = gx;
     p->castTz = gz;
-    pushEvent(proto::EVT_SKILL_CASTING, p->wid, skillId, proto::qAbs(gx), proto::qAbs(gz));
+    // ENEMY/AOE 技能：广播目标/落点位置；SELF 技能：广播施法者位置
+    double castX = (sd->target == SkillTarget::SELF) ? p->pos.x : gx;
+    double castZ = (sd->target == SkillTarget::SELF) ? p->pos.z : gz;
+    pushEvent(proto::EVT_SKILL_CASTING, p->wid, skillId, proto::qAbs(castX), proto::qAbs(castZ));
     return true;
   }
   // 瞬发：直接结算
   resolveCast(*p, *sd, targetWid, gx, gz);
   return true;
 }
-// 命中半径：radius>0 用 radius，radius==0 视为近战贴身范围（1.2m）——所有技能统一按此判定
-static double hitRadius(const SkillDef& sd) { return sd.radius > 0 ? sd.radius : 1.2; }
 
-// 前摇结算：扣蓝 + 上冷却（仅结算时消耗，前摇被打断不扣）→ EVT_SKILL 广播 → 按范围施加效果
+
+// 前摇结算（统一入口：玩家/怪物/精英共用）：
+// 扣蓝 + 上冷却 → EVT_SKILL 广播 → 单目标必中 + AOE 异阵营扩散 → 位移
 void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, double tx, double tz) {
   uint64_t nowMs = logicNowMs();
+  // 查找主目标（用于 ENEMY 校验 + 单目标必中 + 位移方向）
+  Entity* primaryTarget = (targetWid > 0) ? findByWid(targetWid) : nullptr;
   // 单目标 ENEMY 技能：结算时再次校验目标有效性，无效则不扣蓝/不上冷却（施放失败）
   if (sd.target == SkillTarget::ENEMY && targetWid > 0) {
-    Entity* tgt = nullptr;
-    for (auto& [id, e] : entities_) { (void)id; if (e.wid == targetWid) { tgt = &e; break; } }
-    if (!tgt || !tgt->active || tgt->dead) return;  // 目标已死亡/消失，不消耗资源
-    if (sd.range > 0 && caster.pos.dist2D(tgt->pos) > sd.range) return;  // 目标已超出距离
+    if (!primaryTarget || !primaryTarget->active || primaryTarget->dead) {
+      if (caster.kind == EntityKind::Player) pushCastFailNotif(caster.id, sd.id, targetWid);
+      return;  // 目标已死亡/消失，不消耗资源
+    }
+    if (sd.range > 0 && caster.pos.dist2D(primaryTarget->pos) > sd.range) {
+      if (caster.kind == EntityKind::Player) pushCastFailNotif(caster.id, sd.id, targetWid);
+      return;  // 目标已超出距离（结算时无容差，严格判定）
+    }
   }
   if (!testFlags_.noSkillCost) {  // 测试：无消耗模式下不扣蓝、不上冷却（可连续施放）
     caster.mp -= sd.manaCost;
@@ -551,16 +566,27 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
   // 落点（结算时以落点为准；SELF=施法者位置）
   double gx = tx, gz = tz;
   if (sd.target == SkillTarget::SELF) { gx = caster.pos.x; gz = caster.pos.z; }
+  // AOE 中心：ENEMY 技能从施法者位置扩散（撕咬=怪物身边溅射），AOE 技能从落点扩散
+  double aoeCx = (sd.target == SkillTarget::ENEMY) ? caster.pos.x : gx;
+  double aoeCz = (sd.target == SkillTarget::ENEMY) ? caster.pos.z : gz;
   pushEvent(proto::EVT_SKILL, caster.wid, sd.id, proto::qAbs(gx), proto::qAbs(gz));
-  const double hr = hitRadius(sd);
-  // 施加效果：全部按「落点 + 命中半径」计算是否击中（无目标检测）
+  const double hr = sd.radius;
+  // 施加效果：统一按「施法者 vs 目标」阵营判定（kind != caster.kind = 敌方）
   switch (sd.effect) {
     case SkillEffect::DAMAGE: {
-      for (auto& [id, e] : entities_) {
-        (void)id;
-        if (!e.active || e.kind != EntityKind::Monster) continue;
-        if (e.pos.dist2D({gx, 0, gz}) > hr) continue;  // 范围命中
-        applySkillToTarget(caster, e, sd, 0.9 + rng01() * 0.2);
+      // ① 单目标必中（targetWid 指向的实体）
+      if (primaryTarget && primaryTarget->active && primaryTarget->hp > 0) {
+        applySkillToTarget(caster, *primaryTarget, sd, 0.9 + rng01() * 0.2);
+      }
+      // ② AOE 扩散：对范围内异阵营实体施加效果（跳过施法者自身 + 主目标避免重复）
+      if (sd.radius > 0) {
+        for (auto& [id, e] : entities_) {
+          (void)id;
+          if (!e.active || e.kind == caster.kind) continue;  // 同阵营跳过
+          if (primaryTarget && e.wid == primaryTarget->wid) continue;  // 主目标已受击
+          if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
+          applySkillToTarget(caster, e, sd, 0.9 + rng01() * 0.2);
+        }
       }
       break;
     }
@@ -572,12 +598,12 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
     case SkillEffect::BUFF: {
       if (sd.target == SkillTarget::SELF) {
         applyBuff(caster, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
-      } else {
-        // 减益按范围命中（对怪物）
+      } else if (sd.radius > 0) {
+        // 减益：对范围内异阵营实体施加
         for (auto& [id, e] : entities_) {
           (void)id;
-          if (!e.active || e.kind != EntityKind::Monster) continue;
-          if (e.pos.dist2D({gx, 0, gz}) > hr) continue;
+          if (!e.active || e.kind == caster.kind) continue;
+          if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
           applyBuff(e, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
         }
       }
@@ -585,6 +611,39 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
     }
     default: break;
   }
+  // 位移技能：有主目标时向目标位移，否则向落点位移
+  if (sd.dashDist > 0) {
+    double dashTx = gx, dashTz = gz;
+    if (primaryTarget && primaryTarget->active) {
+      dashTx = primaryTarget->pos.x;
+      dashTz = primaryTarget->pos.z;
+    }
+    executeDash(caster, dashTx, dashTz, sd.dashDist);
+  }
+}
+// 位移技能：施法者沿自身→(tx,tz)方向位移 dist 米（逐步圆盘检测，撞墙即止），落回地表
+// 玩家/怪物均可调用；位移由 netcode UPDATE/SNAPSHOT 自动同步，无需额外事件
+void World::executeDash(Entity& caster, double tx, double tz, double dist) {
+  double dx = tx - caster.pos.x, dz = tz - caster.pos.z;
+  double len = std::hypot(dx, dz);
+  if (len < 1e-4) { dx = 1; dz = 0; len = 1; } // 重叠时取固定方向
+  const double ux = dx / len, uz = dz / len;
+  const double ox = caster.pos.x, oz = caster.pos.z;
+  double nx = ox, nz = oz;
+  const double kStep = 0.1;
+  const int steps = (int)std::ceil(dist / kStep);
+  for (int i = 1; i <= steps; i++) {
+    const double d = std::min(dist, kStep * (double)i);
+    const double cx = ox + ux * d, cz = oz + uz * d;
+    if (collision_.circleBlocked(cx, cz, caster.radius)) break;
+    nx = cx; nz = cz;
+  }
+  caster.pos.x = nx;
+  caster.pos.z = nz;
+  caster.pos.y = groundFootY(nx, nz, caster.radius);
+  // 玩家位移后需主动通知客户端预测器校正，否则客户端不知道位移发生
+  if (caster.kind == EntityKind::Player) caster.dashPending = true;
+  if (caster.isElite) markEliteDirty();
 }
 // 打断施放：reason=0 被替换 / 1 移动 / 2 受击（受 castCancelOnHit 约束）；广播 EVT_SKILL_CANCEL
 void World::cancelCast(Entity& e, uint8_t reason) {
@@ -1496,6 +1555,15 @@ std::vector<SharedEvent> World::takeSharedEvents() {
   sharedEvents_.clear();
   return out;
 }
+// 施放结算失败通知：推入队列（netcode 每 tick 定向发给目标玩家）
+void World::pushCastFailNotif(const std::string& playerId, uint32_t skillId, uint32_t targetWid) {
+  castFailNotifs_.push_back({playerId, skillId, targetWid});
+}
+std::vector<CastFailNotif> World::takeCastFailNotifs() {
+  auto out = std::move(castFailNotifs_);
+  castFailNotifs_.clear();
+  return out;
+}
 // 世界精英全局共享状态帧（dirty 去重；force 用于 HELLO 加入即一致）
 std::string World::eliteFrame(bool force) {
   if (!force && !eliteDirty_) return "";
@@ -1599,7 +1667,7 @@ static void castSystem(World& w, double dt) {
       w.cancelCast(e, 1);
       continue;
     }
-    // 前摇到期 → 结算
+    // 前摇到期 → 统一结算（玩家/怪物/精英共用 resolveCast）
     if (nowMs >= e.castStartMs + (uint64_t)sd->castTimeMs) {
       uint32_t skillId = e.castingSkillId;
       uint32_t twid = e.castTargetWid;

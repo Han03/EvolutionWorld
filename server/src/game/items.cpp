@@ -275,6 +275,7 @@ bool GameData::loadFromJson(const std::string& dir) {
           s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
           s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
           s.knockback = j.has("knockback") ? j.at("knockback").asNumber() : 0;
+          s.dashDist = j.has("dashDist") ? j.at("dashDist").asNumber() : 0;
           s.superArmor = j.has("superArmor") && j.at("superArmor").asInt() != 0;
           skills_[s.id] = s;
         }
@@ -527,6 +528,7 @@ std::string GameData::skillsToJson() const {
     j["cancelOnMove"] = d.castCancelOnMove ? 1 : 0;
     j["cancelOnHit"] = d.castCancelOnHit ? 1 : 0;
     j["knockback"] = d.knockback;
+    j["dashDist"] = d.dashDist;
     j["superArmor"] = d.superArmor ? 1 : 0;
     arr.push_back(j);
   }
@@ -566,6 +568,7 @@ bool GameData::replaceSkills(const Json& obj) {
       s.castCancelOnMove = !(j.has("cancelOnMove") && j.at("cancelOnMove").asInt() == 0);
       s.castCancelOnHit = !(j.has("cancelOnHit") && j.at("cancelOnHit").asInt() == 0);
       s.knockback = j.has("knockback") ? j.at("knockback").asNumber() : 0;
+      s.dashDist = j.has("dashDist") ? j.at("dashDist").asNumber() : 0;
       s.superArmor = j.has("superArmor") && j.at("superArmor").asInt() != 0;
       next[s.id] = s;
     }

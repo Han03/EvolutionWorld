@@ -53,6 +53,7 @@ struct NpcDef {
   int shopId = 0;          // 关联商店 ID（0=无，需 npcTag 含 SHOP）
   int level = 1;           // 等级（显示用，大型网游 NPC 有等级）
   double wanderRadius = 0; // 游走半径（0=不游走，守店/站岗）
+  double radius = 0.5;       // 碰撞半径（米，实体圆盘碰撞）
   std::string dialogue;    // 默认对话文本（客户端展示）
 };
 

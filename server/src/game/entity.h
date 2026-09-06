@@ -91,6 +91,7 @@ struct Entity {
   uint64_t castStartMs = 0; // 开始施放时刻（服务端单调时钟 ms）
   uint32_t castTargetWid = 0;
   double castTx = 0, castTz = 0; // 施放落点（用于 AOE）
+  bool dashPending = false;      // 位移技能执行后待通知客户端校正（executeDash 置 true，网络层消费后清 false）
   // 任务系统（大型网游规模，数据驱动）
   std::vector<ActiveQuest> activeQuests;            // 进行中的任务
   std::unordered_set<uint32_t> completedQuests;     // 已完成任务 ID 集合

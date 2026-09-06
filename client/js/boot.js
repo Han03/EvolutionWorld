@@ -14,13 +14,14 @@ import { InputState } from './input.js';
 import { WebGLRenderer } from './canvas-renderer.js';
 import { EntityViewManager } from './entities.js';
 import { Predictor, PHYS, circleBlocked, escapeBlocked } from './predict.js';
-import { ITEM_DEFS, itemDef, skillDef, skillName, applyGameData, rarityColor } from './items.js';
+import { itemDef, skillDef, skillName, applyGameData, rarityColor } from './items.js';
 import { EVT, NPC_TAG, Reader } from './protocol.js';
 import { loadEditCells, loadWalkMask, terrainHeight, terrainBlockedExact } from './terrain.js';
 import { Minimap } from './minimap.js';
 
 // ---- 功能模块 ----
-import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, decodeQuestChain, toggleQuestPanel, closeQuestPanel, sendQuestList, sendQuestTrack, sendTalkNpc, sendQuestAccept, sendQuestTurnIn, getQuestList, getQuestProgress, setNpcFilter } from './quests.js';
+import { initQuestUI, decodeQuestList, decodeQuestProgress, decodeQuestResult, decodeQuestNotify, decodeQuestComplete, decodeQuestChain, toggleQuestPanel, closeQuestPanel, sendQuestList, sendQuestTrack, sendTalkNpc, sendQuestAccept, sendQuestTurnIn, getQuestList, getQuestProgress, setNpcFilter, setQuestNavigator, updateQuestTracker } from './quests.js';
+import { QuestNavigator } from './quest-nav.js';
 import { initSocialUI, toggleFriendPanel, toggleGuildPanel, closeFriendPanel, closeGuildPanel, toggleChatFocus, isChatFocused,
   handleFriendRequest, handleFriendList, handleFriendStatus, handleFriendResult,
   handleGuildInfo, handleGuildResult, handleGuildNotify, handleGuildList, handleGuildApplyN,
@@ -64,6 +65,15 @@ const hud = $('hud');
 const net = new NetworkClient();
 S.net = net;  // 注入网络客户端到共享状态
 
+/** 根据实体 wid 返回施法者阵营颜色（用于技能圈敌我区分） */
+function casterColor(wid) {
+  if (wid === net.selfWid) return '#ff8c1a';
+  const e = findEntityByWid(wid);
+  if (e && e.kind === 'monster') return '#f87171';
+  if (e && e.kind === 'player') return '#34d399';
+  return '#ffd166';
+}
+
 // 全局错误展示
 window.addEventListener('error', (e) => {
   setLoadingText('客户端错误：' + (e.message || 'unknown'));
@@ -78,9 +88,8 @@ window.addEventListener('unhandledrejection', (e) => {
   console.error(e.reason);
 });
 
-// 渲染器物品名映射（canvas-renderer.js 读取）
+// 渲染器物品名映射（canvas-renderer.js 读取）——由 applyGameData 加载后填充
 window.__itemNames = {};
-for (const [id, d] of Object.entries(ITEM_DEFS)) window.__itemNames[id] = d.name;
 
 // ============================================================================
 // 地形数据同步
@@ -201,7 +210,7 @@ function initAutobotUI(net) {
   });
   // 手动输入检测：玩家操作时自动暂停插件（避免互相干扰）
   const mark = () => { S._lastManualInput = performance.now(); };
-  document.addEventListener('keydown', mark);
+  document.addEventListener('keydown', (e) => { mark(); if (S.questNav) S.questNav.onKeyPressed(); });
   document.addEventListener('mousedown', mark);
   window.__ewAutobot = autobot; // 调试钩子
 }
@@ -247,7 +256,7 @@ async function enterWorld(token, username, worldMeta) {
     try {
       const gr = await fetch('/api/gamedata');
       const gj = await gr.json();
-      if (gj && gj.ok) applyGameData(gj);
+      if (gj && gj.ok) { applyGameData(gj); S._gamedata = gj; }
     } catch (_) {}
   } catch (e) {
     showLogin('连接失败：' + e.message);
@@ -298,6 +307,17 @@ async function enterWorld(token, username, worldMeta) {
     S.entities.setSelf(net.hello.self.x, net.hello.self.y, net.hello.self.z);
   }
   window.__ewPredictor = S.predictor;
+
+  // 任务导航器
+  S.questNav = new QuestNavigator();
+  S.questNav.input = S.input;
+  S.questNav.entities = S.entities;
+  S.questNav.predictor = S.predictor;
+  S.questNav.renderer = S.renderer;
+  S.questNav.S = S;
+  S.questNav._onChange = () => { if (typeof updateQuestTracker === 'function') updateQuestTracker(); };
+  setQuestNavigator(S.questNav);
+  window.__ewQuestNav = S.questNav;
   window.__ewFx = () => S.renderer.fxSnapshot();
   setLoadingText('接收世界数据…');
 
@@ -337,27 +357,106 @@ async function enterWorld(token, username, worldMeta) {
         toast('你已复活', 'ok');
       } else if (S.entities) { S.entities.applyRespawn(ev.wid); }
     }
-    if (ev.evtType === EVT.SKILL_CASTING) {
+    if (ev.evtType === EVT.DAMAGE) {
+      // 伤害飘字：服务端权威伤害值（仅当目标实体在视野内时显示）
+      const dmgTarget = findEntityByWid(ev.wid);
+      if (dmgTarget) {
+        const dmgVal = Math.round(ev.b);
+        if (dmgVal > 0) {
+          S.renderer.addSkillEffect({ kind: 'float', x: dmgTarget.x, z: dmgTarget.z, text: `-${dmgVal}`, color: '#ef4444', durMs: 1000 });
+        }
+      }
+    } else if (ev.evtType === EVT.SKILL_CASTING) {
       const sd = skillDef(ev.b);
-      if (sd.radius > 0) {
-        const casterEnt = findEntityByWid(ev.wid);
-        let casterColor = sd.color;
-        if (ev.wid === net.selfWid) casterColor = '#ff8c1a';
-        else if (casterEnt && casterEnt.kind === 'monster') casterColor = '#f87171';
-        else if (casterEnt && casterEnt.kind === 'player') casterColor = '#34d399';
-        S.renderer.addSkillEffect({
-          kind: 'cast', wid: ev.wid, casterWid: ev.wid,
-          x: ev.x, z: ev.z, color: casterColor, radius: sd.radius,
-          durMs: Math.max(200, sd.castMs),
-        });
+      if (sd.target === 2) {
+        // ENEMY 单体技能：前摇阶段发射追踪射线（施法者 → 目标，飞行时间 = 前摇时间）
+        if (ev.wid !== net.selfWid) { // 玩家自身由 onSkillCast 本地创建，避免重复
+          const casterEnt = findEntityByWid(ev.wid);
+          const fromX = casterEnt ? casterEnt.x : ev.x;
+          const fromZ = casterEnt ? casterEnt.z : ev.z;
+          const dist = Math.hypot(ev.x - fromX, ev.z - fromZ);
+          if (dist > 0.5) {
+            const fxPattern = { fire: 'fire', ice: 'ice', lightning: 'lightning', shadow: 'smoke', holy: 'holy', snipe: 'snipe', lifesteal: 'lifesteal', thunder: 'thunder', slash: 'slash' }[sd.fxType] || 'ring';
+            const color = casterColor(ev.wid);
+            const initAng = Math.atan2(ev.z - fromZ, ev.x - fromX);
+            S.renderer.addSkillEffect({ kind: 'projectile', x1: fromX, z1: fromZ, x2: ev.x, z2: ev.z, initAng, color, pattern: fxPattern, durMs: Math.max(200, sd.castMs) });
+          }
+        }
+      } else {
+        const circR = sd.radius;
+        if (circR > 0) {
+          S.renderer.addSkillEffect({
+            kind: 'cast', wid: ev.wid, casterWid: ev.wid,
+            x: ev.x, z: ev.z, color: casterColor(ev.wid), radius: circR,
+            durMs: Math.max(200, sd.castMs),
+          });
+        }
       }
     } else if (ev.evtType === EVT.SKILL_CANCEL) {
       S.renderer.clearCasting(ev.wid);
       const ent = findEntityByWid(ev.wid);
       if (ent) S.renderer.addSkillEffect({ kind: 'cancel', wid: ev.wid, x: ent.x, z: ent.z, durMs: 260 });
+      // 自己的技能被打断（移动/受击）→ 重置客户端冷却，避免技能卡死
+      if (ev.wid === net.selfWid) {
+        const cdEntry = S.learnedSkills.find((s) => s.id === ev.b);
+        if (cdEntry) { cdEntry.cdMs = 0; S._skillDirty = true; }
+        renderSkillBar();
+      }
     } else if (ev.evtType === EVT.SKILL) {
       const sd = skillDef(ev.b);
-      if (sd.radius > 0) S.renderer.addSkillEffect({ kind: 'aoe', x: ev.x, z: ev.z, radius: sd.radius, color: sd.color, durMs: 900 });
+      if (sd.radius > 0) {
+        // ENEMY 技能：AOE 从施法者位置扩散，圈画在施法者身上；AOE 技能：圈画在落点
+        const isEnemy = sd.target === 2;
+        const casterEnt0 = isEnemy ? findEntityByWid(ev.wid) : null;
+        const aoeX = casterEnt0 ? casterEnt0.x : ev.x;
+        const aoeZ = casterEnt0 ? casterEnt0.z : ev.z;
+        S.renderer.addSkillEffect({ kind: 'aoe', x: aoeX, z: aoeZ, radius: sd.radius, color: casterColor(ev.wid), durMs: 900 });
+      }
+      // 位移拖尾效果
+      if (sd.dashDist > 0) {
+        const casterEnt = findEntityByWid(ev.wid);
+        const fromX = casterEnt ? casterEnt.x : ev.x;
+        const fromZ = casterEnt ? casterEnt.z : ev.z;
+        S.renderer.addSkillEffect({
+          kind: 'dash', wid: ev.wid, x1: fromX, z1: fromZ,
+          x: ev.x, z: ev.z, color: casterColor(ev.wid), radius: 0.6, durMs: 400,
+        });
+      }
+      // 元素命中特效（burst）
+      const fxPattern = { fire: 'fire', ice: 'ice', lightning: 'lightning', shadow: 'smoke', holy: 'holy', snipe: 'snipe', lifesteal: 'lifesteal', thunder: 'thunder', slash: 'slash', inferno: 'inferno', frost: 'frost', heal: 'heal' }[sd.fxType] || 'ring';
+      const burstRadius = sd.radius > 0 ? sd.radius : 1.5;
+      const color = casterColor(ev.wid);
+      // 瞬发 ENEMY 单体技能：无前摇阶段，结算时创建快速射线
+      if (sd.target === 2 && sd.castMs <= 0) {
+        const casterEnt2 = findEntityByWid(ev.wid);
+        const fromX = casterEnt2 ? casterEnt2.x : ev.x;
+        const fromZ = casterEnt2 ? casterEnt2.z : ev.z;
+        const dist = Math.hypot(ev.x - fromX, ev.z - fromZ);
+        if (dist > 0.5) {
+          const initAng = Math.atan2(ev.z - fromZ, ev.x - fromX);
+          const projDur = Math.max(100, Math.min(250, dist * 30));
+          S.renderer.addSkillEffect({ kind: 'projectile', x1: fromX, z1: fromZ, x2: ev.x, z2: ev.z, initAng, color, pattern: fxPattern, durMs: projDur });
+          setTimeout(() => {
+            S.renderer.addSkillEffect({ kind: 'burst', x: ev.x, z: ev.z, radius: burstRadius, color, pattern: fxPattern, durMs: 700 });
+          }, projDur);
+          // 治疗飘字（基于 heal 字段推断）
+          if (sd.heal > 0) {
+            const casterEnt3 = findEntityByWid(ev.wid);
+            const hx = casterEnt3 ? casterEnt3.x : ev.x;
+            const hz = casterEnt3 ? casterEnt3.z : ev.z;
+            S.renderer.addSkillEffect({ kind: 'float', x: hx, z: hz, text: `+${Math.round(sd.heal)}`, color: '#4ade80', durMs: 1000 });
+          }
+          return;
+        }
+      }
+      S.renderer.addSkillEffect({ kind: 'burst', x: ev.x, z: ev.z, radius: burstRadius, color, pattern: fxPattern, durMs: 700 });
+      // 治疗飘字（基于 heal 字段推断）
+      if (sd.heal > 0) {
+        const casterEnt3 = findEntityByWid(ev.wid);
+        const hx = casterEnt3 ? casterEnt3.x : ev.x;
+        const hz = casterEnt3 ? casterEnt3.z : ev.z;
+        S.renderer.addSkillEffect({ kind: 'float', x: hx, z: hz, text: `+${Math.round(sd.heal)}`, color: '#4ade80', durMs: 1000 });
+      }
     }
   };
 
@@ -416,15 +515,49 @@ async function enterWorld(token, username, worldMeta) {
         S._cdRefMs = performance.now();
         S._skillDirty = true;
       }
-      if (msg.castTimeMs > 0 && sd.radius > 0) {
-        S.renderer.addSkillEffect({
-          kind: 'cast', wid: net.selfWid, casterWid: net.selfWid,
-          x: msg.x, z: msg.z, color: '#ff8c1a', radius: sd.radius || 0,
-          durMs: msg.castTimeMs,
-        });
+      // 瞬发位移技能：本地预测位移，避免服务端 correction 导致橡皮筋
+      if (sd.dashDist > 0 && msg.castTimeMs === 0 && S.predictor) {
+        const p = S.predictor.predicted();
+        const dx = msg.x - p.x, dz = msg.z - p.z;
+        const len = Math.hypot(dx, dz);
+        if (len > 1e-4) {
+          const ux = dx / len, uz = dz / len;
+          S.predictor.correction(p.x + ux * sd.dashDist, p.y, p.z + uz * sd.dashDist);
+        }
       }
+      if (msg.castTimeMs > 0) {
+        if (sd.target === 2) {
+          // ENEMY 单体技能：前摇阶段发射追踪射线（玩家本地预测）
+          const p = S.predictor ? S.predictor.predicted() : null;
+          const fromX = p ? p.x : (S._self ? S._self.x : 0);
+          const fromZ = p ? p.z : (S._self ? S._self.z : 0);
+          const dist = Math.hypot(msg.x - fromX, msg.z - fromZ);
+          if (dist > 0.5) {
+            const fxPattern = { fire: 'fire', ice: 'ice', lightning: 'lightning', shadow: 'smoke', holy: 'holy', snipe: 'snipe', lifesteal: 'lifesteal', thunder: 'thunder', slash: 'slash' }[sd.fxType] || 'ring';
+            const initAng = Math.atan2(msg.z - fromZ, msg.x - fromX);
+            S.renderer.addSkillEffect({ kind: 'projectile', x1: fromX, z1: fromZ, x2: msg.x, z2: msg.z, initAng, color: '#ff8c1a', pattern: fxPattern, durMs: msg.castTimeMs });
+          }
+        } else {
+          const circR = sd.radius;
+          if (circR > 0) {
+            S.renderer.addSkillEffect({
+              kind: 'cast', wid: net.selfWid, casterWid: net.selfWid,
+              x: msg.x, z: msg.z,
+              color: '#ff8c1a', radius: circR,
+              durMs: msg.castTimeMs,
+            });
+          }
+        }
+      }
+      // 注：瞬发 ENEMY 单体技能的射线由 EVT_SKILL 统一创建（此处不处理 castTimeMs===0）
     } else {
-      toast(`【${sd.name}】施放失败（未习得/眩晕/冷却/蓝量/距离）`);
+      // 施放失败（服务端二次校验未通过：目标移出范围/死亡等）
+      // 重置客户端冷却（beginCast 成功时已进入冷却，resolveCast 失败后需回滚）
+      const cdEntry = S.learnedSkills.find((s) => s.id === msg.skillId);
+      if (cdEntry) { cdEntry.cdMs = 0; S._skillDirty = true; }
+      // 清除前摇视觉（蓄力圈）
+      if (S.renderer) S.renderer.clearCasting(net.selfWid);
+      toast(`【${sd.name}】施放失败（目标超出范围/已死亡）`);
     }
     renderSkillBar(); S._skillDirty = false;
   };

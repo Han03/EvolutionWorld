@@ -13,11 +13,13 @@ export class Minimap {
   constructor(containerId) {
     // ── 可调参数 ──
     this.SIZE       = 160;       // 显示尺寸 (CSS px)
-    this.VIEW_RANGE = 220;       // 可视世界范围 (m)
     this.BORDER     = 4;         // 金边宽度 (px)
     this.TERRAIN_RES = 2;        // 地形采样步长 (m/px)，越大越快但越粗糙
 
-    this._expanded = true;
+    // 三档可视范围（米）：小=近距详细 / 中=默认 / 大=远距概览
+    this._zoomLevels = [120, 220, 360];
+    this._zoomIndex  = 1;        // 默认中
+    this.VIEW_RANGE  = this._zoomLevels[this._zoomIndex];
 
     // ── DOM ──
     this.container = document.getElementById(containerId);
@@ -30,19 +32,24 @@ export class Minimap {
 
     this._initSize();
     this._bindEvents();
+    this._updateBtn();
   }
 
   /* ═══════════ 初始化 ═══════════ */
 
   _initSize() {
-    const s = this.SIZE;
-    this.canvas.width = s;
+    // canvas 内部分辨率必须匹配 CSS 显示尺寸（SIZE + 两侧 BORDER），
+    // 否则浏览器缩放 drawImage 时亚像素坐标会产生偏移（近/中视角尤为明显）
+    const s = this.SIZE + this.BORDER * 2;
+    this.canvas.width  = s;
     this.canvas.height = s;
-    const inner = s - this.BORDER * 2;
-    // 离屏 buffer 比可视区域大（每侧多 _TM 缓冲像素），支持平滑滚动
-    this._TM = 30;   // margin (buffer px)：滚动缓冲区（增大以覆盖旋转后的角落）
-    this._TR = 10;   // trigger (buffer px)：重绘阈值，必须 < _TM 防止连续帧重复触发
-    const bufPx = Math.ceil(inner / this.TERRAIN_RES) + this._TM * 2;
+    this._cssSize = s;
+    // 离屏 buffer 按最大缩放档位计算，保证所有档位都有足够数据
+    this._TM = 30;   // margin (buffer px)：滚动缓冲区
+    this._TR = 10;   // trigger (buffer px)：重绘阈值，必须 < _TM
+    const maxRange = Math.max(...this._zoomLevels);
+    const maxVisBuf = Math.ceil(maxRange / this.TERRAIN_RES);
+    const bufPx = maxVisBuf + this._TM * 2;
     this._tc.width  = bufPx;
     this._tc.height = bufPx;
     this._cx = 0;            // buffer 中心的世界坐标
@@ -54,14 +61,20 @@ export class Minimap {
 
   _bindEvents() {
     const btn = this.container.querySelector('.minimap-toggle');
-    if (btn) btn.addEventListener('click', () => this._toggleExpand());
+    if (btn) btn.addEventListener('click', () => this._cycleZoom());
   }
 
-  _toggleExpand() {
-    this._expanded = !this._expanded;
-    this.container.classList.toggle('collapsed', !this._expanded);
+  _cycleZoom() {
+    this._zoomIndex = (this._zoomIndex + 1) % this._zoomLevels.length;
+    this.VIEW_RANGE = this._zoomLevels[this._zoomIndex];
+    this._dirty = true;
+    this._updateBtn();
+  }
+
+  _updateBtn() {
+    const labels = ['近', '中', '远'];
     const btn = this.container.querySelector('.minimap-toggle');
-    if (btn) btn.textContent = this._expanded ? '▼' : '▲';
+    if (btn) btn.textContent = labels[this._zoomIndex];
   }
 
   /** 外部调用：强制重绘地形（编辑器修改地形后调用） */
@@ -109,9 +122,7 @@ export class Minimap {
     this._tx.putImageData(img, 0, 0);
     this._cx = px;
     this._cz = pz;
-    // 玩家位于 buffer 中心，源偏移回到 margin 起点
-    this._sx = this._TM;
-    this._sy = this._TM;
+    // 源偏移不在这里重置——由 update() 根据当前 visBuf 计算正确中心
     this._dirty = false;
   }
 
@@ -124,31 +135,41 @@ export class Minimap {
    */
   update(px, pz, ents) {
     const res   = this.TERRAIN_RES;
-    const inner = this.SIZE - this.BORDER * 2;
+    const sz    = this._cssSize;
+    const inner = sz - this.BORDER * 2;
     const half  = inner / 2;
-    const mid   = this.SIZE / 2;
+    const mid   = sz / 2;
     const range = this.VIEW_RANGE;
     const scale = inner / range;   // px per meter
 
     // ── 平滑滚动：玩家移动 → 偏移源矩形，仅在接近 buffer 边缘时重绘 ──
+    const visBuf    = this.VIEW_RANGE / res;
+    const maxVisBuf = this._tc.width - this._TM * 2;
+    // 源矩形基准偏移：使 buffer 中心（玩家世界位置）对齐可视区中心
+    // visBuf == maxVisBuf（远视角）时 srcOff == _TM；近/中视角时 srcOff > _TM
+    const srcOff    = this._TM + (maxVisBuf - visBuf) / 2;
+
     if (this._dirty) {
       this._renderTerrain(px, pz);
+      this._sx = srcOff;
+      this._sy = srcOff;
     } else {
       const dx = px - this._cx;
       const dz = pz - this._cz;
       // 世界位移 → buffer 像素偏移（同方向：玩家右移 → 源右移 → 地形左滚）
-      this._sx = this._TM + dx / res;
-      this._sy = this._TM + dz / res;
+      this._sx = srcOff + dx / res;
+      this._sy = srcOff + dz / res;
       // 偏移接近 margin 极限 → 重绘 buffer 以玩家为中心
-      // 使用 _TR（< _TM）作为触发阈值，保证重绘后玩家距新中心仅 _TR*res，
-      // 下一帧不会立即再次触发（需再移动 (_TM-_TR)*res 单位才会再次重绘）
+      // 有效边距 = _TM - (_TM - _TR) = _TR，保证各缩放档重绘频率一致
       if (Math.abs(dx) >= this._TR * res || Math.abs(dz) >= this._TR * res) {
         this._renderTerrain(px, pz);
+        this._sx = srcOff;
+        this._sy = srcOff;
       }
     }
 
     const ctx = this.ctx;
-    ctx.clearRect(0, 0, this.SIZE, this.SIZE);
+    ctx.clearRect(0, 0, sz, sz);
 
     // ── 1. 圆形裁剪 ──
     ctx.save();
@@ -158,11 +179,10 @@ export class Minimap {
 
     // ── 2. 底色（未探索区域 → 天空蓝） ──
     ctx.fillStyle = '#8cbfe6';
-    ctx.fillRect(0, 0, this.SIZE, this.SIZE);
+    ctx.fillRect(0, 0, sz, sz);
 
     // ── 3. 地形（从离屏 buffer 裁切可见区域 → 平滑滚动） ──
     if (walkMaskReady()) {
-      const visBuf = inner / res;  // 可视区域对应 buffer 像素数
       ctx.drawImage(
         this._tc,
         this._sx, this._sy, visBuf, visBuf,  // 源：buffer 内裁切
@@ -176,7 +196,7 @@ export class Minimap {
     fog.addColorStop(0.7, 'rgba(140,190,230,0.10)');
     fog.addColorStop(1, 'rgba(140,190,230,0.40)');
     ctx.fillStyle = fog;
-    ctx.fillRect(0, 0, this.SIZE, this.SIZE);
+    ctx.fillRect(0, 0, sz, sz);
 
     // ── 5. 实体标点 ──
     if (ents) {

@@ -23,9 +23,9 @@
       </div>
       <div class="hud-top-right">
         <div id="hud-info" class="hud-info-block">
-          <div><b id="hud-user">-</b></div>
-          <div id="hud-pos">x:0 z:0</div>
-          <div id="hud-fps">fps:0</div>
+          <span><b id="hud-user">-</b></span>
+          <span id="hud-pos">x:0 z:0</span>
+          <span id="hud-fps">fps:0</span>
         </div>
       </div>
     </div>
@@ -99,7 +99,7 @@
     <!-- ── 右上角：小地图罗盘 ── -->
     <div id="minimap" class="minimap-container">
       <canvas class="minimap-canvas"></canvas>
-      <button class="minimap-toggle" title="收起/展开">▼</button>
+      <button class="minimap-toggle" title="切换可视范围">中</button>
     </div>
 
     <!-- ── 右侧：任务追踪 HUD ── -->
@@ -108,7 +108,9 @@
       <div id="quest-tracker-list" class="quest-tracker-list"></div>
     </div>
 
-    <!-- ── 左侧：调试数据打印（默认收起） ── -->
+    <!-- ── 左侧：调试数据 + 协议监控 ── -->
+    <div id="left-panels">
+    <!-- ── 调试数据打印（默认收起） ── -->
     <div id="debug-panel" class="collapsed">
       <div class="debug-head">
         <span class="debug-toggle" id="debug-toggle">▶</span>
@@ -139,13 +141,14 @@
       </div>
     </div>
 
-    <!-- ── 左侧：协议监控（默认收起） ── -->
+    <!-- ── 协议监控（默认收起） ── -->
     <div id="proto-panel" class="collapsed">
       <div class="proto-head">
         <span class="proto-toggle" id="proto-toggle">▶</span>
         <span class="proto-icon">📡</span> 协议监控 <span id="proto-bps">-</span>
       </div>
       <div id="proto-log"></div>
+    </div>
     </div>
 
     <!-- ── 左下角：聊天栏 ── -->
