@@ -293,8 +293,7 @@ export function toggleFriendPanel() {
   const panel = document.getElementById('friend-panel');
   if (panel) panel.classList.toggle('hidden', !friendPanelOpen);
   if (friendPanelOpen) {
-    // 关闭其他面板
-    closeGuildPanel();
+    // 好友与公会面板支持同时打开（各自默认居中；位置由用户拖动调整）
     net.sendFriendList();
     renderFriendPanel();
   }
@@ -305,7 +304,7 @@ export function toggleGuildPanel() {
   const panel = document.getElementById('guild-panel');
   if (panel) panel.classList.toggle('hidden', !guildPanelOpen);
   if (guildPanelOpen) {
-    closeFriendPanel();
+    // 与好友面板同时打开（默认居中，不互斥；位置由用户拖动调整）
     net.sendGuildInfo();
     renderGuildPanel();
   }

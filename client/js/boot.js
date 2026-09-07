@@ -684,6 +684,34 @@ window.addEventListener('DOMContentLoaded', async () => {
     pt.textContent = panel.classList.contains('collapsed') ? '▶' : '▼';
   });
 
+  // ── 功能面板拖动支持：拖 panel-head 标题栏移动面板 ──
+  // 面板为 absolute + translate(-50%,-50%) 居中；首次拖动清除 transform 转为 left/top 定位，
+  // 拖动过程 clamp 到视口内；关闭/等按钮上的 mousedown 不启动拖动。
+  const makePanelDraggable = (panel) => {
+    const head = panel.querySelector('.panel-head');
+    if (!head) return;
+    head.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button')) return; // 关闭等按钮不启动拖动
+      e.preventDefault();
+      const r = panel.getBoundingClientRect();
+      panel.style.transform = 'none'; // 消除居中 translate，避免与 left/top 叠加错位
+      const ox = e.clientX - r.left, oy = e.clientY - r.top;
+      const move = (ev) => {
+        const x = Math.max(0, Math.min(ev.clientX - ox, window.innerWidth - r.width));
+        const y = Math.max(0, Math.min(ev.clientY - oy, window.innerHeight - r.height));
+        panel.style.left = x + 'px';
+        panel.style.top = y + 'px';
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  };
+  document.querySelectorAll('.panel').forEach(makePanelDraggable);
+
   // 调试面板
   const dt = $('debug-toggle');
   if (dt) dt.addEventListener('click', () => {
@@ -705,6 +733,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (autobot.isRunning()) autobot.pause(); // 运行中 → 暂停
     else autobot.start();                      // 停止/已暂停 → 开始/继续
   });
+  // 状态快照推送开关（面板勾选 → 实时生效）
+  const abMon = $('ab-monitor');
+  if (abMon) abMon.addEventListener('change', () => autobot.setMonitorEnabled(abMon.checked));
   // 决策循环（主循环外独立节流，不侵入渲染帧）
   setInterval(() => autobot.tick(performance.now()), 200);
   // 刷新页面后若上次运行中 → 自动恢复
