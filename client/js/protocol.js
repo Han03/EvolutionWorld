@@ -314,7 +314,7 @@ export function decodeEntityFull(r, refX, refY, refZ) {
   }
   // AI 意图块（怪物/NPC/精英，与服务端 writeEntityFull 对应）：半径 + aiState + 目标速度 + 速度倍率
   let radius = 0, aiState = 0, tx = 0, tz = 0, speedMult = 100;
-  let hp = 0, maxHp = 0, isElite = false, invincible = false;
+  let hp = 0, maxHp = 0, isElite = false, invincible = false, level = 0;
   let npcId = '', npcTag = 0;
   if (kind === KIND.MONSTER || kind === KIND.NPC) {
     radius = dq(r.u16());
@@ -322,12 +322,13 @@ export function decodeEntityFull(r, refX, refY, refZ) {
     tx = dq(r.i16());
     tz = dq(r.i16());
     speedMult = r.u8();
-    // 怪物生命值 + 精英标志 + 无敌标志（服务端 writeEntityFull 对齐）
+    // 怪物生命值 + 精英标志 + 无敌标志 + 等级（服务端 writeEntityFull 对齐）
     if (kind === KIND.MONSTER) {
       hp = r.u16();
       maxHp = r.u16();
       isElite = r.u8() !== 0;
       invincible = r.u8() !== 0;
+      level = r.u8();
     }
   }
   // NPC 插件：NPC 实体额外携带 npcId + npcTag（客户端据此渲染交互菜单）
@@ -342,7 +343,7 @@ export function decodeEntityFull(r, refX, refY, refZ) {
     name, itemId, gold,
     dropInstId, dropEnhance,
     radius, aiState, tx, tz, speedMult,
-    hp, maxHp, isElite, invincible,
+    hp, maxHp, isElite, invincible, level,
     npcId, npcTag,
   };
 }

@@ -523,10 +523,12 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
       applySkillToTarget(caster, *primaryTarget, sd, 0.9 + rng01() * 0.2);
     }
     // AOE 扩散：对范围内异阵营实体施加效果（跳过施法者自身 + 主目标避免重复）
+    // 仅玩家/怪物承伤：掉落物/NPC 不显示受击（避免凋落物飘伤害字）
     if (sd.radius > 0) {
       for (auto& [id, e] : entities_) {
         (void)id;
         if (!e.active || e.kind == caster.kind) continue;  // 同阵营跳过
+        if (e.kind != EntityKind::Monster && e.kind != EntityKind::Player) continue;  // 掉落物/NPC 不承伤
         if (primaryTarget && e.wid == primaryTarget->wid) continue;  // 主目标已受击
         if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
         applySkillToTarget(caster, e, sd, 0.9 + rng01() * 0.2);
@@ -546,11 +548,12 @@ void World::resolveCast(Entity& caster, const SkillDef& sd, uint32_t targetWid, 
   // ③ 持续 buff：增益→施法者自身，减益→中心点周围异阵营
   if (hasBuff) {
     if (SkillDef::isDebuff(sd.buffType)) {
-      // 减益：对中心点周围异阵营实体施加
+      // 减益：对中心点周围异阵营实体施加（仅玩家/怪物；掉落物/NPC 不受减益）
       if (sd.radius > 0) {
         for (auto& [id, e] : entities_) {
           (void)id;
           if (!e.active || e.kind == caster.kind) continue;
+          if (e.kind != EntityKind::Monster && e.kind != EntityKind::Player) continue;
           if (e.pos.dist2D({aoeCx, 0, aoeCz}) > hr) continue;
           applyBuff(e, sd.id, (uint8_t)sd.buffType, sd.buffValue, sd.buffDurSec);
         }

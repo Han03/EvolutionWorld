@@ -121,6 +121,119 @@ static const SkillDef* pickMonsterSkill(World& w, Entity& e, Entity& target, uin
   return fallback;
 }
 
+// ---------------- 追击寻路（中心点碰撞模式下的空洞/地形障碍绕行） ----------------
+// 直线视线检测：怪物中心点 → 目标中心点 连线每 0.6m 采样 circleBlocked（含自身半径），
+// 全部可通行才返回 true（无障碍直线追击；浮岛中心点判定，无墙壁概念）
+static bool lineClearTo(World& w, const Entity& e, double tx, double tz) {
+  const double dx = tx - e.pos.x, dz = tz - e.pos.z;
+  const double len = std::hypot(dx, dz);
+  if (len < 1e-4) return true;
+  const int steps = std::max(1, (int)std::ceil(len / 0.6));
+  for (int i = 1; i < steps; i++) {
+    const double t = (double)i / (double)steps;
+    if (w.collision().circleBlocked(e.pos.x + dx * t, e.pos.z + dz * t, e.radius)) return false;
+  }
+  return true;
+}
+// 简单 8 邻域 A*（1m 网格，搜索半径 20m；单线程 static 缓冲）。
+// 起点=怪物所在格，终点=目标所在格（终点不可行时 BFS 就近吸附最近可行格）。
+// 成功：路径格中心点写入 e.ai.pathBuf（不含起点，含终点）；失败：清空。
+static void computeChasePath(World& w, Entity& e, double gx, double gz) {
+  const int R = 20;                     // 搜索半径（格）
+  const int N = R * 2 + 1;              // 41
+  const int SZ = N * N;
+  static int8_t closed[SZ];
+  static float gcost[SZ];
+  static int16_t px[SZ], pz[SZ];        // 父格（回溯路径）
+  static int16_t ox[SZ], oz[SZ];        // open 列表
+  static int8_t onOpen[SZ];
+  int openN = 0;
+  const int sx = (int)std::floor(e.pos.x), sz = (int)std::floor(e.pos.z);
+  const int tx = (int)std::floor(gx), tz = (int)std::floor(gz);
+  const int r2 = R * R;
+  auto idxOf = [&](int x, int z) { return (x - sx + R) + (z - sz + R) * N; };
+  auto inR = [&](int x, int z) {
+    const int dx = x - sx, dz = z - sz;
+    return dx * dx + dz * dz <= r2;
+  };
+  auto blocked = [&](int x, int z) {
+    return w.collision().circleBlocked(x + 0.5, z + 0.5, e.radius);
+  };
+  for (int i = 0; i < SZ; i++) { closed[i] = 0; gcost[i] = 1e9f; px[i] = pz[i] = -1; onOpen[i] = 0; }
+  // 终点不可行（目标站在空洞边缘/水中）→ BFS 就近找最近可行格
+  int goalX = tx, goalZ = tz;
+  if (blocked(tx, tz)) {
+    bool found = false;
+    for (int rr = 1; rr <= 4 && !found; rr++) {
+      for (int dy = -rr; dy <= rr && !found; dy++) {
+        for (int dx2 = -rr; dx2 <= rr && !found; dx2++) {
+          if (std::abs(dx2) != rr && std::abs(dy) != rr) continue;
+          const int nx2 = tx + dx2, nz2 = tz + dy;
+          if (inR(nx2, nz2) && !blocked(nx2, nz2)) { goalX = nx2; goalZ = nz2; found = true; }
+        }
+      }
+    }
+    if (!found) { e.ai.pathBuf.clear(); return; }  // 目标周围全不可达
+  }
+  // A* 主循环
+  const int gidx = idxOf(sx, sz);
+  gcost[gidx] = 0;
+  ox[openN] = sx; oz[openN] = sz; onOpen[gidx] = 1; openN++;
+  const int targetIdx = idxOf(goalX, goalZ);
+  bool success = false;
+  while (openN > 0) {
+    // 取 open 中 f=g+h 最小者（N=41 网格小，线性扫描足够）
+    int bi = -1; float bf = 1e30f;
+    for (int i = 0; i < openN; i++) {
+      const int ci = idxOf(ox[i], oz[i]);
+      const float h = (float)(std::abs(ox[i] - goalX) + std::abs(oz[i] - goalZ));
+      const float f = gcost[ci] + h;
+      if (f < bf) { bf = f; bi = i; }
+    }
+    const int cx = ox[bi], cz = oz[bi];
+    const int cidx = idxOf(cx, cz);
+    // 移除（交换删除）
+    openN--; ox[bi] = ox[openN]; oz[bi] = oz[openN];
+    onOpen[cidx] = 0;
+    closed[cidx] = 1;
+    if (cidx == targetIdx) { success = true; break; }
+    for (int d = 0; d < 8; d++) {
+      static const int ddx[8] = {1,1,0,-1,-1,-1,0,1};
+      static const int ddz[8] = {0,1,1,1,0,-1,-1,-1};
+      const int nx = cx + ddx[d], nz = cz + ddz[d];
+      if (!inR(nx, nz)) continue;
+      const int nidx = idxOf(nx, nz);
+      if (closed[nidx] || blocked(nx, nz)) continue;
+      const float stepCost = (d % 2 == 0) ? 1.0f : 1.414f;
+      const float ng = gcost[cidx] + stepCost;
+      if (ng < gcost[nidx]) {
+        gcost[nidx] = ng;
+        px[nidx] = cx; pz[nidx] = cz;
+        if (!onOpen[nidx]) {
+          ox[openN] = nx; oz[openN] = nz; onOpen[nidx] = 1; openN++;
+        }
+      }
+    }
+  }
+  e.ai.pathBuf.clear();
+  e.ai.pathIdx = 0;
+  if (!success) return;
+  // 回溯：终点 → 起点，收集后反转（去掉起点格，含终点格中心）
+  std::vector<int> rx, rz;
+  int cx = goalX, cz = goalZ;
+  while (!(cx == sx && cz == sz)) {
+    rx.push_back(cx); rz.push_back(cz);
+    const int ci = idxOf(cx, cz);
+    const int nx2 = px[ci], nz2 = pz[ci];
+    if (nx2 < 0 || nz2 < 0) { e.ai.pathBuf.clear(); return; } // 无父链（异常）
+    cx = nx2; cz = nz2;
+  }
+  for (int i = (int)rx.size() - 1; i >= 0; i--) {
+    e.ai.pathBuf.push_back((float)(rx[i] + 0.5));
+    e.ai.pathBuf.push_back((float)(rz[i] + 0.5));
+  }
+}
+
 // ---------------- 生物（Monster）状态机 ----------------
 // 游走态(PATROL) ⇄ 仇恨态(CHASE/ATTACK) → 恢复态(RECOVER) → 游走态(PATROL)
 //
@@ -195,18 +308,33 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
   // ---- 有仇恨目标：仇恨态（追击/战斗） ----
   if (target) {
     double d = e.pos.dist2D(target->pos);
+    // 技能范围驱动：有效攻击距离 = 最大技能射程（无技能默认 3m 近战）+ 0.5m 容错
+    // minSkillR = 最短技能射程（“最近可达攻击范围”的基准，逼近目标用）
+    double maxSkillR = 3.0, minSkillR = 3.0;
+    bool hasAnySkill = false;
+    for (uint32_t sid : e.skillIds) {
+      const SkillDef* sd = w.data().skill(sid);
+      if (!sd) continue;
+      hasAnySkill = true;
+      const double range = sd->range > 0 ? sd->range : 3.0;
+      if (range > maxSkillR) maxSkillR = range;
+      if (range < minSkillR) minSkillR = range;
+    }
+    if (!hasAnySkill) { maxSkillR = minSkillR = 3.0; }
+    const double attackTriggerR = maxSkillR + 0.5;   // 进入战斗态阈值（保留容错距离）
+    const double approachR = minSkillR * 0.9;        // 最近可达攻击范围（容错 10%）
     // 超出最大追击距离 → 脱战回巢
     if (d > cfg.monsterLeashRange || homeD > cfg.monsterLeashRange * 2.0) {
       e.aggro.clear();
       ai.aiState = AS_RETURN;
       ai.chaseTime = 0;
       ai.invincible = false;
-    } else if (d <= ai.attackRange) {
-      // ---- 战斗态：目标在攻击范围内 ----
+    } else if (d <= attackTriggerR) {
+      // ---- 战斗态：目标在（技能范围驱动的）有效攻击距离内 ----
       ai.aiState = AS_ATTACK;
       ai.chaseTime = 0; // 进入战斗态重置追击计时
       // 技能距离校验：区分「超出技能范围」与「技能冷却中」
-      // ai.attackRange 是状态切换阈值，skill.range 才是实际施放距离
+      // attackTriggerR 是状态切换阈值（按最大射程+容错），skill.range 才是实际施放距离
       // 若不区分，冷却期间 pickMonsterSkill 也返回 null → 怪物会错误地持续逼近
       bool hasInRangeSkill = false;
       for (uint32_t sid : e.skillIds) {
@@ -216,8 +344,8 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         if (d <= range) { hasInRangeSkill = true; break; }
       }
       if (!hasInRangeSkill && d > 0.1) {
-        // 所有技能都超出射程 → 继续逼近（而非原地冻结）
-        moveToward(e, target->pos, slowedSpeed(e, ai.chaseSpeed > 0 ? ai.chaseSpeed : ai.speed * 1.8), ai.attackRange * 0.5);
+        // 就绪技能都超出射程（如远程技能 CD 中）→ 逼近到最近可达攻击范围（而非贴近玩家）
+        moveToward(e, target->pos, slowedSpeed(e, ai.chaseSpeed > 0 ? ai.chaseSpeed : ai.speed * 1.8), approachR);
         return;
       }
       // 已进入技能射程 → 站桩输出（冷却中则等待）
@@ -249,7 +377,7 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         }
       }
     } else {
-      // ---- 追击态：朝目标移动 ----
+      // ---- 追击态：朝目标移动（直线可达走直线；中间有空洞/地形障碍则 A* 绕行）----
       ai.aiState = AS_CHASE;
       ai.chaseTime += dt;
       // 追击超时 → 进入恢复态（无敌 + 回血 + 加速归位）
@@ -267,7 +395,36 @@ void tickMonsterAi(World& w, Entity& e, double dt) {
         ai.invincible = false;
         return;
       }
-      moveToward(e, target->pos, slowedSpeed(e, ai.chaseSpeed > 0 ? ai.chaseSpeed : ai.speed * 1.8), ai.attackRange);
+      const double chaseSpeed = slowedSpeed(e, ai.chaseSpeed > 0 ? ai.chaseSpeed : ai.speed * 1.8);
+      if (lineClearTo(w, e, target->pos.x, target->pos.z)) {
+        // 无障碍：直线追击，到达有效攻击距离即停
+        ai.pathBuf.clear();
+        ai.pathIdx = 0;
+        moveToward(e, target->pos, chaseSpeed, attackTriggerR);
+      } else {
+        // 有障碍：A* 绕行（节流重规划：500ms / 目标移动超 1.5m / 路径耗尽）
+        const double nowS = (double)nowMs / 1000.0;
+        const bool needPlan = ai.pathBuf.empty()
+          || ai.pathIdx >= (int)(ai.pathBuf.size() / 2)
+          || nowS - ai.pathStamp > 0.5
+          || std::hypot(target->pos.x - ai.pathTargetX, target->pos.z - ai.pathTargetZ) > 1.5;
+        if (needPlan) {
+          computeChasePath(w, e, target->pos.x, target->pos.z);
+          ai.pathStamp = (float)nowS;
+          ai.pathTargetX = target->pos.x;
+          ai.pathTargetZ = target->pos.z;
+        }
+        if (ai.pathIdx * 2 + 1 < (int)ai.pathBuf.size()) {
+          // 沿路径点推进
+          const double wx = ai.pathBuf[ai.pathIdx * 2];
+          const double wz = ai.pathBuf[ai.pathIdx * 2 + 1];
+          if (moveToward(e, {wx, e.pos.y, wz}, chaseSpeed, 0.6)) ai.pathIdx++;
+        } else {
+          // 无可用路径：回退直线贴边（moveEntityCollide 的 slideMove 会沿障碍边缘滑动）
+          ai.pathBuf.clear();
+          moveToward(e, target->pos, chaseSpeed, attackTriggerR);
+        }
+      }
     }
     return;
   }

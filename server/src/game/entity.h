@@ -129,6 +129,11 @@ struct Entity {
     bool invincible = false; // 无敌标志（恢复态期间免疫所有伤害）
     // --- 大规模 AI 调度（时间片轮转 + 距离分级）---
     uint32_t tickStride = 1; // 每 N tick 更新一次（AI LOD，由调度器维护）
+    // --- 追击寻路（空洞/地形障碍绕行）：A* 网格路径缓存 ---
+    std::vector<float> pathBuf;  // 扁平路径点（x0,z0,x1,z1,...；不含起点）
+    int pathIdx = 0;             // 当前路径点索引（0..n/2-1）
+    float pathStamp = 0;         // 上次规划时刻（logicNowMs 秒）
+    double pathTargetX = 0, pathTargetZ = 0; // 规划时目标位置（目标移动超阈值则重算）
   } ai;
   // 当前移动速度倍率 0..1（多减速取最大 + 加速取最大，与 handleInput/客户端 predict 一致）。
   // 服务端/协议共用，用于广播“速度倍率（含减速/加速 buff）”与移动目标速度计算。

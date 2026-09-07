@@ -1528,7 +1528,11 @@ export class WebGLRenderer {
     const all = [];
 
     for (const e of this._entities) {
-      if (e.name) all.push({ x: e.x, z: e.z, name: e.name, id: 'e' + e.wid, kind: e.kind });
+      if (e.name) {
+        // 怪物名称前显示等级（如 Lv3 野狼）
+        const prefix = (e.kind === 'monster' && e.level) ? 'Lv' + e.level + ' ' : '';
+        all.push({ x: e.x, z: e.z, name: prefix + e.name, id: 'e' + e.wid, kind: e.kind });
+      }
     }
     if (this._self && this._self.name) {
       all.push({ x: this._self.x, z: this._self.z, name: this._self.name, id: 'self', kind: 'self' });

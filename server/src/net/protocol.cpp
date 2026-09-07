@@ -158,6 +158,7 @@ void writeEntityFull(Writer& w, const Entity& e, const Vec3& ref) {
       w.u16((uint16_t)std::lround(e.maxHp));
       w.u8(e.isElite ? 1 : 0);
       w.u8(e.ai.invincible ? 1 : 0);
+      w.u8((uint8_t)std::min(255, (int)e.level));  // 怪物等级（客户端名字前缀 LvN）
     }
     // NPC 插件：NPC 实体额外广播 npcId + npcTag（客户端据此渲染交互菜单）
     if (e.kind == EntityKind::Npc) {

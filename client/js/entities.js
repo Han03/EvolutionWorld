@@ -161,11 +161,12 @@ export class EntityViewManager {
         tz: e.tz !== undefined ? e.tz : (e.vz || 0),
         mult: e.speedMult !== undefined ? e.speedMult : 100,
       };
-      // 怪物生命值（仇恨血条渲染）+ 无敌标志（恢复态免疫伤害）
+      // 怪物生命值（仇恨血条渲染）+ 无敌标志（恢复态免疫伤害）+ 等级（名字前缀 LvN）
       if (e.kind === KIND.MONSTER) {
         v.hp = e.hp || 0;
         v.maxHp = e.maxHp || 0;
         v.invincible = !!e.invincible;
+        v.level = e.level || 0;
       }
       v.hist = [{ t: 0, x: e.x, y: e.y, z: e.z }];
       v.simTime = 0;
