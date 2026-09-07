@@ -309,8 +309,8 @@ void GameServer::handleHttp(Conn& c, const HttpRequest& req) {
         Vec3 hint; bool hasSave = false;
         PlayerSave ps;
         if (store_.loadPlayer(username, ps)) {
-          // 死亡状态存档（hp<=0）：忽略旧位置，回主城复活
-          if (ps.hp <= 0) {
+          // 死亡状态存档（hp<=0，含浮点容差）：忽略旧位置，回主城复活
+          if (ps.hp <= 1e-6) {
             hasSave = false;
             fprintf(stderr, "[save] %s 存档为死亡状态(hp=%.0f)，回主城复活\n",
                     username.c_str(), ps.hp);

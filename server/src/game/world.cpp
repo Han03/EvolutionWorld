@@ -376,7 +376,7 @@ bool World::playerAttack(const std::string& playerId, uint32_t targetWid, uint8_
   pushEvent(proto::EVT_DAMAGE, t->wid, (uint32_t)dmg, 0, 0);
   // 荆棘反伤：目标（怪物/精英）若有 THORNS Buff，反弹部分伤害给攻击者
   thornsReflect(*t, *p, dmg);
-  if (t->hp <= 0) onVictimDeath(*t, *p, nowMs);
+  if (t->hp <= 1e-6) onVictimDeath(*t, *p, nowMs); // 浮点容差：hp 扣至 (0,1e-6] 视为死亡，避免空血条活怪
   return true;
 }
 // 目标死亡统一处理（普攻/技能共用）：怪物失活+复活计时+掉落（精英与普通怪物一致）
@@ -643,7 +643,7 @@ void World::applySkillToTarget(Entity& caster, Entity& target, const SkillDef& s
   if (sd.knockback > 0 && target.active) {
     applyKnockback(caster, target, sd.knockback);
   }
-  if (target.hp <= 0 && target.active) {
+  if (target.hp <= 1e-6 && target.active) { // 浮点容差，避免 hp 残留极小正数不触发死亡
     uint64_t nowMs = logicNowMs();
     if (target.kind == EntityKind::Player) {
       killPlayer(target, &caster);  // 玩家死亡：标记 + 复活计时 + EVT_DEATH
@@ -744,7 +744,7 @@ double World::thornsReflect(Entity& victim, Entity& attacker, double dmg) {
         if (attacker.kind == EntityKind::Player) markStatsDirty(attacker.id);
         pushEvent(proto::EVT_DAMAGE, attacker.wid, (uint32_t)reflect, 0, 0);
         cancelCastOnHit(attacker);  // 反伤视为受击：打断施法者前摇
-        if (attacker.hp <= 0 && attacker.kind == EntityKind::Player) {
+        if (attacker.hp <= 1e-6 && attacker.kind == EntityKind::Player) {
           killPlayer(attacker, &victim);
         }
       }

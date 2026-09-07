@@ -507,8 +507,8 @@ export class WebGLRenderer {
       const bn = (e.kind === 'item' || e.dying) ? 0 : this._bounceOffset(e.wid, e.x, e.z, dt);
       drawCircle(e.x, e.z + bn * 0.3, r, color, e.dying);
 
-      // 仇恨状态怪物血条（aiState=2追击/3战斗）
-      if (e.kind === 'monster' && e.maxHp > 0 && (e.aiState === 2 || e.aiState === 3)) {
+      // 仇恨状态怪物血条（aiState=2追击/3战斗）；hp<=0 不画（避免空血条残留显示）
+      if (e.kind === 'monster' && e.hp > 0 && e.maxHp > 0 && (e.aiState === 2 || e.aiState === 3)) {
         const sx = (e.x - this.cam.cx) * scale + this.canvas.clientWidth / 2;
         const sy = (e.z + bn * 0.3 - this.cam.cz) * scale + this.canvas.clientHeight / 2;
         const sr = r * scale;
