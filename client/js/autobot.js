@@ -831,7 +831,7 @@ function advanceGoal(now) {
       //    修复"购买后立即 finishGoal → 服务端库存延迟 → 下轮又判定不足 → 反复购买堆积"
       if (S_._pendingBuy) {
         const pb = S_._pendingBuy;
-        const have = invCount(pb.itemId);
+        const have = heldCount(pb.itemId);
         if (have >= pb.want) {
           S_._pendingBuy = null;
           log(`✅ 补给确认：${itemName(pb.itemId)} 背包 ${have}/${pb.want}`);
@@ -902,8 +902,9 @@ function advanceGoal(now) {
       emitStatus();
       log(`🛒 购买 ${itemName(g.itemId)} ×${g.count || 1}（-${price}💰）`);
       closeNpcPanels(); // 购买完成后关闭商店面板
-      // 进入等待确认：背包达标才结束子目标（防服务端库存延迟 → 下轮重复购买堆积）
-      S_._pendingBuy = { itemId: g.itemId, want: (g.count || 1) + invCount(g.itemId), at: performance.now(), tries: 0 };
+      // 进入等待确认：持有总数达标才结束子目标（防服务端库存延迟 → 下轮重复购买堆积；
+      // 装备到账在 equipBag/equip，必须用 heldCount 而非 invCount）
+      S_._pendingBuy = { itemId: g.itemId, want: (g.count || 1) + heldCount(g.itemId), at: performance.now(), tries: 0 };
       S_.questDirty = true;
       return; // 新装备穿戴由维护期的 autoEquipBest() 统一处理（避免 setTimeout 竞态）
     }
@@ -1702,6 +1703,21 @@ function invCount(itemId) {
   const S = S_.S;
   if (!itemId || !S.inventory) return 0;
   return S.inventory[itemId] || 0;
+}
+
+/**
+ * 物品持有总数 = 堆叠物品（inventory）+ 背包装备实例（equipBag）+ 已穿戴（equip）。
+ * 购买到账确认必须用本函数：装备购买成功会进入 equipBag/equip（S2C_INVENTORY 快照），
+ * 而 invCount 只统计堆叠物品，装备类永远查不到 → 误判未到账触发超时重发。
+ */
+function heldCount(itemId) {
+  const S = S_.S;
+  if (!itemId) return 0;
+  let n = 0;
+  if (S.inventory && S.inventory[itemId]) n += S.inventory[itemId];
+  if (S.equipBag) for (const it of S.equipBag) if (it.itemId === itemId) n++;
+  if (S.equip) for (const slot in S.equip) { const it = S.equip[slot]; if (it && it.itemId === itemId) n++; }
+  return n;
 }
 
 /** 商店条目（shop.json 或 S2C_SHOP 帧），优先 S2C 实时数据。
