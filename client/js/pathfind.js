@@ -16,6 +16,9 @@ const key = (x, z) => (z + 512) * 1024 + (x + 512);
 
 // ── 可通行判定（直接用 terrain.js 的 terrainVoid，自动处理 mask offset） ──
 // 网格坐标 = Math.floor(世界坐标)，terrainVoid 接受世界坐标（内部 floor 等价于整数输入直传）
+// 碰撞半径说明：角色碰撞半径 0.5m，网格 1m 粒度 → 可通行格中心到相邻墙格边界恰为 0.5m（相切），
+// A* 格子中心路径已隐含满足半径；真正会卡半径 0.5 角色的是"视线平滑/直达直线斜穿对角相邻
+// 两墙格之间的 0.5×0.5 角隙"（见 lineOfSight 斜步检查）。故 A* 保持格子级判定即可。
 function blocked(gx, gz) { return terrainVoid(gx, gz); }
 
 // ── 二叉堆优先队列（小顶堆，按 f 排序） ──
@@ -153,8 +156,16 @@ function lineOfSight(x0, z0, x1, z1) {
     if (x === x1 && z === z1) return true;
     if (blocked(x, z)) return false;
     const e2 = err * 2;
-    if (e2 > -dz) { err -= dz; x += sx; }
-    if (e2 < dx) { err += dx; z += sz; }
+    let nx = x, nz = z;
+    if (e2 > -dz) { err -= dz; nx = x + sx; }
+    if (e2 < dx) { err += dx; nz = z + sz; }
+    // 斜步（对角推进）：线段会斜穿"对角相邻两墙格之间的 0.5×0.5 角隙"，
+    // 半径 0.5 的角色经过时必卡住。与 A* 对角规则一致：两直向格任一被挡则无视线
+    // （防止平滑跳点/直达直线绕开 A* 的对角检查而斜穿墙角）。
+    if (nx !== x && nz !== z) {
+      if (blocked(x + sx, z) || blocked(x, z + sz)) return false;
+    }
+    x = nx; z = nz;
   }
 }
 
