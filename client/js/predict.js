@@ -26,65 +26,18 @@ export const PHYS = {
 };
 const CFG = PHYS;
 
-// 2.5D 静态地形碰撞：圆盘（半径 r）是否与不可通行（湖泊/河流/悬崖/陡坡）重叠。
-// 精确几何判定：圆心 + 3×3 邻域墙格的圆-矩形最近点检测，并在墙格凸角处做
-// 尖角削角（chamfer）。替代旧的「圆心 + 8 圆周点采样」：采样在尖角处有盲区
-// （漏判穿角 / 轴滑双候选同时被挡 → 挂角卡死），几何判定无方向盲区。
-// exact=true ：全精度地形判定。玩家物理路径必须开启——上报位置过服务端中心点校验
-//              （服务端已降为中心点判定，见 anticheat.cpp），圆心距墙/凸角满足
-//              削角约束即可通过，无橡皮筋。
+// 2.5D 静态地形碰撞：中心点判定。
+// 游戏设定为浮岛世界：无建筑墙壁概念，允许模型一半悬空（浮岛边缘/水域边缘悬空是
+// 自然表现）。因此碰撞只判定「圆心是否落在不可通行区（湖泊/河流/悬崖/陡坡）」，
+// 半径仅用于渲染，不参与判定——角色可贴地形边界行走，半个模型悬空不视为碰撞。
+// 与服务端 anticheat 中心点校验完全一致（双端统一），无削角/圆盘逻辑。
+// exact=true ：全精度地形判定。玩家物理路径必须开启——上报位置与服务端同款中心点判定，
+//              无橡皮筋。
 // exact=false：0.1m 缓存判定。怪物外推/渲染推挤等纯视觉路径用，误差不可见，性能优先。
-export const CHAMFER = 0.1; // 尖角削去量（m）：凸角处碰撞边界内缩 0.1m，圆心距凸角 ≥ r−0.1 即放行
-
-// 格点 (gx,gz)（整数坐标，即墙格角点）是否为需削角的凸角：
-// 检查其 2×2 邻块的墙格数 —— 单墙转角（n==1）与对角双墙缝顶点（n==2 且对角）为凸角；
-// 边中点（n==2 同行/同列）、内凹/满墙（n==3/4）、开放（n==0）不削。
-// 地形 mask 静态 → 结果缓存（整数哈希键，覆盖 ±2048m 世界）。
-const cornerCache = new Map();
-function isCorner(gx, gz, exact = false) {
-  // 16 位包装 + exact 位：地形 mask 静态常驻，|gx|,|gz| < 65536 内无冲突；
-  // exact 区分全精度/缓存判定（两者对同一角点结论可能不同，不能串用缓存）。
-  const k = ((gx & 0xFFFF) * 65536 + (gz & 0xFFFF)) * 2 + (exact ? 1 : 0);
-  const hit = cornerCache.get(k);
-  if (hit !== undefined) return hit;
-  const b = exact ? terrainBlockedExact : terrainBlocked;
-  const c00 = b(gx, gz) ? 1 : 0;
-  const c10 = b(gx + 1, gz) ? 1 : 0;
-  const c01 = b(gx, gz + 1) ? 1 : 0;
-  const c11 = b(gx + 1, gz + 1) ? 1 : 0;
-  const n = c00 + c10 + c01 + c11;
-  const r = n === 1 || (n === 2 && ((c00 && c11) || (c01 && c10)));
-  cornerCache.set(k, r);
-  return r;
-}
-
+// r 参数保留仅为调用方兼容（autobot/entities/boot 均传入半径），判定中不参与计算。
 export function circleBlocked(x, z, r, exact = false) {
   const b = exact ? terrainBlockedExact : terrainBlocked;
-  // 圆心在墙内 → 挡
-  if (b(x, z)) return true;
-  const fx = Math.floor(x), fz = Math.floor(z);
-  const r2 = r * r;
-  // 圆盘与 3×3 邻域墙格几何碰撞（圆-矩形最近点）
-  for (let gx = fx - 1; gx <= fx + 1; gx++) {
-    for (let gz = fz - 1; gz <= fz + 1; gz++) {
-      if (!b(gx, gz)) continue;
-      // 圆心到墙格 [gx,gx+1]×[gz,gz+1] 的最近点
-      const nx = Math.max(gx, Math.min(x, gx + 1));
-      const nz = Math.max(gz, Math.min(z, gz + 1));
-      const dx = x - nx, dz = z - nz;
-      const d2 = dx * dx + dz * dz;
-      // 最近点落在墙格角点（圆心在角点对角象限）→ 凸角削角：距凸角 < r−CHAMFER 才挡；
-      // 非凸角角点（边中点/内凹）维持 r。最近点在边上 → 距边 < r 挡。
-      const atCorner = (nx === gx || nx === gx + 1) && (nz === gz || nz === gz + 1);
-      if (atCorner) {
-        const lim = r - (isCorner(nx, nz, exact) ? CHAMFER : 0);
-        if (lim > 0 && d2 < lim * lim) return true;
-      } else if (d2 < r2) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return b(x, z);
 }
 // 8 向单位向量表：与服务端 collision.cpp 的 kEscapeDir 是同一组字面量。
 // 不用 Math.cos/Math.sin —— libm 与 JS Math 的三角函数末位 ulp 可能不同，
@@ -115,37 +68,8 @@ export function escapeBlocked(ox, oz, r, exact = false) {
   }
   return null;
 }
-// 尖角削角滑动：轴滑双候选被挡（卡在凸角尖上）时，沿削角圆弧切向滑过尖角。
-// 找到距圆心 < r 的最近凸角点，把移动向量投影到「以角点为圆心、半径 r−CHAMFER
-// 的圆弧」的切线上，落点贴弧面并保留切向分量（角色绕弧滑过尖角而非退回原点）。
-// 仅向量代数（无三角函数），返回 false 表示无适用凸角/落点仍被挡，交由调用方兜底。
-function cornerSlide(e, ox, oz, nx, nz, r, exact = false) {
-  const lim = r - CHAMFER;
-  if (lim <= 0) return false;
-  const fx = Math.floor(nx), fz = Math.floor(nz);
-  const r2 = r * r;
-  let best = null, bestD2 = lim * lim;
-  for (let ix = fx - 1; ix <= fx + 1; ix++) {
-    for (let iz = fz - 1; iz <= fz + 1; iz++) {
-      if (!isCorner(ix, iz, exact)) continue;
-      const dx = nx - ix, dz = nz - iz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < r2 && d2 <= bestD2) { bestD2 = d2; best = [ix, iz]; }
-    }
-  }
-  if (!best) return false;
-  const px = best[0], pz = best[1];
-  const d = Math.sqrt(bestD2) || 1e-9;
-  const nxx = (nx - px) / d, nzz = (nz - pz) / d;  // 角点→圆心 径向单位
-  const tx = -nzz, tz = nxx;                        // 圆弧切向
-  const vx = nx - ox, vz = nz - oz;
-  const vt = vx * tx + vz * tz;                     // 移动向量切向分量
-  const cx = px + nxx * lim + tx * vt;
-  const cz = pz + nzz * lim + tz * vt;
-  if (!circleBlocked(cx, cz, r, exact)) { e.x = cx; e.z = cz; return true; }
-  return false;
-}
-// 沿轴滑动回退：实体已从 (ox,oz) 移到 (nx,nz)，与障碍重叠时逐轴尝试，模拟沿墙滑动
+// 沿轴滑动回退：实体已从 (ox,oz) 移到 (nx,nz)，圆心落在不可通行区时逐轴尝试，
+// 模拟沿地形边界滑动（中心点判定下同样适用：圆心被挡时沿轴找可通行圆心位置）
 export function slideMove(e, ox, oz, nx, nz, r, exact = false) {
   if (!circleBlocked(nx, nz, r, exact)) { e.x = nx; e.z = nz; return false; }
   // X 轴单独尝试（沿 X 滑动 → 结果 (nx, oz)）
@@ -160,14 +84,10 @@ export function slideMove(e, ox, oz, nx, nz, r, exact = false) {
   } else if (okZ) {
     e.x = ox; e.z = nz;
   } else {
-    // 兜底：三个滑动候选全被阻挡。先试尖角削角滑动（卡在凸角尖上的场景）——
-    // 沿削角圆弧切向滑过尖角；失败再退回起点/脱困搜索（同旧实现）。旧实现无条件
-    // 退回起点 (ox,oz)，但起点自身也可能落在阻挡区（出生/复活用点判定而非圆盘判定、
-    // 被外力改写 pos、mask 运行时变更），此时退回起点等于永久卡死：每次上报都判
-    // terrain_blocked，服务端 clampToWalkable 又因锚点不可通行而放弃夹紧，客户端被
-    // 反复校正回同一个坑里。故脱困搜索保留。
-    const cs = cornerSlide(e, ox, oz, nx, nz, r, exact);
-    if (cs) return true;
+    // 兜底：三个滑动候选全被阻挡。退回起点 (ox,oz)——若起点自身也落在阻挡区
+    // （出生/复活用点判定而非中心点判定、被外力改写 pos、mask 运行时变更），
+    // 退回起点等于永久卡死：每次上报都判 terrain_blocked，服务端 clampToWalkable
+    // 又因锚点不可通行而放弃夹紧，客户端被反复校正回同一个坑里。故补一次脱困搜索。
     if (circleBlocked(ox, oz, r, exact)) {
       const esc = escapeBlocked(ox, oz, r, exact);
       if (esc) { e.x = esc.x; e.z = esc.z; return true; }
