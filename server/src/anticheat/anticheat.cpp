@@ -141,18 +141,15 @@ bool AntiCheat::validateClaim(Entity& p, double& px, double& pz, uint64_t nowMs,
     return false;
   }
 
-  // 检查 B：地形校验（防穿墙）——两级判定 + 夹紧
-  // 严格级：目标位圆盘（radius）不与不可通行区域重叠 → 直接通过（绝大多数上报走这条）。
-  // 容差级：上报位置经 0.01m 量化，且双端地形函数存在浮点/数据源分歧，边界处
-  //          可能差几毫米。严格级失败时把半径收缩 terrainToleranceM 再判一次；通过则把
-  //          位置沿「权威位置→claim」线段夹紧回严格可通行点——既吸收分歧，又保证
-  //          权威位置恒可通行（否则后续每次上报都会判 terrain_blocked）。
-  //          收缩量是固定的穿透上限（非增量），故不存在逐步蚕食进墙的可能。
-  Collision col;
-  if (col.circleBlocked(px, pz, p.radius)) {
-    const double rTol = p.radius - (double)cfg_.terrainToleranceM;
-    const bool withinTolerance = rTol > 0.0 && !col.circleBlocked(px, pz, rTol);
-    if (!withinTolerance || !clampToWalkable(p, px, pz)) {
+  // 检查 B：地形校验（防穿墙）——中心点判定
+  // 客户端本地保留完整圆盘碰撞与尖角削角（0.1m）滑动（predict.js），上报位置是客户端
+  // 模拟通过的点，圆盘侵入量由削角量有界约束。此处仅核实圆心（上报点）不落入不可通行
+  // 格（防瞬移进墙/作弊直报墙内点）。中心点边界处的浮点/量化分歧沿线段夹回，
+  // 软失败不计违规。相比旧实现（圆盘 8 点采样 + 半径收缩容差 + 夹紧到圆盘边界），
+  // 不再校验圆盘：尖角削角后允许圆心距凸角 ≥ 0.45m，圆盘校验会把这些合法滑过点夹回
+  // （橡皮筋）；中心点校验与削角量（0.1m）配合，侵入有界、无回弹。
+  if (terrainBlocked(px, pz)) {
+    if (!clampToWalkable(p, px, pz)) {
       why = "terrain_blocked";
       soft = true;   // 软失败：不计入 violations
       return false;
@@ -175,22 +172,21 @@ bool AntiCheat::validateClaim(Entity& p, double& px, double& pz, uint64_t nowMs,
   return true;
 }
 
-// 沿「权威位置→(px,pz)」线段二分回退，找最远的严格可通行点并写回 px/pz。
-// 权威位置按不变式恒为严格可通行（采纳前已过检查 B 严格级或已被夹紧），故回退必能收敛；
+// 沿「权威位置→(px,pz)」线段二分回退，找最远的中心点可通行位置并写回 px/pz。
+// 权威位置按不变式恒可通行（采纳前已过检查 B 或被夹紧），故回退必能收敛；
 // 万一权威位置自身落在阻挡区（如被 applyKnockback 推入），返回 false 交由软失败处理，
 // 避免把玩家夹到同一个坑里造成永久卡死。
 bool AntiCheat::clampToWalkable(const Entity& p, double& px, double& pz) const {
-  Collision col;
   const double ax = p.pos.x, az = p.pos.z;
-  if (col.circleBlocked(ax, az, p.radius)) return false;  // 锚点自身不可通行：放弃夹紧
+  if (terrainBlocked(ax, az)) return false;  // 锚点自身不可通行：放弃夹紧
   const double dx = px - ax, dz = pz - az;
   const double seg = std::hypot(dx, dz);
   if (seg < 1e-9) return false;  // claim 与锚点重合，无需夹紧
-  // 二分：lo 恒为严格可通行、hi 恒为阻挡；8 次迭代收敛到 seg/256（≈ 3mm，远细于 0.01m 量化）
+  // 二分：lo 恒为可通行、hi 恒为阻挡；8 次迭代收敛到 seg/256（≈ 3mm，远细于 0.01m 量化）
   double lo = 0.0, hi = 1.0;
   for (int i = 0; i < 8; i++) {
     const double mid = (lo + hi) * 0.5;
-    if (col.circleBlocked(ax + dx * mid, az + dz * mid, p.radius)) hi = mid;
+    if (terrainBlocked(ax + dx * mid, az + dz * mid)) hi = mid;
     else lo = mid;
   }
   px = ax + dx * lo;
