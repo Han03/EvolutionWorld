@@ -1,4 +1,8 @@
 // collision.cpp - 2.5D 物体碰撞系统实现
+// 浮岛世界设定：无建筑墙壁概念，允许模型一半悬空（浮岛边缘/水域边缘悬空是自然表现）。
+// 因此静态地形碰撞统一为「中心点判定」：只判断坐标点是否落入不可通行区
+// （湖泊/河流/悬崖/陡坡），半径仅用于渲染/实体间距，不参与地形碰撞。
+// 与客户端 predict.js 的 circleBlocked 同语义，双端一致。
 #include "collision.h"
 #include "terrain.h"
 namespace ew {
@@ -6,15 +10,9 @@ bool Collision::isBlocked(double x, double z) const {
   return terrainBlocked(x, z);
 }
 bool Collision::circleBlocked(double x, double z, double r) const {
-  // 中心
-  if (isBlocked(x, z)) return true;
-  // 圆周 8 点采样（覆盖圆盘外缘；半径大的实体用更多采样）
-  const int n = 8;
-  for (int i = 0; i < n; i++) {
-    double a = (double)i / (double)n * 6.283185307179586;
-    if (isBlocked(x + r * std::cos(a), z + r * std::sin(a))) return true;
-  }
-  return false;
+  // 中心点判定：r 保留仅为调用方兼容（实体半径），不参与计算——
+  // 悬空/贴边由设定允许，圆心可通行即通过。slideMove/escapeBlocked/canStand 跟随。
+  return isBlocked(x, z);
 }
 bool Collision::canStand(double x, double z, double r) const {
   return !circleBlocked(x, z, r);

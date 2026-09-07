@@ -1528,8 +1528,8 @@ static void moveEntityCollide(World& w, Entity& e, double tx, double tz, double 
   const double ox = e.pos.x, oz = e.pos.z;
   w.physics().setHorizontalVelocity(e, tx, tz, dt);
   w.physics().step(e, dt);
-  // 静态地形碰撞：目标位圆盘与不可通行（湖泊/河流/悬崖/陡坡）重叠 → 沿轴滑动回退
-  // 恢复态（AS_RECOVER）跳过地形碰撞：怪物无敌归位过程中不应被空洞/悬崖卡住
+  // 静态地形碰撞：目标位圆心落入不可通行（湖泊/河流/悬崖/陡坡）→ 沿轴滑动回退
+  // （浮岛设定中心点判定；恢复态 AS_RECOVER 跳过地形碰撞：怪物无敌归位过程中不应被空洞/悬崖卡住）
   if (e.ai.aiState != AS_RECOVER && w.collision().circleBlocked(e.pos.x, e.pos.z, e.radius)) {
     w.collision().slideMove(e, ox, oz, e.pos.x, e.pos.z);
   }
