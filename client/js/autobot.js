@@ -100,6 +100,11 @@ const S_ = {
   _spawnsLoading: false,
   _spawnSkip: new Map(),// 投放点 -> 跳过截止时间（goto 失败后 60s 内不再前往）
   _logBuf: [],
+
+  // ---- 本地监控推送（方案B：ws://localhost:9100 免截图监控）----
+  _monWs: null,        // 监控 WebSocket 实例
+  _monRetryAt: 0,      // 重连退避截止时间（performance.now）
+  _monSnapAt: 0,       // 上次快照推送时间
 };
 
 const CFG = {
@@ -234,6 +239,7 @@ export function restore() {
 // 主决策循环（由 boot.js 的定时器驱动，每 ~220ms 一次）
 // ---------------------------------------------------------------------------
 export function tick(now) {
+  monitorTick(); // 本地监控推送（连接/快照），与游戏逻辑解耦；paused/stop 时也保持连接
   if (!S_.running || S_.paused) return;
   const S = S_.S;
   if (!S || !S.net || !S.entities || !S.predictor) return;
@@ -532,20 +538,29 @@ function pickMaintenanceAction(now) {
   autoEquipBest();
 
   // a) 血量偏低且血瓶不足 → 补给（补给失败冷却期内跳过，避免反复跑商店）
-  const hpPots = invCount(potionOf('hp'));
+  const hpPots = invCount(potionOf('hp')?.id);
   if (hpPots < CFG.HP_POTION_KEEP && now >= S_._supplyFailAt) {
     if (now - S_._lastSupplyAt > 2000) {
       const buy = findShopEntryFor('hp');
-      if (buy) return { type: 'buyConsumable', itemId: buy.itemId, count: CFG.HP_POTION_KEEP - hpPots };
+      // 每日限购封顶：已持 ≥ 限购额 → 本日不再触发，避免"目标>限购→整笔拒绝→超时重发x3→放弃"
+      if (buy && buy.buyLimit > 0 && hpPots >= buy.buyLimit) { /* 当日已达限购，跳过购买/合成 */ }
+      else if (buy) {
+        const need = CFG.HP_POTION_KEEP - hpPots;
+        return { type: 'buyConsumable', itemId: buy.itemId, count: buy.buyLimit > 0 ? Math.min(need, buy.buyLimit - hpPots) : need };
+      }
       const craft = findCraftFor('hp');
       if (craft) return { type: 'craftConsumable', recipeId: craft.recipeId, count: 1, npcTag: craft.npcTag || NPC_TAG_CRAFT };
     }
   }
-  const mpPots = invCount(potionOf('mp'));
+  const mpPots = invCount(potionOf('mp')?.id);
   if (mpPots < CFG.MP_POTION_KEEP && now >= S_._supplyFailAt) {
     if (now - S_._lastSupplyAt > 2000) {
       const buy = findShopEntryFor('mp');
-      if (buy) return { type: 'buyConsumable', itemId: buy.itemId, count: CFG.MP_POTION_KEEP - mpPots };
+      if (buy && buy.buyLimit > 0 && mpPots >= buy.buyLimit) { /* 当日已达限购，跳过购买/合成 */ }
+      else if (buy) {
+        const need = CFG.MP_POTION_KEEP - mpPots;
+        return { type: 'buyConsumable', itemId: buy.itemId, count: buy.buyLimit > 0 ? Math.min(need, buy.buyLimit - mpPots) : need };
+      }
       const craft = findCraftFor('mp');
       if (craft) return { type: 'craftConsumable', recipeId: craft.recipeId, count: 1, npcTag: craft.npcTag || NPC_TAG_CRAFT };
     }
@@ -896,15 +911,20 @@ function advanceGoal(now) {
         failGoal();
         return;
       }
-      net.sendShopBuy(g.itemId, g.count || 1);
+      // 每日/每周限购约束：buyLimit>0 时购买数与目标数都 clamp 到限购额，
+      // 避免"目标数>限购 → 服务端整笔拒绝且无回推 → 超时重发x3 → 放弃"
+      const buyEntry = shopEntries().find(x => x.itemId === g.itemId);
+      const buyLimit = buyEntry && buyEntry.buyLimit > 0 ? buyEntry.buyLimit : 0;
+      const buyN = buyLimit > 0 ? Math.min(g.count || 1, buyLimit) : (g.count || 1);
+      net.sendShopBuy(g.itemId, buyN);
       S_._lastSupplyAt = performance.now();
       S_.stats.itemsBought++;
       emitStatus();
-      log(`🛒 购买 ${itemName(g.itemId)} ×${g.count || 1}（-${price}💰）`);
+      log(`🛒 购买 ${itemName(g.itemId)} ×${buyN}（-${price}💰）`);
       closeNpcPanels(); // 购买完成后关闭商店面板
       // 进入等待确认：持有总数达标才结束子目标（防服务端库存延迟 → 下轮重复购买堆积；
       // 装备到账在 equipBag/equip，必须用 heldCount 而非 invCount）
-      S_._pendingBuy = { itemId: g.itemId, want: (g.count || 1) + heldCount(g.itemId), at: performance.now(), tries: 0 };
+      S_._pendingBuy = { itemId: g.itemId, want: buyN + heldCount(g.itemId), at: performance.now(), tries: 0 };
       S_.questDirty = true;
       return; // 新装备穿戴由维护期的 autoEquipBest() 统一处理（避免 setTimeout 竞态）
     }
@@ -1291,7 +1311,7 @@ function castCombatSkills(v, mp) {
       if (castSkill(hs, 0, self.x, self.z)) log(`💚 战斗中使用回复技能 ${hs.name}`);
     } else {
       const pot = potionOf('hp');
-      if (pot && invCount(pot) > 0) {
+      if (pot && invCount(pot.id) > 0) {
         S_.net.sendUseItem(pot.id, 1);
         log('❤️ 使用血瓶');
       }
@@ -2054,6 +2074,73 @@ function log(msg) {
   S_._logBuf.push(`[${t}] ${msg}`);
   if (S_._logBuf.length > 60) S_._logBuf.shift();
   if (S_.onLog) S_.onLog(msg);
+  monitorSend({ t: 'log', ts: Date.now(), msg }); // 实时推送到本地监控端口
+}
+
+// ---------------------------------------------------------------------------
+// 本地监控推送（方案B：ws://localhost:9100）
+// 客户端把日志 / 1s 状态快照实时推到本地监听端口，外部 tail / 脚本即可免截图监控
+// autobot 运行状态。纯前端新增、零服务端改动；连接失败自动退避重连，不影响游戏逻辑。
+// ---------------------------------------------------------------------------
+const MON_WS_URL = 'ws://localhost:9100';
+
+function monitorConnect() {
+  try {
+    const ws = S_._monWs;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    const w = new WebSocket(MON_WS_URL);
+    w.onopen = () => {
+      S_._monWs = w;
+      S_._monRetryAt = 0;
+      try { w.send(JSON.stringify({ t: 'sys', ts: Date.now(), msg: 'autobot monitor connected' })); } catch (_) {}
+    };
+    w.onclose = () => {
+      if (S_._monWs === w) S_._monWs = null;
+      if (!S_._monRetryAt) S_._monRetryAt = performance.now() + 5000; // 5s 退避重连
+    };
+    w.onerror = () => { try { w.close(); } catch (_) {} };
+    S_._monWs = w;
+  } catch (_) { S_._monWs = null; }
+}
+
+function monitorSend(obj) {
+  try {
+    const ws = S_._monWs;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  } catch (_) {}
+}
+
+/** 状态快照：阶段/目标/位置/血量/蓝量/金币/等级/药水/技能CD/待确认购买/补给冷却/统计/日志尾部 */
+function monitorSnapshot() {
+  const S = S_.S;
+  if (!S) return;
+  const self = S.predictor ? S.predictor.predicted() : null;
+  const st = S.playerStats || {};
+  const learned = S.learnedSkills || [];
+  const g = S_.goal;
+  monitorSend({
+    t: 'snapshot', ts: Date.now(),
+    phase: getPhase(),
+    goal: g ? { type: g.type, itemId: g.itemId || null, count: g.count || null, ageMs: Math.round(performance.now() - (g.at || performance.now())) } : null,
+    pos: self ? { x: +self.x.toFixed(1), z: +self.z.toFixed(1) } : null,
+    hp: { cur: st.hp ?? null, max: st.maxHp ?? null },
+    mp: { cur: st.mp ?? null, max: st.maxMp ?? null },
+    gold: S.gold ?? null,
+    level: st.level ?? null,
+    pots: { hp: invCount(potionOf('hp')?.id), mp: invCount(potionOf('mp')?.id) },
+    skills: learned.map(l => ({ id: l.id, cdMs: l.cdMs || 0, ready: !((l.cdMs || 0) > CFG.SKILL_CD_TOL_MS) })),
+    pendingBuy: S_._pendingBuy ? { itemId: S_._pendingBuy.itemId, want: S_._pendingBuy.want, tries: S_._pendingBuy.tries, ageMs: Math.round(performance.now() - S_._pendingBuy.at) } : null,
+    supplyFailIn: S_._supplyFailAt ? Math.max(0, Math.round((S_._supplyFailAt - performance.now()) / 1000)) : 0,
+    stats: { ...S_.stats },
+    logTail: S_._logBuf.slice(-8),
+  });
+}
+
+/** 每决策 tick 调用：维护连接（退避重连）+ 1s 一次快照 */
+function monitorTick() {
+  const now = performance.now();
+  if (!S_._monWs && now >= S_._monRetryAt) monitorConnect();
+  if (now - S_._monSnapAt >= 1000) { S_._monSnapAt = now; monitorSnapshot(); }
 }
 
 export function getLog() { return S_._logBuf; }
