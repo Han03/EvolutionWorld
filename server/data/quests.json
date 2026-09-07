@@ -1,73 +1,296 @@
 [
   {
-    "id": 1001, "name": "初入世界", "desc": "你来到了这片陌生的大陆。先与当地人交谈，了解这片世界的情况，然后消灭附近的狼群威胁。",
-    "category": "main", "levelReq": 1, "prereq": [],
+    "id": 1001,
+    "name": "初入世界",
+    "desc": "你来到了这片陌生的大陆。先与当地人交谈，了解这片世界的情况，然后消灭附近的狼群威胁。",
+    "category": "main",
+    "levelReq": 1,
+    "prereq": [],
     "objectives": [
-      {"type": "talk", "desc": "与村民交谈", "required": 1},
-      {"type": "kill", "targetKey": "wolf", "desc": "击杀灰狼", "required": 5}
+      {
+        "type": "talk",
+        "desc": "与村民交谈",
+        "required": 1
+      },
+      {
+        "type": "kill",
+        "targetKey": "wolf",
+        "desc": "击杀灰狼",
+        "required": 5
+      }
     ],
-    "rewards": {"gold": 50, "exp": 0, "items": [{"id": 1501, "count": 1}], "skills": []},
-    "nextQuests": [1002]
+    "rewards": {
+      "gold": 50,
+      "exp": 0,
+      "items": [
+        {
+          "id": 1501,
+          "count": 1
+        }
+      ],
+      "skills": []
+    },
+    "nextQuests": [
+      1002
+    ],
+    "acceptDialogue": [
+      "欢迎来到翡翠群岛，旅行者。这座镇子正被狼群骚扰，夜里都能听到它们的嚎叫。",
+      "如果你愿意替我们清除附近的狼群，我会给你丰厚的报酬。愿风指引你。"
+    ],
+    "turnInDialogue": [
+      "干得漂亮！你果然是个可靠的冒险者。",
+      "这些报酬是你的了，记住——勇敢的心比锋利的剑更可贵。"
+    ]
   },
   {
-    "id": 1002, "name": "荒原威胁", "desc": "荒原深处的巨兽开始频繁出没，威胁到城镇安全。前往消灭它！",
-    "category": "main", "levelReq": 5, "prereq": [1001],
-    "objectives": [
-      {"type": "kill", "targetKey": "gargoyle", "desc": "击杀荒原巨兽", "required": 1}
+    "id": 1002,
+    "name": "荒原威胁",
+    "desc": "荒原深处的巨兽开始频繁出没，威胁到城镇安全。前往消灭它！",
+    "category": "main",
+    "levelReq": 5,
+    "prereq": [
+      1001
     ],
-    "rewards": {"gold": 200, "exp": 0, "items": [], "skills": [1003]},
-    "nextQuests": [2004]
+    "objectives": [
+      {
+        "type": "kill",
+        "targetKey": "gargoyle",
+        "desc": "击杀荒原巨兽",
+        "required": 1
+      }
+    ],
+    "rewards": {
+      "gold": 200,
+      "exp": 0,
+      "items": [],
+      "skills": [
+        1003
+      ]
+    },
+    "nextQuests": [
+      2004
+    ],
+    "acceptDialogue": [
+      "荒原深处的巨兽开始频繁出没，已经伤了不少旅人。",
+      "它盘踞在荒原腹地，普通刀剑难以伤它分毫。你敢接下这个委托吗？"
+    ],
+    "turnInDialogue": [
+      "你……你竟然真的做到了！那巨兽的威胁终于解除了！",
+      "这份谢礼请你收下，你是这座岛当之无愧的英雄。"
+    ]
   },
   {
-    "id": 2001, "name": "采集药草", "desc": "村里的药师需要一些草药来制作绷带。收集草药并交付。",
-    "category": "side", "levelReq": 1, "prereq": [],
+    "id": 2001,
+    "name": "采集药草",
+    "desc": "村里的药师需要一些草药来制作绷带。收集草药并交付。",
+    "category": "side",
+    "levelReq": 1,
+    "prereq": [],
     "objectives": [
-      {"type": "collect", "targetKey": "3001", "targetId": 3001, "desc": "收集草药", "required": 3}
+      {
+        "type": "collect",
+        "targetKey": "3001",
+        "targetId": 3001,
+        "desc": "收集草药",
+        "required": 3
+      }
     ],
-    "rewards": {"gold": 20, "exp": 0, "items": [{"id": 2001, "count": 3}], "skills": []}
+    "rewards": {
+      "gold": 20,
+      "exp": 0,
+      "items": [
+        {
+          "id": 2001,
+          "count": 3
+        }
+      ],
+      "skills": []
+    },
+    "acceptDialogue": [
+      "采药人老林上周在山谷里失踪了，他的药篓里还缺几株止血草。",
+      "采集一些药草回来吧，它们就长在附近的山坡上。"
+    ],
+    "turnInDialogue": [
+      "就是这些药草！有了它们，我就能给老林配药了。",
+      "谢谢你，冒险者。这是你的酬劳。"
+    ]
   },
   {
-    "id": 2002, "name": "探索遗迹", "desc": "据说大陆中央有一处古老遗迹，前去探索并回报。",
-    "category": "side", "levelReq": 1, "prereq": [],
+    "id": 2002,
+    "name": "探索遗迹",
+    "desc": "据说大陆中央有一处古老遗迹，前去探索并回报。",
+    "category": "side",
+    "levelReq": 1,
+    "prereq": [],
     "objectives": [
-      {"type": "reach", "x": 60, "z": 60, "radius": 8.0, "desc": "到达古老遗迹", "required": 1}
+      {
+        "type": "reach",
+        "x": 60,
+        "z": 60,
+        "radius": 8.0,
+        "desc": "到达古老遗迹",
+        "required": 1
+      }
     ],
-    "rewards": {"gold": 30, "exp": 0, "items": [], "skills": []}
+    "rewards": {
+      "gold": 30,
+      "exp": 0,
+      "items": [],
+      "skills": []
+    },
+    "acceptDialogue": [
+      "北边的遗迹最近有了动静，听说里面有远古文明留下的秘密。",
+      "你愿意替我去探查一番吗？记录下遗迹中的一切。"
+    ],
+    "turnInDialogue": [
+      "你带回来的信息太珍贵了！这足以改写我们对古代文明的认识。",
+      "收下这份报酬吧，探索者。"
+    ]
   },
   {
-    "id": 2003, "name": "商人的委托", "desc": "旅行商人需要一批物资。先与他交谈了解详情。",
-    "category": "side", "levelReq": 3, "prereq": [],
+    "id": 2003,
+    "name": "商人的委托",
+    "desc": "旅行商人需要一批物资。先与他交谈了解详情。",
+    "category": "side",
+    "levelReq": 3,
+    "prereq": [],
     "objectives": [
-      {"type": "talk", "desc": "与旅行商人交谈", "required": 1},
-      {"type": "collect", "targetKey": "3001", "targetId": 3001, "desc": "收集草药", "required": 5},
-      {"type": "talk", "desc": "向旅行商人交付", "required": 1}
+      {
+        "type": "talk",
+        "desc": "与旅行商人交谈",
+        "required": 1
+      },
+      {
+        "type": "collect",
+        "targetKey": "3001",
+        "targetId": 3001,
+        "desc": "收集草药",
+        "required": 5
+      },
+      {
+        "type": "talk",
+        "desc": "向旅行商人交付",
+        "required": 1
+      }
     ],
-    "rewards": {"gold": 40, "exp": 0, "items": [{"id": 2002, "count": 2}], "skills": []}
+    "rewards": {
+      "gold": 40,
+      "exp": 0,
+      "items": [
+        {
+          "id": 2002,
+          "count": 2
+        }
+      ],
+      "skills": []
+    },
+    "acceptDialogue": [
+      "我有一批货要送到南边的港口，但路上不太平。",
+      "替我跑一趟，报酬好商量。怎么样？"
+    ],
+    "turnInDialogue": [
+      "货安全到了，比约定的时间还早！",
+      "你办事我放心，这是说好的报酬，下次还找你。"
+    ]
   },
   {
-    "id": 2004, "name": "勇者试炼", "desc": "证明你的实力。击败荒原上的石像鬼。",
-    "category": "side", "levelReq": 5, "prereq": [1001],
-    "objectives": [
-      {"type": "kill", "targetKey": "gargoyle", "desc": "击败石像鬼", "required": 1}
+    "id": 2004,
+    "name": "勇者试炼",
+    "desc": "证明你的实力。击败荒原上的石像鬼。",
+    "category": "side",
+    "levelReq": 5,
+    "prereq": [
+      1001
     ],
-    "rewards": {"gold": 100, "exp": 0, "items": [{"id": 1502, "count": 1}], "skills": []}
+    "objectives": [
+      {
+        "type": "kill",
+        "targetKey": "gargoyle",
+        "desc": "击败石像鬼",
+        "required": 1
+      }
+    ],
+    "rewards": {
+      "gold": 100,
+      "exp": 0,
+      "items": [
+        {
+          "id": 1502,
+          "count": 1
+        }
+      ],
+      "skills": []
+    },
+    "acceptDialogue": [
+      "只有最勇敢的冒险者才敢接受勇者试炼。",
+      "通过试炼，你将获得所有人的认可和丰厚的奖赏。准备好了吗？"
+    ],
+    "turnInDialogue": [
+      "你通过了！从今天起，没有人会质疑你的实力。",
+      "这份奖励属于你，年轻的勇者。"
+    ]
   },
   {
-    "id": 3001, "name": "猎魔修行", "desc": "通过战斗磨炼自己。击杀任意怪物10只。",
-    "category": "daily", "levelReq": 1, "prereq": [],
+    "id": 3001,
+    "name": "猎魔修行",
+    "desc": "通过战斗磨炼自己。击杀任意怪物10只。",
+    "category": "daily",
+    "levelReq": 1,
+    "prereq": [],
     "objectives": [
-      {"type": "kill", "targetKey": "*", "desc": "击杀任意怪物", "required": 10}
+      {
+        "type": "kill",
+        "targetKey": "*",
+        "desc": "击杀任意怪物",
+        "required": 10
+      }
     ],
-    "rewards": {"gold": 30, "exp": 0, "items": [], "skills": []},
-    "dailyCd": 86400
+    "rewards": {
+      "gold": 30,
+      "exp": 0,
+      "items": [],
+      "skills": []
+    },
+    "dailyCd": 86400,
+    "acceptDialogue": [
+      "今日的修行任务：猎杀荒野上的魔物。",
+      "完成得越多，奖励越丰厚。开始吧，冒险者。"
+    ],
+    "turnInDialogue": [
+      "今日修行完成，你的身手又精进了不少。",
+      "这是今日的报酬，明日再来。"
+    ]
   },
   {
-    "id": 3002, "name": "矿材收集", "desc": "铁匠需要矿石来打造装备。帮忙收集一些。",
-    "category": "daily", "levelReq": 2, "prereq": [],
+    "id": 3002,
+    "name": "矿材收集",
+    "desc": "铁匠需要矿石来打造装备。帮忙收集一些。",
+    "category": "daily",
+    "levelReq": 2,
+    "prereq": [],
     "objectives": [
-      {"type": "collect", "targetKey": "3002", "targetId": 3002, "desc": "收集矿石", "required": 5}
+      {
+        "type": "collect",
+        "targetKey": "3002",
+        "targetId": 3002,
+        "desc": "收集矿石",
+        "required": 5
+      }
     ],
-    "rewards": {"gold": 25, "exp": 0, "items": [], "skills": []},
-    "dailyCd": 86400
+    "rewards": {
+      "gold": 25,
+      "exp": 0,
+      "items": [],
+      "skills": []
+    },
+    "dailyCd": 86400,
+    "acceptDialogue": [
+      "矿工们在矿洞里发现了富矿脉，但需要人手帮忙采集。",
+      "收集足够的矿石回来，工头会付你工钱。"
+    ],
+    "turnInDialogue": [
+      "这些矿石成色很好！工头看了肯定满意。",
+      "拿好你的工钱，矿洞里还有更多活计等着你呢。"
+    ]
   }
 ]

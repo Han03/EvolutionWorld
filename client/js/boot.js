@@ -52,7 +52,7 @@ import {
 import {
   configure as configureGame,
   findNearbyNpc, pickupNearbyDrops, openNpcDialog, closeNpcDialog, refreshNpcDialog,
-  interactWithNearestNpc,
+  interactWithNearestNpc, openQuestDialogue, advanceQuestDialogue, closeQuestDialogue,
   renderSkillBar, renderBuffBar, isSkillLearned, castSkillNow, findEntityByWid,
   loop, debugPrint, closeAllNpcPanels,
 } from './boot-game.js';
@@ -787,6 +787,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // NPC 对话关闭
   const ndc = $('npc-dialog-close');
   if (ndc) ndc.addEventListener('click', closeNpcDialog);
+
+  // 剧情对话层：继续/确认按钮（逐轮推进，最后一轮确认后执行接取/提交）
+  const dlgNext = $('dialogue-next');
+  if (dlgNext) dlgNext.addEventListener('click', () => { if (S.questDialogue) advanceQuestDialogue(); });
 
   // 铁匠面板关闭 + 页签切换
   const ec = $('enhance-close');

@@ -253,6 +253,20 @@
     </div>
   </div>
 
+  <!-- 剧情对话层（接取/提交任务前逐轮展示，确认后才执行操作） -->
+  <div id="dialogue-box" class="dialogue-box hidden">
+    <div class="dialogue-card">
+      <div class="dialogue-npc-row">
+        <span class="dialogue-npc-avatar">🗣️</span>
+        <span id="dialogue-npc" class="dialogue-npc-name">NPC</span>
+      </div>
+      <div id="dialogue-text" class="dialogue-text"></div>
+      <div class="dialogue-actions">
+        <button id="dialogue-next" class="dialogue-next-btn">继续</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 铁匠面板（阶段2 强化 + 阶段3 分解；页签切换） -->
   <div id="enhance-panel" class="panel enhance-panel hidden">
     <div class="panel-head">

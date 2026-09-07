@@ -122,11 +122,58 @@ export function closeNpcDialog() {
 /** 关闭所有 NPC 相关面板（移动时自动触发） */
 export function closeAllNpcPanels() {
   closeNpcDialog();
+  closeQuestDialogue();
   if (closeEnhancePanel) closeEnhancePanel();
   if (closeCraftPanel) closeCraftPanel();
   if (closeWarehousePanel) closeWarehousePanel();
   if (closeShopPanel) closeShopPanel();
   if (closeInventoryPanel) closeInventoryPanel();
+}
+
+// ============================================================================
+// 剧情对话层（接取/提交任务前逐轮展示；确认后才执行操作）
+// ============================================================================
+/** 打开剧情对话：lines 为逐轮台词，onConfirm 在最后一轮确认时执行 */
+export function openQuestDialogue(npcName, lines, onConfirm, confirmLabel) {
+  if (!lines || !lines.length) { onConfirm(); return; }
+  if (S.input) S.input.clearMovement();
+  S.questDialogue = { lines, idx: 0, onConfirm, confirmLabel: confirmLabel || '确认' };
+  const dlg = $('dialogue-box');
+  if (!dlg) { onConfirm(); return; }
+  dlg.classList.remove('hidden');
+  $('dialogue-npc').textContent = npcName || 'NPC';
+  renderQuestDialogueLine();
+}
+
+function renderQuestDialogueLine() {
+  const S2 = S.questDialogue;
+  if (!S2) return;
+  const last = S2.idx >= S2.lines.length - 1;
+  $('dialogue-text').textContent = S2.lines[S2.idx];
+  $('dialogue-next').textContent = last ? S2.confirmLabel : '继续';
+}
+
+export function advanceQuestDialogue() {
+  const S2 = S.questDialogue;
+  if (!S2) return;
+  const last = S2.idx >= S2.lines.length - 1;
+  if (!last) {
+    S2.idx++;
+    renderQuestDialogueLine();
+    return;
+  }
+  // 最后一轮：关闭并执行确认操作
+  const dlg = $('dialogue-box');
+  if (dlg) dlg.classList.add('hidden');
+  const cb = S2.onConfirm;
+  S.questDialogue = null;
+  if (cb) cb();
+}
+
+export function closeQuestDialogue() {
+  const dlg = $('dialogue-box');
+  if (dlg) dlg.classList.add('hidden');
+  S.questDialogue = null;
 }
 
 export function refreshNpcDialog() {
@@ -171,10 +218,17 @@ export function refreshNpcDialog() {
     const chainTag = q.nextQuestIds && q.nextQuestIds.length > 0 ? ' 🔗' : '';
     btn.innerHTML = `<span class="npc-opt-icon">❗</span><span class="npc-opt-text">${q.name}${chainTag}</span><span class="npc-opt-tag tag-accept">${catName}·接取</span>`;
     btn.addEventListener('click', () => {
-      sendQuestAccept(net, q.questId, S.currentNpcWid);
-      toast(`接受任务【${q.name}】`, 'ok');
-      sendTalkNpc(net, S.currentNpcWid);
-      setTimeout(refreshNpcDialog, 200);
+      const doAccept = () => {
+        sendQuestAccept(net, q.questId, S.currentNpcWid);
+        toast(`接受任务【${q.name}】`, 'ok');
+        sendTalkNpc(net, S.currentNpcWid);
+        setTimeout(refreshNpcDialog, 200);
+      };
+      if (q.acceptDialogue && q.acceptDialogue.length) {
+        openQuestDialogue(S.currentNpcName, q.acceptDialogue, doAccept, '确认接取');
+      } else {
+        doAccept();
+      }
     });
     opts.appendChild(btn);
   }
@@ -186,9 +240,16 @@ export function refreshNpcDialog() {
     btn.className = 'npc-opt-btn';
     btn.innerHTML = `<span class="npc-opt-icon">✅</span><span class="npc-opt-text">${qName} 已完成</span><span class="npc-opt-tag tag-turnin">提交</span>`;
     btn.addEventListener('click', () => {
-      sendQuestTurnIn(net, q.questId, S.currentNpcWid);
-      toast(`提交任务【${qName}】`, 'ok');
-      setTimeout(() => { sendTalkNpc(net, S.currentNpcWid); setTimeout(refreshNpcDialog, 200); }, 100);
+      const doTurnIn = () => {
+        sendQuestTurnIn(net, q.questId, S.currentNpcWid);
+        toast(`提交任务【${qName}】`, 'ok');
+        setTimeout(() => { sendTalkNpc(net, S.currentNpcWid); setTimeout(refreshNpcDialog, 200); }, 100);
+      };
+      if (q.turnInDialogue && q.turnInDialogue.length) {
+        openQuestDialogue(S.currentNpcName, q.turnInDialogue, doTurnIn, '确认提交');
+      } else {
+        doTurnIn();
+      }
     });
     opts.appendChild(btn);
   }

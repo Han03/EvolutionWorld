@@ -114,6 +114,13 @@ bool QuestSystem::loadFromJson(const std::string& dir) {
       }
       q.dailyCooldownSec = (uint32_t)(j.has("dailyCd") ? j.at("dailyCd").asInt() : 0);
       q.repeatLimit = (uint32_t)(j.has("repeatLimit") ? j.at("repeatLimit").asInt() : 0);
+      // 剧情对话（接取/提交前逐轮展示；缺省为空=直接接取/提交）
+      if (j.has("acceptDialogue") && j.at("acceptDialogue").type() == Json::Type::Array) {
+        for (const auto& dj : j.at("acceptDialogue").asArray()) q.acceptDialogue.push_back(dj.asString());
+      }
+      if (j.has("turnInDialogue") && j.at("turnInDialogue").type() == Json::Type::Array) {
+        for (const auto& dj : j.at("turnInDialogue").asArray()) q.turnInDialogue.push_back(dj.asString());
+      }
       // 提交 NPC：优先读 talkNpc（npcId 字符串），兼容旧 npcWid（数字 wid）
       if (j.has("talkNpc")) q.talkNpcId = j.at("talkNpc").asString();
       if (j.has("npcWid")) q.talkNpcWid = (uint32_t)j.at("npcWid").asInt();
@@ -204,6 +211,12 @@ std::string QuestSystem::questsToJson() const {
     j["rewards"] = rw;
     j["dailyCd"] = (int64_t)q.dailyCooldownSec;
     j["repeatLimit"] = (int64_t)q.repeatLimit;
+    Json acceptD = Json::array();
+    for (const auto& d : q.acceptDialogue) acceptD.push_back(d);
+    j["acceptDialogue"] = acceptD;
+    Json turnInD = Json::array();
+    for (const auto& d : q.turnInDialogue) turnInD.push_back(d);
+    j["turnInDialogue"] = turnInD;
     j["giverNpc"] = q.giverNpcId;  // 稳定 npcId 字符串
     j["talkNpc"] = q.talkNpcId;    // 稳定 npcId 字符串
     Json next = Json::array();
@@ -263,6 +276,12 @@ bool QuestSystem::replaceQuests(const Json& arr) {
     }
     q.dailyCooldownSec = (uint32_t)(j.has("dailyCd") ? j.at("dailyCd").asInt() : 0);
     q.repeatLimit = (uint32_t)(j.has("repeatLimit") ? j.at("repeatLimit").asInt() : 0);
+    if (j.has("acceptDialogue") && j.at("acceptDialogue").type() == Json::Type::Array) {
+      for (const auto& dj : j.at("acceptDialogue").asArray()) q.acceptDialogue.push_back(dj.asString());
+    }
+    if (j.has("turnInDialogue") && j.at("turnInDialogue").type() == Json::Type::Array) {
+      for (const auto& dj : j.at("turnInDialogue").asArray()) q.turnInDialogue.push_back(dj.asString());
+    }
     if (j.has("talkNpc")) q.talkNpcId = j.at("talkNpc").asString();
     if (j.has("npcWid")) q.talkNpcWid = (uint32_t)j.at("npcWid").asInt();
     if (j.has("giverNpc")) {
@@ -608,6 +627,9 @@ std::string QuestSystem::questListFrame(const Entity& p, uint32_t npcWid, const 
     // 链式后续任务 ID 列表
     w.u16((uint16_t)qd->nextQuestIds.size());
     for (uint32_t nqId : qd->nextQuestIds) w.u32(nqId);
+    // 接取前剧情对话（每轮一条 str；空=客户端直接接取）
+    w.u16((uint16_t)qd->acceptDialogue.size());
+    for (const auto& line : qd->acceptDialogue) w.str(line);
   }
   return proto::frame(proto::S2C_QUEST_LIST, w.data());
 }
@@ -633,6 +655,10 @@ std::string QuestSystem::questProgressFrame(const Entity& p) const {
       w.u8(qd && i < qd->objectives.size() ? (uint8_t)qd->objectives[i].type : 0);
       w.str(qd && i < qd->objectives.size() ? qd->objectives[i].desc : "");
     }
+    // 提交前剧情对话（每轮一条 str；空=客户端直接提交）
+    const std::vector<std::string>& tdi = qd ? qd->turnInDialogue : std::vector<std::string>();
+    w.u16((uint16_t)tdi.size());
+    for (const auto& line : tdi) w.str(line);
   }
   // 追加已完成任务摘要（供客户端「已完成」tab 渲染）
   w.u16((uint16_t)p.completedQuests.size());

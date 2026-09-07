@@ -94,6 +94,9 @@ struct QuestDef {
   QuestReward rewards;
   uint32_t dailyCooldownSec = 0;            // 日常任务重置冷却（秒）
   uint32_t repeatLimit = 0;                 // 可重复次数上限（0=无限）
+  // 剧情对话（每元素一轮 NPC 台词，接取/提交前逐轮展示；空=直接接取/提交）
+  std::vector<std::string> acceptDialogue;  // 接取前对话
+  std::vector<std::string> turnInDialogue;  // 提交前对话
   uint32_t talkNpcWid = 0;                  // 提交 NPC 的 wid（0=任意 NPC 可提交，运行时解析）
   uint32_t giverNpcWid = 0;                 // 发布任务 NPC 的 wid（0=任意 NPC 可接取，运行时解析）
   std::string giverNpcId;                   // 发布 NPC 的稳定 ID（编辑器配置，运行时解析为 giverNpcWid）

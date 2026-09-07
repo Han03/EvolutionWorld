@@ -73,6 +73,12 @@ export function decodeQuestList(r) {
     for (let j = 0; j < nextCount; j++) {
       q.nextQuestIds.push(r.u32());
     }
+    // 接取前剧情对话（每轮一条；空=直接接取）
+    q.acceptDialogue = [];
+    const adCount = r.u16();
+    for (let j = 0; j < adCount; j++) {
+      q.acceptDialogue.push(r.str());
+    }
     list.push(q);
   }
   questList = list;
@@ -101,6 +107,12 @@ export function decodeQuestProgress(r) {
         type: r.u8(),
         desc: r.str(),
       });
+    }
+    // 提交前剧情对话（每轮一条；空=直接提交）
+    q.turnInDialogue = [];
+    const tdiCount = r.u16();
+    for (let j = 0; j < tdiCount; j++) {
+      q.turnInDialogue.push(r.str());
     }
     prog.push(q);
   }

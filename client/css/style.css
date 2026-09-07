@@ -663,6 +663,51 @@ kbd {
   overflow: hidden;
 }
 .npc-dialog.hidden { display: none; }
+
+/* ── 剧情对话层（接取/提交任务前，模态） ── */
+.dialogue-box {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 80;
+}
+.dialogue-box.hidden { display: none; }
+.dialogue-card {
+  width: min(560px, 86vw);
+  background: linear-gradient(180deg, rgba(18,15,10,0.98) 0%, rgba(10,8,5,0.99) 100%);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-heavy), var(--shadow-glow-gold);
+  padding: 18px 20px 16px;
+}
+.dialogue-npc-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 10px;
+  color: var(--gold-light); font-weight: 700; font-size: 14px;
+  letter-spacing: 1px;
+}
+.dialogue-npc-avatar { font-size: 20px; }
+.dialogue-text {
+  color: #e8e2d5; font-size: 14px; line-height: 1.9;
+  min-height: 64px;
+  padding: 12px 14px;
+  background: rgba(201,168,76,0.05);
+  border: 1px solid rgba(201,168,76,0.12);
+  border-radius: 8px;
+}
+.dialogue-actions {
+  display: flex; justify-content: flex-end;
+  margin-top: 14px;
+}
+.dialogue-next-btn {
+  padding: 8px 28px;
+  border: 1px solid rgba(201,168,76,0.45);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(201,168,76,0.18), rgba(201,168,76,0.06));
+  color: var(--gold-light); font-size: 13px; font-weight: 600;
+  cursor: pointer; letter-spacing: 2px;
+}
+.dialogue-next-btn:hover { background: linear-gradient(180deg, rgba(201,168,76,0.3), rgba(201,168,76,0.12)); }
 .npc-dialog-head {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px;

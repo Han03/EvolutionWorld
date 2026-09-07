@@ -623,7 +623,7 @@ export function renderQuestList() {
 }
 
 function setQuestFormEnabled(on) {
-  ['q-id','q-name','q-desc','q-category','q-levelReq','q-giverNpc','q-talkNpc','q-prereq','q-nextQuests','q-gold','q-exp','q-dailyCd'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
+  ['q-id','q-name','q-desc','q-category','q-levelReq','q-giverNpc','q-talkNpc','q-prereq','q-nextQuests','q-gold','q-exp','q-dailyCd','q-acceptDialogue','q-turnInDialogue'].forEach((id) => { const el = $(id); if (el) el.disabled = !on; });
   const ra = $('btn-q-reward-add'); if (ra) ra.disabled = !on;
   const oa = $('btn-q-obj-add'); if (oa) oa.disabled = !on;
 }
@@ -669,6 +669,10 @@ export function bindQuestForm() {
   num('q-gold', 'rewards.gold', true);
   num('q-exp', 'rewards.exp', true);
   num('q-dailyCd', 'dailyCd', true);
+  const acceptDEl = $('q-acceptDialogue');
+  acceptDEl.addEventListener('input', () => { const o = q(); if (!o) return; o.acceptDialogue = acceptDEl.value.split('\n').map(s => s.trim()).filter(Boolean); });
+  const turnInDEl = $('q-turnInDialogue');
+  turnInDEl.addEventListener('input', () => { const o = q(); if (!o) return; o.turnInDialogue = turnInDEl.value.split('\n').map(s => s.trim()).filter(Boolean); });
   const nameEl = $('q-name');
   nameEl.addEventListener('input', () => { const o = q(); if (!o) return; o.name = nameEl.value; });
   nameEl.addEventListener('change', () => renderQuestList());
