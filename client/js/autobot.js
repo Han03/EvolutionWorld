@@ -105,6 +105,7 @@ const S_ = {
   _monWs: null,        // 监控 WebSocket 实例
   _monRetryAt: 0,      // 重连退避截止时间（performance.now）
   _monSnapAt: 0,       // 上次快照推送时间
+  monitorEnabled: true,// 状态快照推送开关（面板可切换）
 };
 
 const CFG = {
@@ -635,7 +636,21 @@ function advanceGoal(now) {
       let npc = null;
       if (needNpc) {
         npc = nearestNpc(g.npcWid);
-        if (!npc) { log('⚠️ 视野内无 NPC，先探索寻找'); failGoal(); return; }
+        if (!npc) {
+          // 视野内无 NPC：改用投放元数据（/api/spawns）查 NPC 坐标并主动前往，
+          // 避免"探索寻找"只失败不移动导致对话子目标反复卡死
+          const sp = nearestNpcSpawn();
+          if (sp) {
+            const r = goto(sp.x, sp.z, 'npc');
+            if (r.ok) return; // 前往投放点中，下轮再评估
+            log('⚠️ 任务 NPC 投放点不可达，放弃该子目标');
+            failGoal();
+            return;
+          }
+          log('⚠️ 视野内无 NPC 且无投放数据，放弃该子目标');
+          failGoal();
+          return;
+        }
         const d = Math.hypot(npc.x - self.x, npc.z - self.z);
         if (d > CFG.NPC_RANGE) {
           const r = goto(npc.x, npc.z, 'npc');
@@ -648,10 +663,10 @@ function advanceGoal(now) {
       if (g.type === 'accept') {
         if (npc) net.sendTalkNpc ? net.sendTalkNpc(npc.wid) : (S_.sendTalkNpc && S_.sendTalkNpc(net, npc.wid));
         S_.sendQuestAccept(net, g.questId, npc ? npc.wid : 0);
-        log(`📋 尝试接取任务 #${g.questId}`);
+        log(`📋 尝试接取任务 #${g.questId} ${questName(g.questId)}`);
       } else if (g.type === 'turnin') {
         S_.sendQuestTurnIn(net, g.questId, npc ? npc.wid : 0);
-        log(`✅ 提交任务 #${g.questId}`);
+        log(`✅ 提交任务 #${g.questId} ${questName(g.questId)}`);
         S_.stats.questsDone++;
         emitStatus();
       } else {
@@ -1680,6 +1695,21 @@ function spawnPositions(typeKey) {
     .map(s => ({ x: s.x, z: s.z }));
 }
 
+/** 最近 NPC 投放坐标（/api/spawns 元数据）：对话/接交任务视野内无 NPC 时按投放点主动前往 */
+function nearestNpcSpawn() {
+  ensureSpawns();
+  if (!S_._spawns || !S_._spawns.length) return null;
+  const S = S_.S;
+  const self = S.predictor ? S.predictor.predicted() : { x: 0, z: 0 };
+  let best = null, bd = 1e9;
+  for (const s of S_._spawns) {
+    if (s.kind !== 'npc') continue;
+    const d = Math.hypot(s.x - self.x, s.z - self.z);
+    if (d < bd) { bd = d; best = s; }
+  }
+  return best;
+}
+
 /** 视野无目标时：查投放数据取最近可用投放点；无则返回 null
  *  typeKey：怪物 key 或 '*'（任意怪） */
 function nearestSpawnPoint(typeKey) {
@@ -1707,6 +1737,11 @@ function questDef(questId) {
   const d = S_.gamedata;
   if (!d || !d.quests) return null;
   return d.quests.find(x => x.id === questId) || null;
+}
+/** 任务名（元数据 quests.name），日志显示用：如 「初入世界」 */
+function questName(questId) {
+  const def = questDef(questId);
+  return def && def.name ? `「${def.name}」` : '';
 }
 function catOf(questId) {
   const def = questDef(questId);
@@ -2136,8 +2171,22 @@ function monitorSnapshot() {
   });
 }
 
+/** 状态快照推送开关（面板切换）：关闭时断开连接并停止推送，打开时立即重连 */
+export function setMonitorEnabled(on) {
+  S_.monitorEnabled = !!on;
+  if (!on) {
+    try { if (S_._monWs) S_._monWs.close(); } catch (_) {}
+    S_._monWs = null;
+  } else {
+    S_._monRetryAt = 0;
+    monitorConnect();
+  }
+  log(`📡 状态快照推送：${on ? '开' : '关'}`);
+}
+
 /** 每决策 tick 调用：维护连接（退避重连）+ 1s 一次快照 */
 function monitorTick() {
+  if (!S_.monitorEnabled) return; // 开关关闭：不连接不推送
   const now = performance.now();
   if (!S_._monWs && now >= S_._monRetryAt) monitorConnect();
   if (now - S_._monSnapAt >= 1000) { S_._monSnapAt = now; monitorSnapshot(); }
