@@ -105,7 +105,7 @@ const S_ = {
   _monWs: null,        // 监控 WebSocket 实例
   _monRetryAt: 0,      // 重连退避截止时间（performance.now）
   _monSnapAt: 0,       // 上次快照推送时间
-  monitorEnabled: true,// 状态快照推送开关（面板可切换）
+  monitorEnabled: false,// 状态快照推送开关（面板可切换，默认关闭）
 };
 
 const CFG = {

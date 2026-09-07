@@ -712,6 +712,32 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   document.querySelectorAll('.panel').forEach(makePanelDraggable);
 
+  // ── 面板层级管理：最新打开 / 点击 / 拖动的功能面板置于最上层 ──
+  // 基线 .panel z-index 为 30；每次提升自增 inline z-index，后置者恒在先前面板之上
+  let _panelZTop = 30;
+  const raisePanel = (panel) => {
+    if (!panel) return;
+    _panelZTop += 1;
+    panel.style.zIndex = String(_panelZTop);
+  };
+  // 点击 / 拖动面板任意区域 → 提升层级
+  document.querySelectorAll('.panel').forEach((p) => {
+    p.addEventListener('mousedown', () => raisePanel(p));
+  });
+  // 面板打开（hidden 移除）→ 提升层级；MutationObserver 统一覆盖所有面板打开入口，
+  // 无需在每个 toggle 函数里单独调用（背包/商店/任务/好友/公会/强化/合成/仓库/调试等）
+  if (window.MutationObserver) {
+    const panelObserver = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === 'attributes' && m.attributeName === 'class') {
+          const t = m.target;
+          if (t.classList && t.classList.contains('panel') && !t.classList.contains('hidden')) raisePanel(t);
+        }
+      }
+    });
+    document.querySelectorAll('.panel').forEach((p) => panelObserver.observe(p, { attributes: true, attributeFilter: ['class'] }));
+  }
+
   // 调试面板
   const dt = $('debug-toggle');
   if (dt) dt.addEventListener('click', () => {
