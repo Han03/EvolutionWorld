@@ -650,6 +650,8 @@ export function renderQuestForm() {
   $('q-gold').value = (q.rewards && q.rewards.gold) || 0;
   $('q-exp').value = (q.rewards && q.rewards.exp) || 0;
   $('q-dailyCd').value = q.dailyCd || 0;
+  $('q-acceptDialogue').value = Array.isArray(q.acceptDialogue) ? q.acceptDialogue.join('\n') : '';
+  $('q-turnInDialogue').value = Array.isArray(q.turnInDialogue) ? q.turnInDialogue.join('\n') : '';
   renderQuestRewardItems();
   renderQuestObjectives();
 }

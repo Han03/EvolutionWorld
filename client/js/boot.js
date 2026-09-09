@@ -597,7 +597,7 @@ async function enterWorld(token, username, worldMeta) {
   net.onQuestResult = (payload) => {
     const res = decodeQuestResult(new Reader(payload));
     // 接受/放弃/提交成功后刷新可接任务列表
-    if (res.code === 0) sendQuestList(net);
+    if (res.code === 0) sendQuestList(net, S.currentNpcWid);
   };
   net.onQuestComplete = (payload) => decodeQuestComplete(new Reader(payload));
   net.onQuestNotify = (payload) => decodeQuestNotify(new Reader(payload));
