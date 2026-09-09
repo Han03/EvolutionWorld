@@ -230,6 +230,8 @@ bool consoleExecute(ConsoleCtx& ctx, const std::string& line0) {
     p->pl.baseDefense = 3 + (lv - 1) * 1.0;
     w.recomputeStats(*p);
     w.markStatsDirty(ctx.playerId);
+    // 等级解锁：达到 levelReq 的技能立即习得（与升级/登录补全共用同一逻辑）
+    if (w.unlockSkillsByLevel(*p)) w.markSkillsDirty(ctx.playerId);
     out("等级设为 " + std::to_string(lv) + "，属性已重算");
     return true;
   }

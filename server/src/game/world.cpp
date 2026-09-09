@@ -421,20 +421,24 @@ void World::grantExp(Entity& p, uint32_t amount) {
     p.hp = p.maxHp; p.mp = p.maxMp;
     leveled = true;
   }
-  // 等级解锁技能：达到 levelReq 且未学习 → 自动习得（大型网游等级门槛机制）
+  // 等级解锁技能：升级后按当前等级补齐（与控制台 level 命令共用同一逻辑）
   if (leveled) {
-    bool unlocked = false;
-    for (const auto& [sid, sd] : data_.skills()) {
-      if (sid < 2000u && p.level >= (int)sd.levelReq && !p.learnedSkills.count(sid)) {
-        p.learnedSkills.insert(sid);
-        p.skillCd[sid] = 0;
-        unlocked = true;
-        fprintf(stderr, "[skill-unlock] %s Lv%d 解锁技能 %u (%s)\n", p.id.c_str(), p.level, sid, sd.name.c_str());
-      }
-    }
-    if (unlocked) markSkillsDirty(p.id);
+    if (unlockSkillsByLevel(p)) markSkillsDirty(p.id);
   }
   markStatsDirty(p.id);
+}
+  // 等级解锁技能：达到 levelReq 且未学习的玩家技能一次补齐（大型网游等级门槛机制）
+bool World::unlockSkillsByLevel(Entity& p) {
+  bool unlocked = false;
+  for (const auto& [sid, sd] : data_.skills()) {
+    if (sid < 2000u && p.level >= (int)sd.levelReq && !p.learnedSkills.count(sid)) {
+      p.learnedSkills.insert(sid);
+      p.skillCd[sid] = 0;
+      unlocked = true;
+      fprintf(stderr, "[skill-unlock] %s Lv%d 解锁技能 %u (%s)\n", p.id.c_str(), p.level, sid, sd.name.c_str());
+    }
+  }
+  return unlocked;
 }
 // ---------- 技能系统（大型网游规模，数据驱动，服务端权威） ----------
 bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
