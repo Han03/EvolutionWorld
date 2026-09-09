@@ -210,10 +210,12 @@ export function applyGameData(data) {
         if (!id) continue;
         const cl = SKILL_FX_TYPE[id];
         next[id] = {
+          id,
           name: s.name || `技能#${id}`,
           desc: s.desc || '',
           icon: resolveIcon(s.icon),
           target: TARGET_MAP[s.target] || 1,
+          levelReq: s.levelReq || 1,   // 学习所需等级（服务端技能配置）
           castMs: s.castTimeMs | 0,
           radius: s.radius || 0,
           mana: s.mana || 0,
@@ -225,6 +227,9 @@ export function applyGameData(data) {
           lifesteal: s.lifesteal || 0,
           knockback: s.knockback || 0,
           dashDist: s.dashDist || 0,
+          buffType: s.buffType || 'none',
+          buffValue: s.buffValue || 0,
+          buffDur: s.buffDur || 0,
           fxType: cl || 'physical',
         };
       }

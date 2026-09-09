@@ -2,15 +2,16 @@
  * boot-panels.js — UI 面板：背包/装备/商店/强化/分解/合成/仓库
  * 依赖注入：由 boot.js 调用 configure() 传入共享依赖。
  */
-import { S, ENHANCE_FAIL_TEXT, DECOMPOSE_FAIL_TEXT, CRAFT_FAIL_TEXT, WH_OP, WH_FAIL_TEXT, SHOP_CAT_NAME, toast, renderHud } from './boot-state.js';
-import { itemDef, itemName, typeName, itemDesc, SLOT_NAME, rarityColor, rarityName, itemRarity, enhanceConfig, enhanceLevelDef, enhanceMultiplier, decomposeConfig, decomposeRule, craftRecipe, warehouseConfig, warehouseExpandCost } from './items.js';
+import { S, ENHANCE_FAIL_TEXT, DECOMPOSE_FAIL_TEXT, CRAFT_FAIL_TEXT, WH_OP, WH_FAIL_TEXT, SHOP_CAT_NAME, toast, renderHud, CONSUMABLE_SLOTS, saveConsumableBar, SKILL_KEY_LABEL } from './boot-state.js';
+import { itemDef, itemName, typeName, itemDesc, SLOT_NAME, rarityColor, rarityName, itemRarity, enhanceConfig, enhanceLevelDef, enhanceMultiplier, decomposeConfig, decomposeRule, craftRecipe, warehouseConfig, warehouseExpandCost, RUNTIME_SKILLS, skillDef } from './items.js';
 import { NPC_TAG } from './protocol.js';
 
-let $, net;
+let $, net, renderConsumableBar;
 
 export function configure(deps) {
   $ = deps.$;
   net = deps.net;
+  renderConsumableBar = deps.renderConsumableBar;
 }
 
 // ============================================================================
@@ -99,11 +100,15 @@ export function renderInventory() {
     if (useBtn) useBtn.addEventListener('click', () => { net.sendUseItem(Number(useBtn.dataset.id), 1); toast('使用中…'); });
     const sellBtn = cell.querySelector('[data-act="sell"]');
     if (sellBtn) sellBtn.addEventListener('click', () => sellStackItem(id, 1));
-    cell.title = '右键：使用/出售/存仓库';
+    cell.title = '右键：使用/出售/存仓库/绑定快捷栏';
     cell.addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
+      const boundSlot = (S.consumableBar || []).indexOf(id);
       openInvMenu(ev.clientX, ev.clientY, [
         d.type === 'consumable' ? { icon: '🧪', label: '使用', fn: () => { net.sendUseItem(id, 1); toast('使用中…'); } } : null,
+        d.type === 'consumable' ? (boundSlot >= 0
+          ? { icon: '🔗', label: `解除快捷栏绑定（槽 ${boundSlot + 1}）`, fn: () => unbindConsumable(id) }
+          : { icon: '🔗', label: '绑定到快捷栏', fn: () => bindConsumable(id) }) : null,
         sellable ? { icon: '💰', label: '出售', fn: () => sellStackItem(id, 1) } : null,
         { icon: '🏦', label: '存仓库', fn: () => depositStackToWarehouse(id, cnt) },
       ]);
@@ -154,6 +159,28 @@ function depositStackToWarehouse(itemId, count) { net.sendWarehouseDeposit(false
 
 // ---- 背包右键菜单 ----
 export function closeInvMenu() { if (S.invMenuEl) { S.invMenuEl.remove(); S.invMenuEl = null; } }
+/** 绑定消耗品到快捷栏第一个空槽 */
+function bindConsumable(itemId) {
+  if (!Array.isArray(S.consumableBar)) S.consumableBar = Array(CONSUMABLE_SLOTS).fill(null);
+  const idx = S.consumableBar.indexOf(itemId);
+  if (idx >= 0) { toast(`该物品已在快捷槽 ${idx + 1}`); return; }
+  const empty = S.consumableBar.indexOf(null);
+  if (empty < 0) { toast('快捷栏已满，请先解除一个绑定'); return; }
+  S.consumableBar[empty] = itemId;
+  saveConsumableBar(S.consumableBar);
+  if (renderConsumableBar) renderConsumableBar();
+  toast(`已绑定到快捷槽 ${empty + 1}（按 ${empty + 1} 使用）`);
+}
+/** 解除消耗品快捷绑定 */
+function unbindConsumable(itemId) {
+  const idx = (S.consumableBar || []).indexOf(itemId);
+  if (idx < 0) return;
+  S.consumableBar[idx] = null;
+  saveConsumableBar(S.consumableBar);
+  if (renderConsumableBar) renderConsumableBar();
+  toast(`已解除快捷槽 ${idx + 1} 绑定`);
+}
+
 function openInvMenu(x, y, actions) {
   closeInvMenu();
   const list = actions.filter((a) => !!a);
@@ -823,4 +850,129 @@ function renderWarehouseFooter() {
     <div class="wh-expand-info">身上金币 ${S.gold}💰</div>`;
   const btn = $('wh-expand-btn');
   if (btn) btn.addEventListener('click', () => { if (afford) net.sendWarehouseExpand(); });
+}
+
+// ============================================================================
+// 技能面板（等级解锁展示，K 键 / 技能按钮打开）
+// ============================================================================
+let skillsTab = 'all', skillsSelId = 0;
+const BUFF_CN = { atk: '攻击', def: '防御', move_slow: '减速', regen: '回血', thorns: '反伤', bleed: '流血', def_down: '减防', atk_down: '减攻', stun: '眩晕', super_armor: '霸体', speed: '加速' };
+
+function isDebuffTypeOf(t) {
+  return t === 'move_slow' || t === 'bleed' || t === 'def_down' || t === 'atk_down' || t === 'stun';
+}
+/** 技能功能分类：damage 伤害 / heal 回复 / debuff 减益 / buff 增益（与 autobot 判定一致） */
+function skillKindOf(sd) {
+  if (!sd) return 'none';
+  if ((sd.heal || 0) > 0 || sd.buffType === 'regen') return 'heal';
+  if ((sd.dmgMul || 0) > 0 || (sd.flatDmg || 0) > 0) return 'damage';
+  if (sd.buffType && sd.buffType !== 'none' && (sd.buffDur || 0) > 0) {
+    return isDebuffTypeOf(sd.buffType) ? 'debuff' : 'buff';
+  }
+  return 'none';
+}
+/** 技能效果描述（详情区用） */
+function skillEffectText(sd) {
+  const parts = [];
+  if ((sd.dmgMul || 0) > 0) parts.push(`造成 ${Math.round(sd.dmgMul * 100)}% 攻击力伤害`);
+  if ((sd.flatDmg || 0) > 0) parts.push(`额外 ${sd.flatDmg} 伤害`);
+  if ((sd.heal || 0) > 0) parts.push(`回复 ${sd.heal} 生命`);
+  if (sd.buffType && sd.buffType !== 'none') {
+    const bv = sd.buffValue || 0;
+    const bd = sd.buffDur || 0;
+    const bname = BUFF_CN[sd.buffType] || sd.buffType;
+    if (sd.buffType === 'regen') parts.push(`持续回血 ${bv}/秒 ×${bd}s`);
+    else if (sd.buffType === 'move_slow' || sd.buffType === 'thorns') parts.push(`${bname} ${Math.round(bv * 100)}% ×${bd}s`);
+    else parts.push(`${bname} ${bv} ×${bd}s`);
+  }
+  if ((sd.lifesteal || 0) > 0) parts.push(`吸血 ${Math.round(sd.lifesteal * 100)}%`);
+  if ((sd.knockback || 0) > 0) parts.push(`击退 ${sd.knockback}m`);
+  if ((sd.dashDist || 0) > 0) parts.push(`位移 ${sd.dashDist}m`);
+  return parts.join('；') || '—';
+}
+
+export function toggleSkillsPanel() {
+  const p = $('skills-panel');
+  if (!p) return;
+  const hidden = p.classList.toggle('hidden');
+  if (!hidden) renderSkillsPanel();
+}
+function closeSkillsPanel() { const p = $('skills-panel'); if (p) p.classList.add('hidden'); }
+
+/** 渲染技能面板：页签（全部/攻击/回复/增益/减益）+ 卡片网格 + 详情 */
+export function renderSkillsPanel() {
+  const grid = $('skills-grid');
+  const tabs = $('skills-tabs');
+  const detail = $('skills-detail');
+  if (!grid || !tabs || !detail) return;
+  // 页签
+  tabs.innerHTML = '';
+  const tabDefs = [['all', '全部'], ['damage', '攻击'], ['heal', '回复'], ['buff', '增益'], ['debuff', '减益']];
+  for (const [v, n] of tabDefs) {
+    const b = document.createElement('button');
+    b.className = 'skills-tab' + (skillsTab === v ? ' active' : '');
+    b.textContent = n;
+    b.addEventListener('click', () => { skillsTab = v; renderSkillsPanel(); });
+    tabs.appendChild(b);
+  }
+  // 技能数据：排除怪物技能（id>=2000），玩家技能按 skillBar 顺序在前、未学按等级升序
+  const learnedSet = new Set((S.learnedSkills || []).map((s) => s.id));
+  const learned = [], locked = [];
+  for (const [id, sd] of Object.entries(RUNTIME_SKILLS)) {
+    const nid = id | 0;
+    if (nid >= 2000) continue; // 怪物技能不展示
+    if (!sd.id) sd.id = nid;   // 兜底：保证 sd.id 有效（供 has/indexOf 判断）
+    (learnedSet.has(nid) ? learned : locked).push(sd);
+  }
+  learned.sort((a, b) => {
+    const ia = S.skillBar.indexOf(a.id), ib = S.skillBar.indexOf(b.id);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  locked.sort((a, b) => (a.levelReq || 1) - (b.levelReq || 1));
+  const list = (skillsTab === 'all' ? [...learned, ...locked]
+    : [...learned, ...locked].filter((sd) => skillKindOf(sd) === skillsTab));
+  // 卡片
+  grid.innerHTML = '';
+  const myLevel = (S.playerStats && S.playerStats.level) || 1;
+  for (const sd of list) {
+    const isLearned = learnedSet.has(sd.id);
+    const card = document.createElement('div');
+    card.className = 'skill-card' + (isLearned ? ' learned' : ' locked') + (skillsSelId === sd.id ? ' sel' : '');
+    const keyIdx = S.skillBar.indexOf(sd.id);
+    const keyLabel = keyIdx >= 0 ? SKILL_KEY_LABEL(keyIdx + 1) : '';
+    card.innerHTML = `
+      <div class="skill-card-icon">${sd.icon}</div>
+      ${keyLabel ? `<span class="skill-card-key">${keyLabel}</span>` : ''}
+      <div class="skill-card-name">${sd.name}</div>
+      <div class="skill-card-req">${isLearned ? '<span class="ok">已习得</span>' : `<span class="lock">🔒 Lv${sd.levelReq || 1}</span>`}</div>`;
+    card.title = `${sd.name}（${isLearned ? '已习得' : 'Lv' + (sd.levelReq || 1) + '解锁'}）`;
+    card.addEventListener('click', () => { skillsSelId = sd.id; renderSkillsPanel(); });
+    grid.appendChild(card);
+  }
+  if (!list.length) grid.innerHTML = '<div class="skills-empty">该分类暂无技能</div>';
+  // 详情
+  const sel = list.find((sd) => sd.id === skillsSelId) || list[0];
+  if (sel) {
+    skillsSelId = sel.id;
+    const isLearned = learnedSet.has(sel.id);
+    const keyIdx = S.skillBar.indexOf(sel.id);
+    const keyLabel = keyIdx >= 0 ? SKILL_KEY_LABEL(keyIdx + 1) : '';
+    const cost = [];
+    if ((sel.mana || 0) > 0) cost.push(`蓝耗 ${sel.mana}`);
+    if ((sel.cooldownMs || 0) > 0) cost.push(`冷却 ${(sel.cooldownMs / 1000).toFixed(1)}s`);
+    if ((sel.range || 0) > 0) cost.push(`距离 ${sel.range}m`);
+    if ((sel.radius || 0) > 0) cost.push(`范围 ${sel.radius}m`);
+    detail.innerHTML = `
+      <div class="skills-detail-icon">${sel.icon}</div>
+      <div class="skills-detail-info">
+        <div class="skills-detail-title">${sel.name}
+          <span class="skills-detail-state ${isLearned ? 'ok' : 'lock'}">${isLearned ? (keyLabel ? `已习得（${keyLabel}）` : '已习得') : `未达到等级 Lv${sel.levelReq || 1}`}</span>
+        </div>
+        <div class="skills-detail-desc">${sel.desc || ''}</div>
+        <div class="skills-detail-effect">${skillEffectText(sel)}</div>
+        ${cost.length ? `<div class="skills-detail-cost">${cost.join(' · ')}</div>` : ''}
+      </div>`;
+  } else {
+    detail.innerHTML = '';
+  }
 }

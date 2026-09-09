@@ -54,6 +54,9 @@ export const S = {
   _mouseWorldX: null,
   _mouseWorldZ: null,
 
+  // 快捷消耗品栏（8 槽，存 itemId；null=未加载，加载后为数组或自动建议）
+  consumableBar: null,
+
   // 死亡/复活
   selfDead: false,
   deathAtMs: 0,
@@ -132,17 +135,26 @@ export const WH_FAIL_TEXT = {
 
 export const SHOP_CAT_NAME = { 1: '装备', 2: '消耗品', 3: '材料', 4: '特殊' };
 
-// 技能槽位 → 热键标签
+// 技能槽位 → 热键标签（与 keybinds.js SKILL_KEYS 一一对应）
+const SKILL_KEY_LABELS = ['Q', 'W', 'E', 'R', 'A', 'S', 'D', 'F', '9', '0', '-', '=', 'X', 'Z', 'T', 'Y'];
 export function SKILL_KEY_LABEL(slot) {
-  if (slot >= 1 && slot <= 9) return String(slot);
-  if (slot === 10) return '0';
-  if (slot === 11) return '-';
-  if (slot === 12) return '=';
-  if (slot === 13) return 'Q';
-  if (slot === 14) return 'R';
-  if (slot === 15) return 'T';
-  if (slot === 16) return 'Y';
-  return String(slot);
+  return SKILL_KEY_LABELS[slot - 1] || String(slot);
+}
+
+// ---- 快捷消耗品栏（本地持久化） ----
+export const CONSUMABLE_SLOTS = 8;
+const CONSUMABLE_BAR_LS = 'ew_consumable_bar_v1';
+/** 读取绑定配置：从未设置返回 null（触发自动建议）；已设置返回 8 槽数组 */
+export function loadConsumableBar() {
+  try {
+    const v = localStorage.getItem(CONSUMABLE_BAR_LS);
+    if (v === null) return null;
+    const arr = JSON.parse(v);
+    return Array.isArray(arr) ? arr.slice(0, CONSUMABLE_SLOTS) : null;
+  } catch { return null; }
+}
+export function saveConsumableBar(bar) {
+  try { localStorage.setItem(CONSUMABLE_BAR_LS, JSON.stringify(bar.slice(0, CONSUMABLE_SLOTS))); } catch { /* 忽略 */ }
 }
 
 // ---- 工具函数 ----

@@ -318,6 +318,15 @@ Entity* World::spawnPlayer(const std::string& username, Vec3* spawnHint) {
       p.skillCd[sid] = 0;
     }
   }
+  // 等级解锁补全：旧存档/高等级玩家登录时，把已达 levelReq 的玩家技能一次补齐（怪物技能 id>=2000 不参与）
+  for (const auto& [sid, sd] : data_.skills()) {
+    if (sid < 2000u && p.level >= (int)sd.levelReq && !p.learnedSkills.count(sid)) {
+      p.learnedSkills.insert(sid);
+      p.skillCd[sid] = 0;
+      fprintf(stderr, "[skill-login-fill] %s Lv%d 补全技能 %u (%s)\n", p.id.c_str(), p.level, sid, sd.name.c_str());
+    }
+  }
+  fprintf(stderr, "[skill-login] %s Lv%d learned=%zu\n", p.id.c_str(), p.level, p.learnedSkills.size());
   if (spawnHint) {
     p.pos = *spawnHint;
   } else {
@@ -403,20 +412,41 @@ void World::onVictimDeath(Entity& victim, Entity& killer, uint64_t nowMs) {
 void World::grantExp(Entity& p, uint32_t amount) {
   if (p.kind != EntityKind::Player || amount == 0) return;
   p.pl.exp += amount;
+  bool leveled = false;
   while (p.level < 999 && p.pl.exp >= playerExpToNext(p.level)) {
     p.pl.exp -= playerExpToNext(p.level);
     p.level += 1;
     p.pl.baseHp += 20; p.pl.baseMp += 8; p.pl.baseAttack += 2; p.pl.baseDefense += 1;
     recomputeStats(p);
     p.hp = p.maxHp; p.mp = p.maxMp;
+    leveled = true;
+  }
+  // 等级解锁技能：升级后按当前等级补齐（与控制台 level 命令共用同一逻辑）
+  if (leveled) {
+    if (unlockSkillsByLevel(p)) markSkillsDirty(p.id);
   }
   markStatsDirty(p.id);
+}
+  // 等级解锁技能：达到 levelReq 且未学习的玩家技能一次补齐（大型网游等级门槛机制）
+bool World::unlockSkillsByLevel(Entity& p) {
+  bool unlocked = false;
+  for (const auto& [sid, sd] : data_.skills()) {
+    if (sid < 2000u && p.level >= (int)sd.levelReq && !p.learnedSkills.count(sid)) {
+      p.learnedSkills.insert(sid);
+      p.skillCd[sid] = 0;
+      unlocked = true;
+      fprintf(stderr, "[skill-unlock] %s Lv%d 解锁技能 %u (%s)\n", p.id.c_str(), p.level, sid, sd.name.c_str());
+    }
+  }
+  return unlocked;
 }
 // ---------- 技能系统（大型网游规模，数据驱动，服务端权威） ----------
 bool World::learnSkill(const std::string& playerId, uint32_t skillId) {
   Entity* p = findEntity(playerId);
   if (!p || p->kind != EntityKind::Player) return false;
-  if (!data_.skill(skillId)) return false;
+  const SkillDef* sd = data_.skill(skillId);
+  if (!sd) return false;
+  if (p->level < (int)sd->levelReq) return false;  // 未达到学习等级
   p->learnedSkills.insert(skillId);
   p->skillCd[skillId] = 0;  // 初始无冷却
   markSkillsDirty(playerId);
@@ -782,7 +812,7 @@ std::string World::buffsFrame(const Entity& p) {
   }
   return proto::frame(proto::S2C_BUFFS, w.data());
 }
-void World::markSkillsDirty(const std::string& playerId) { skillsDirty_.insert(playerId); }
+void World::markSkillsDirty(const std::string& playerId) { skillsDirty_.insert(playerId); fprintf(stderr, "[skills-dirty] %s\n", playerId.c_str()); }
 void World::markBuffsDirty(const std::string& playerId) { buffsDirty_.insert(playerId); }
 // ---------- 控制台/调试辅助（GameConsole 与 /api/debug 复用） ----------
 Entity* World::spawnMonster(const std::string& type, double x, double z) {

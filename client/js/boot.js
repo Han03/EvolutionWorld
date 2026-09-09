@@ -46,6 +46,7 @@ import {
   openCraftPanel, closeCraftPanel, handleCraftList, renderCraftList, renderCraftDetail, handleCraftResult,
   openWarehousePanel, closeWarehousePanel, handleWarehouse, handleWarehouseResult,
   renderWarehouse, renderWarehouseBag, renderWarehouseGold,
+  toggleSkillsPanel, renderSkillsPanel,
 } from './boot-panels.js';
 
 // ---- 游戏子模块 ----
@@ -53,7 +54,7 @@ import {
   configure as configureGame,
   findNearbyNpc, pickupNearbyDrops, openNpcDialog, closeNpcDialog, refreshNpcDialog,
   interactWithNearestNpc, openQuestDialogue, advanceQuestDialogue, closeQuestDialogue,
-  renderSkillBar, renderBuffBar, isSkillLearned, castSkillNow, findEntityByWid,
+  renderSkillBar, renderBuffBar, renderConsumableBar, isSkillLearned, castSkillNow, findEntityByWid,
   loop, debugPrint, closeAllNpcPanels,
 } from './boot-game.js';
 
@@ -136,7 +137,7 @@ async function reloadTerrain() {
 // 配置子模块（注入依赖）
 // ============================================================================
 // 面板模块仅需 $ 和 net（同模块函数直接通过闭包引用）
-configurePanels({ $, net });
+configurePanels({ $, net, renderConsumableBar });
 
 // 游戏模块需要面板模块的函数
 configureGame({
@@ -149,7 +150,20 @@ configureGame({
   renderCraftList, renderCraftDetail,
   renderWarehouseBag, renderWarehouseGold,
   renderWarehouseFooter: null,
+  toggleSkillsPanel,
 });
+
+/** 新技能习得提示：对比新旧技能列表，仅对新增玩家技能（<2000）弹 toast */
+function notifyNewSkills(cur, prev) {
+  if (!prev || !prev.length || !cur || !cur.length) return; // 首次同步不弹
+  const prevSet = new Set(prev.map((s) => s.id));
+  for (const s of cur) {
+    if (s.id < 2000 && !prevSet.has(s.id)) {
+      const sd = skillDef(s.id);
+      toast(`习得新技能：${sd ? sd.name : ('技能#' + s.id)}`, 'ok');
+    }
+  }
+}
 
 // ============================================================================
 // 登录 UI
@@ -244,10 +258,12 @@ async function enterWorld(token, username, worldMeta) {
 
     // 登录初始数据帧
     net.onSkills = (msg) => {
+      const prev = S.learnedSkills || null;
       S.learnedSkills = msg.skills;
       S._cdRefMs = performance.now();
       S.skillBar = msg.skills.map((s) => s.id).sort((a, b) => a - b);
       S._skillDirty = true;
+      notifyNewSkills(msg.skills, prev);
     };
     net.onInventory = (msg) => {
       S.inventory = msg.inventory;
@@ -478,6 +494,7 @@ async function enterWorld(token, username, worldMeta) {
     S.inventory = msg.inventory; S.equip = msg.equip;
     S.equipBag = msg.equipBag || []; S.gold = msg.gold;
     renderInventory(); renderEquip(); renderHud();
+    renderConsumableBar(); // 数量角标随背包刷新（首次无消耗品时保持待建议状态）
     const ep = $('enhance-panel');
     if (ep && !ep.classList.contains('hidden')) {
       if (S.smithTab === 'decompose') { renderDecomposeList(); renderDecomposeDetail(); }
@@ -512,13 +529,14 @@ async function enterWorld(token, username, worldMeta) {
 
   // ---- 技能系统回调 ----
   net.onSkills = (msg) => {
+    const prev = S.learnedSkills || null;
     S.learnedSkills = msg.skills;
     S._cdRefMs = performance.now();
     S.skillBar = msg.skills.map((s) => s.id).sort((a, b) => a - b);
     S._skillDirty = true;
+    notifyNewSkills(msg.skills, prev);
   };
-  net.onSkillCast = (msg) => {
-    S.skillCastFeedback = msg;
+  net.onSkillCast = (msg) => {    S.skillCastFeedback = msg;
     const sd = skillDef(msg.skillId);
     if (msg.ok) {
       toast(`释放【${sd.name}】`, 'ok');
@@ -780,6 +798,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         case 'quest': toggleQuestPanel(); break;
         case 'friend': toggleFriendPanel(); break;
         case 'guild': toggleGuildPanel(); break;
+        case 'skills': toggleSkillsPanel(); break;
       }
     });
   }
@@ -787,6 +806,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // NPC 对话关闭
   const ndc = $('npc-dialog-close');
   if (ndc) ndc.addEventListener('click', closeNpcDialog);
+
+  // 技能面板关闭
+  const skillsClose = $('skills-close');
+  if (skillsClose) skillsClose.addEventListener('click', () => { const p = $('skills-panel'); if (p) p.classList.add('hidden'); });
 
   // 剧情对话层：继续/确认按钮（逐轮推进，最后一轮确认后执行接取/提交）
   const dlgNext = $('dialogue-next');

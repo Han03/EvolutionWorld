@@ -58,12 +58,15 @@
       </div>
     </div>
 
-    <!-- ── 底部中央：技能栏 + Buff 栏 ── -->
+    <!-- ── 底部中央：快捷消耗品栏 + 技能栏 + Buff 栏 ── -->
     <div id="buff-bar" class="buff-bar"></div>
     <div class="skill-bar-wrapper">
       <div class="skill-bar-frame">
         <div class="skill-bar-ornament left">◄</div>
-        <div id="skill-bar" class="skill-bar"></div>
+        <div class="action-bar-stack">
+          <div id="consumable-bar" class="consumable-bar"></div>
+          <div id="skill-bar" class="skill-bar"></div>
+        </div>
         <div class="skill-bar-ornament right">►</div>
       </div>
     </div>
@@ -77,15 +80,15 @@
         <button class="gm-btn" data-action="quest" title="任务日志 (L)">
           <span class="gm-icon">📜</span><span class="gm-label">任务</span><span class="gm-key">L</span>
         </button>
-        <button class="gm-btn" data-action="friend" title="好友 (F)">
-          <span class="gm-icon">👥</span><span class="gm-label">好友</span><span class="gm-key">F</span>
+        <button class="gm-btn" data-action="friend" title="好友 (O)">
+          <span class="gm-icon">👥</span><span class="gm-label">好友</span><span class="gm-key">O</span>
         </button>
-        <button class="gm-btn" data-action="guild" title="公会">
-          <span class="gm-icon">🏰</span><span class="gm-label">公会</span>
+        <button class="gm-btn" data-action="guild" title="公会 (U)">
+          <span class="gm-icon">🏰</span><span class="gm-label">公会</span><span class="gm-key">U</span>
         </button>
         <div class="gm-sep"></div>
-        <button class="gm-btn gm-disabled" data-action="skills" title="技能树 (暂未开放)">
-          <span class="gm-icon">⚔</span><span class="gm-label">技能</span>
+        <button class="gm-btn" data-action="skills" title="技能 (K)">
+          <span class="gm-icon">⚔</span><span class="gm-label">技能</span><span class="gm-key">K</span>
         </button>
         <button class="gm-btn gm-disabled" data-action="map" title="世界地图 (暂未开放)">
           <span class="gm-icon">🗺</span><span class="gm-label">地图</span>
@@ -189,6 +192,18 @@
     </div>
     <div id="shop-tabs" class="shop-tabs"></div>
     <div id="shop-list" class="shop-list"></div>
+  </div>
+
+  <!-- ═══════════ 技能面板 ═══════════ -->
+  <div id="skills-panel" class="panel skills-panel hidden">
+    <div class="panel-head">
+      <span class="panel-title-icon">⚔</span>
+      <span>技能</span>
+      <button id="skills-close" class="panel-close">✕</button>
+    </div>
+    <div id="skills-tabs" class="skills-tabs"></div>
+    <div id="skills-grid" class="skills-grid"></div>
+    <div id="skills-detail" class="skills-detail"></div>
   </div>
 
   <!-- ═══════════ 任务日志面板 ═══════════ -->
@@ -353,6 +368,6 @@
     </div>
   </div>
 
-  <script type="module" src="./js/boot.js"></script>
+  <script type="module" src="./js/boot.js?v=10"></script>
 </body>
 </html>

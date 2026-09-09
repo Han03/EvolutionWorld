@@ -178,6 +178,8 @@ public:
   // ---- 技能系统（大型网游规模，数据驱动，服务端权威） ----
   // 学习技能（写入 learnedSkills，无冷却）
   bool learnSkill(const std::string& playerId, uint32_t skillId);
+  // 等级解锁技能：达到 levelReq 且未学习的玩家技能一次补齐（返回是否有新增）。升级/登录补全/控制台共用。
+  bool unlockSkillsByLevel(Entity& p);
   // 开始施放技能：校验已学/冷却/耗蓝/目标/距离 → 前摇(castTimeMs>0)或瞬发结算。
   // 前摇由 castSystem 到期后结算；移动/受击打断（cancelCast）。返回是否成功开始施放。
   bool beginCast(const std::string& playerId, uint32_t skillId, uint32_t targetWid, double tx, double tz);

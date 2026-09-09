@@ -296,11 +296,84 @@ html, body {
   color: var(--gold-light); font-size: 14px; font-weight: 700;
   border-radius: 6px;
 }
+/* 技能空槽占位（固定 8 槽展示） */
+.skill-cell.slot-empty {
+  border: 1px dashed rgba(201,168,76,0.35);
+  background: rgba(20,16,10,0.55);
+  cursor: default;
+}
+.skill-cell.slot-empty:hover {
+  border-color: rgba(201,168,76,0.5);
+  box-shadow: inset 0 0 6px rgba(201,168,76,0.08);
+  transform: none;
+}
+.skill-cell.slot-empty .skill-plus {
+  font-size: 16px; color: rgba(255,255,255,0.22);
+  line-height: 1;
+}
+.skill-cell.no-mana { filter: saturate(0.45) brightness(0.8); }
+.skill-cell.no-mana::after {
+  content: '蓝不足'; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4,8,16,0.45);
+  color: var(--text-dim); font-size: 10px; font-weight: 700;
+  border-radius: 6px;
+}
 
-/* Buff 栏 */
+/* ── 快捷消耗品栏（技能栏上方，数字键 1-8） ── */
+.action-bar-stack {
+  display: flex; flex-direction: column; gap: 6px;
+  align-items: center;
+}
+.consumable-bar { display: flex; gap: 4px; }
+.consumable-cell {
+  position: relative;
+  width: 40px; height: 40px;
+  background: linear-gradient(180deg, rgba(45,38,24,0.92) 0%, rgba(22,18,12,0.95) 100%);
+  border: 1px solid rgba(201,168,76,0.35);
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: var(--cursor-pointer); user-select: none;
+  transition: all 0.12s;
+  box-shadow: inset 0 1px 0 rgba(201,168,76,0.1);
+}
+.consumable-cell:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 8px rgba(201,168,76,0.3), inset 0 0 6px rgba(201,168,76,0.12);
+  transform: translateY(-2px);
+}
+.consumable-cell .item-icon { font-size: 18px; }
+.consumable-cell .cell-key {
+  position: absolute; top: 1px; left: 2px;
+  font-size: 8px; color: var(--gold);
+  background: rgba(0,0,0,0.6); border-radius: 2px; padding: 0 2px;
+  font-weight: 700; line-height: 1.3;
+}
+.consumable-cell .cell-cnt {
+  position: absolute; right: 1px; bottom: 1px;
+  font-size: 9px; color: #fff; font-weight: 700;
+  background: rgba(0,0,0,0.6); border-radius: 2px; padding: 0 2px;
+  line-height: 1.3;
+}
+.consumable-cell .cell-cnt.low { color: #ff7a5c; }
+.consumable-cell .cell-cnt.zero { color: #6b6b6b; }
+.consumable-cell.exhausted { filter: saturate(0.3) brightness(0.75); }
+.consumable-cell.slot-empty {
+  border: 1px dashed rgba(201,168,76,0.3);
+  background: rgba(20,16,10,0.5);
+}
+.consumable-cell.slot-empty:hover {
+  border-color: rgba(201,168,76,0.5);
+  transform: none;
+}
+.consumable-cell.slot-empty .cell-plus {
+  font-size: 14px; color: rgba(255,255,255,0.2); line-height: 1;
+}
+
+/* Buff 栏（动作条上方：消耗品栏 + 技能栏 + 底边距） */
 .buff-bar {
   position: absolute;
-  left: 50%; bottom: 80px;
+  left: 50%; bottom: 136px;
   transform: translateX(-50%);
   display: flex; gap: 4px;
   z-index: 7;
@@ -1555,3 +1628,88 @@ kbd {
   font-family: inherit;
 }
 .console-input::placeholder { color: var(--text-dim); }
+
+/* ── 技能面板（等级解锁展示） ── */
+.skills-panel {
+  width: 640px; max-width: 92vw;
+  left: 50%; top: 12%;
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, rgba(20,16,10,0.97), rgba(10,8,5,0.98));
+  border: 1px solid rgba(201,168,76,0.45);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.75), 0 0 20px rgba(201,168,76,0.15);
+  padding-bottom: 12px;
+}
+.skills-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 10px 14px 0;
+}
+.skills-tab {
+  font-size: 11px; color: rgba(255,255,255,0.55);
+  background: rgba(30,25,15,0.6);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px; padding: 3px 10px;
+  cursor: var(--cursor-pointer);
+}
+.skills-tab.active {
+  color: #d9b94a; border-color: rgba(201,168,76,0.5);
+  background: rgba(45,38,24,0.8);
+}
+.skills-grid {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 12px 14px; min-height: 120px;
+}
+.skill-card {
+  position: relative;
+  width: 84px;
+  background: linear-gradient(180deg, rgba(45,38,24,0.95), rgba(22,18,12,0.95));
+  border: 1px solid rgba(201,168,76,0.4);
+  border-radius: 6px;
+  padding: 8px 6px;
+  text-align: center;
+  cursor: var(--cursor-pointer);
+  transition: all 0.12s;
+  box-shadow: inset 0 1px 0 rgba(201,168,76,0.1);
+}
+.skill-card:hover { border-color: var(--gold); transform: translateY(-2px); box-shadow: 0 0 8px rgba(201,168,76,0.3); }
+.skill-card.sel { border-color: var(--gold); box-shadow: 0 0 10px rgba(201,168,76,0.4); }
+.skill-card.locked {
+  border: 1px dashed rgba(201,168,76,0.3);
+  background: linear-gradient(180deg, rgba(30,25,15,0.6), rgba(15,12,8,0.6));
+  filter: saturate(0.4) brightness(0.78);
+}
+.skill-card-icon { font-size: 22px; line-height: 1.3; }
+.skill-card-key {
+  position: absolute; top: 3px; left: 4px;
+  font-size: 9px; font-weight: 700; color: var(--gold);
+  background: rgba(0,0,0,0.6); border-radius: 3px; padding: 0 3px;
+}
+.skill-card-name {
+  font-size: 10px; color: #e8d9a8; margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.skill-card-req { font-size: 8px; margin-top: 2px; }
+.skill-card-req .ok { color: rgba(120,220,140,0.9); }
+.skill-card-req .lock { color: #ff9d6b; }
+.skills-empty { color: var(--text-dim); font-size: 12px; padding: 24px; width: 100%; text-align: center; }
+.skills-detail {
+  display: flex; gap: 12px; align-items: flex-start;
+  border-top: 1px solid rgba(201,168,76,0.25);
+  margin: 0 14px; padding: 12px 0 4px;
+}
+.skills-detail-icon {
+  width: 44px; height: 44px; flex: none;
+  background: linear-gradient(180deg, rgba(45,38,24,0.95), rgba(22,18,12,0.95));
+  border: 1px solid rgba(201,168,76,0.55);
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+}
+.skills-detail-info { flex: 1; min-width: 0; }
+.skills-detail-title { font-size: 13px; font-weight: 700; color: #e8d9a8; }
+.skills-detail-state { font-size: 10px; margin-left: 6px; font-weight: 400; }
+.skills-detail-state.ok { color: rgba(120,220,140,0.9); }
+.skills-detail-state.lock { color: #ff9d6b; }
+.skills-detail-desc { font-size: 11px; color: rgba(255,255,255,0.55); margin-top: 3px; line-height: 1.5; }
+.skills-detail-effect { font-size: 11px; color: var(--gold-light); margin-top: 4px; }
+.skills-detail-cost { font-size: 10px; color: var(--text-dim); margin-top: 3px; }

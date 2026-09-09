@@ -260,6 +260,7 @@ bool GameData::loadFromJson(const std::string& dir) {
           s.desc = j.at("desc").asString();
           s.icon = j.at("icon").asString();
           s.target = SkillDef::targetFromStr(j.at("target").asString());
+          s.levelReq = (uint32_t)(j.has("levelReq") ? std::max<int64_t>(1, j.at("levelReq").asInt()) : 1);
           s.manaCost = j.at("mana").asNumber();
           s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
           s.range = j.at("range").asNumber();
@@ -520,6 +521,7 @@ std::string GameData::skillsToJson() const {
     j["knockback"] = d.knockback;
     j["dashDist"] = d.dashDist;
     j["superArmor"] = d.superArmor ? 1 : 0;
+    j["levelReq"] = (int64_t)d.levelReq;
     arr.push_back(j);
   }
   Json root = Json::object();
@@ -542,6 +544,7 @@ bool GameData::replaceSkills(const Json& obj) {
       s.desc = j.at("desc").asString();
       s.icon = j.at("icon").asString();
       s.target = SkillDef::targetFromStr(j.at("target").asString());
+      s.levelReq = (uint32_t)(j.has("levelReq") ? std::max<int64_t>(1, j.at("levelReq").asInt()) : 1);
       s.manaCost = j.at("mana").asNumber();
       s.cooldownMs = (uint32_t)j.at("cooldownMs").asInt();
       s.range = j.at("range").asNumber();

@@ -2,7 +2,7 @@
  * boot-game.js — 技能施放 + NPC 交互 + 精英 HUD + 主循环 + 调试
  * 依赖注入：由 boot.js 调用 configure() 传入共享依赖。
  */
-import { S, CLIENT_VERSION, PLAYER_RESPAWN_SEC, SKILL_KEY_LABEL, toast, renderHud, protocolLog } from './boot-state.js';
+import { S, CLIENT_VERSION, PLAYER_RESPAWN_SEC, SKILL_KEY_LABEL, toast, renderHud, protocolLog, CONSUMABLE_SLOTS, loadConsumableBar, saveConsumableBar } from './boot-state.js';
 import { itemDef, skillDef, skillName } from './items.js';
 import { terrainHeight, terrainBlocked, terrainBlockedExact, terrainColor } from './terrain.js';
 import { NPC_TAG } from './protocol.js';
@@ -13,12 +13,14 @@ let toggleInventoryPanel, closeInventoryPanel, closeShopPanel, openShopPanel, re
     closeEnhancePanel, openEnhancePanel, closeCraftPanel, openCraftPanel, closeWarehousePanel, openWarehousePanel,
     renderEnhanceList, renderEnhanceDetail, renderDecomposeList, renderDecomposeDetail,
     renderCraftList, renderCraftDetail,
-    renderWarehouseBag, renderWarehouseGold, renderWarehouseFooter;
+    renderWarehouseBag, renderWarehouseGold, renderWarehouseFooter,
+    toggleSkillsPanel;
 
 export function configure(deps) {
   $ = deps.$;
   net = deps.net;
   toggleInventoryPanel = deps.toggleInventoryPanel;
+  toggleSkillsPanel = deps.toggleSkillsPanel;
   closeInventoryPanel = deps.closeInventoryPanel;
   closeShopPanel = deps.closeShopPanel;
   openShopPanel = deps.openShopPanel;
@@ -270,7 +272,7 @@ export function interactWithNearestNpc() {
 }
 
 // ============================================================================
-// 技能系统
+// 技能系统 + 快捷消耗品栏
 // ============================================================================
 export function renderSkillBar() {
   const bar = $('skill-bar');
@@ -278,12 +280,27 @@ export function renderSkillBar() {
   bar.innerHTML = '';
   const cdMap = {};
   for (const s of S.learnedSkills) cdMap[s.id] = s.cdMs || 0;
-  S.skillBar.forEach((id, idx) => {
-    const sd = skillDef(id);
+  // 固定展示 8 个槽位：已学技能按顺序填入，未绑定的槽位显示空槽占位
+  const slotCount = Math.max(8, S.skillBar.length);
+  for (let idx = 0; idx < slotCount; idx++) {
+    const id = S.skillBar[idx];
+    const sd = id ? skillDef(id) : null;
+    if (!sd) {
+      // 空槽占位：虚线框 + ＋，提示未绑定
+      const cell = document.createElement('div');
+      cell.className = 'skill-cell slot-empty';
+      cell.innerHTML = `
+        <div class="skill-key">${SKILL_KEY_LABEL(idx + 1)}</div>
+        <div class="skill-plus">＋</div>`;
+      cell.title = `技能槽 ${idx + 1}（${SKILL_KEY_LABEL(idx + 1)}）未绑定`;
+      bar.appendChild(cell);
+      continue;
+    }
     const cell = document.createElement('div');
     const cdLeft = cdMap[id] || 0;
     const onCd = cdLeft > 0;
-    cell.className = 'skill-cell' + (onCd ? ' cd' : '');
+    const noMana = sd.mana > 0 && S.playerStats.mp < sd.mana;
+    cell.className = 'skill-cell' + (onCd ? ' cd' : '') + (noMana ? ' no-mana' : '');
     cell.innerHTML = `
       <div class="skill-icon">${sd.icon}</div>
       <div class="skill-key">${SKILL_KEY_LABEL(idx + 1)}</div>
@@ -294,8 +311,67 @@ export function renderSkillBar() {
       if (sid) castSkillNow(sid);
     });
     bar.appendChild(cell);
-  });
-  if (!S.skillBar.length) bar.innerHTML = '<div class="skill-cell empty">未习得技能</div>';
+  }
+}
+
+/** 使用快捷消耗品槽位（点击/热键共用） */
+export function useConsumableSlot(slot) {
+  if (!net) return;
+  const itemId = S.consumableBar[slot - 1];
+  if (!itemId) { toast(`快捷槽 ${slot} 未绑定消耗品（背包右键"绑定到快捷栏"）`); return; }
+  const cnt = (S.inventory && S.inventory[itemId]) || 0;
+  if (cnt <= 0) { toast('该消耗品已用完'); return; }
+  const d = itemDef(itemId);
+  net.sendUseItem(itemId, 1);
+  toast(`使用 ${d.name}`);
+}
+
+/** 渲染快捷消耗品栏（8 槽，数字键 1-8） */
+export function renderConsumableBar() {
+  const bar = $('consumable-bar');
+  if (!bar) return;
+  // 首次加载：读本地配置；未配置过则自动建议背包第一个消耗品到 1 号槽
+  if (S.consumableBar === null) {
+    const saved = loadConsumableBar();
+    if (saved) {
+      S.consumableBar = saved;
+    } else {
+      const ids = Object.keys(S.inventory || {}).map(Number)
+        .filter((id) => { const d = itemDef(id); return d.type === 'consumable' && (S.inventory[id] || 0) > 0; })
+        .sort((a, b) => a - b);
+      if (ids.length) {
+        S.consumableBar = Array(CONSUMABLE_SLOTS).fill(null);
+        S.consumableBar[0] = ids[0];
+        saveConsumableBar(S.consumableBar);
+      } else {
+        // 背包暂无消耗品：保持 null，等背包数据到达后再建议
+        bar.innerHTML = '';
+        return;
+      }
+    }
+  }
+  bar.innerHTML = '';
+  for (let i = 0; i < CONSUMABLE_SLOTS; i++) {
+    const itemId = S.consumableBar[i] || 0;
+    const cell = document.createElement('div');
+    const keyLabel = String(i + 1);
+    if (itemId) {
+      const d = itemDef(itemId);
+      const cnt = (S.inventory && S.inventory[itemId]) || 0;
+      cell.className = 'consumable-cell' + (cnt <= 0 ? ' exhausted' : '');
+      cell.innerHTML = `
+        <div class="item-icon">${d.icon}</div>
+        <span class="cell-key">${keyLabel}</span>
+        <span class="cell-cnt ${cnt <= 0 ? 'zero' : cnt < 10 ? 'low' : ''}">${cnt}</span>`;
+      cell.title = `${d.name} ×${cnt} — 点击或按 ${keyLabel} 使用`;
+      cell.addEventListener('click', () => useConsumableSlot(i + 1));
+    } else {
+      cell.className = 'consumable-cell slot-empty';
+      cell.innerHTML = `<span class="cell-key">${keyLabel}</span><span class="cell-plus">＋</span>`;
+      cell.title = `快捷槽 ${keyLabel}：背包消耗品右键"绑定到快捷栏"`;
+    }
+    bar.appendChild(cell);
+  }
 }
 
 export function renderBuffBar() {
@@ -349,11 +425,9 @@ export function castSkillNow(skillId) {
       }
     }
     // else: 鼠标未进入画布，落点保持自身位置（脚下空放）
-    // 距离校验（吸附怪物时可能超距）
-    if (sd.range > 0) {
-      const dist = Math.hypot(ax - selfPos.x, az - selfPos.z);
-      if (dist > sd.range) { toast(`超出施法距离（${sd.range}m）`); return; }
-    }
+    // 注：客户端允许超距离释放——吸附路径已按 bestD<=range 判定、空放路径已 clamp 到
+    // range，落点一定在可达最远距离内，无需客户端拦截提示；是否真正超距交由服务端
+    // 权威校验（beginCast 含 kCastRangeTolerance=0.5m 容差）
   }
   net.sendCastSkill(skillId, targetWid, ax, az);
 }
@@ -427,6 +501,8 @@ export function loop(now) {
   if (!S.selfDead) {
     const slot = S.input.takeSkillSlot();
     if (slot >= 1 && slot <= S.skillBar.length) castSkillNow(S.skillBar[slot - 1]);
+    const cSlot = S.input.takeConsumableSlot();
+    if (cSlot >= 1 && cSlot <= CONSUMABLE_SLOTS) useConsumableSlot(cSlot);
     if (S._cdRefMs > 0 && S.learnedSkills.length) {
       const elapsed = now - S._cdRefMs;
       if (elapsed > 0) {
@@ -434,7 +510,7 @@ export function loop(now) {
         S._cdRefMs = now;
       }
     }
-    if (S._skillDirty) { renderSkillBar(); S._skillDirty = false; S._lastCdTick = now; }
+    if (S._skillDirty) { renderSkillBar(); renderConsumableBar(); S._skillDirty = false; S._lastCdTick = now; }
     // Buff 本地递减（与服务端 tick 解耦，平滑 UI 倒计时）
     if (S.myBuffs.length > 0) {
       const buffDt = (now - (S._lastBuffTick || now)) / 1000;
@@ -466,6 +542,7 @@ export function loop(now) {
     }
     if (S.input.takeInvToggle()) toggleInventoryPanel();
     if (S.input.takeQuestToggle()) toggleQuestPanel();
+    if (S.input.takeSkillsToggle()) toggleSkillsPanel();
     const socialToggle = S.input.takeSocialToggle();
     if (socialToggle === 1) toggleFriendPanel();
     else if (socialToggle === 2) toggleGuildPanel();
