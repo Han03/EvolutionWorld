@@ -349,11 +349,9 @@ export function castSkillNow(skillId) {
       }
     }
     // else: 鼠标未进入画布，落点保持自身位置（脚下空放）
-    // 距离校验（吸附怪物时可能超距）
-    if (sd.range > 0) {
-      const dist = Math.hypot(ax - selfPos.x, az - selfPos.z);
-      if (dist > sd.range) { toast(`超出施法距离（${sd.range}m）`); return; }
-    }
+    // 注：客户端允许超距离释放——吸附路径已按 bestD<=range 判定、空放路径已 clamp 到
+    // range，落点一定在可达最远距离内，无需客户端拦截提示；是否真正超距交由服务端
+    // 权威校验（beginCast 含 kCastRangeTolerance=0.5m 容差）
   }
   net.sendCastSkill(skillId, targetWid, ax, az);
 }

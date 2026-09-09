@@ -2038,7 +2038,8 @@ function bestOffensiveSkill(mp, dist) {
     if ((s.mana || 0) > 0 && s.mana > mp) continue;                  // 蓝量不足不用（蓝耗 0 的技能不耗蓝可用）
     if (!skillReady(s)) continue;                                      // 冷却未就绪
     if (dist !== undefined) {
-      const reach = Math.max(s.range || 5, CFG.ATK_RANGE);             // 施法距离元数据
+      // 施法距离=元数据实际 range（不放大到普攻距离；AOE range=0 兜底 5m，服务端对 AOE 不校验落点距离）
+      const reach = s.range || 5;
       if (dist > reach) continue;                                      // 超施法距离不施放
     }
     if (score > bestScore) { bestScore = score; best = s; }

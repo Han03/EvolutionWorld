@@ -170,9 +170,10 @@ export class InputState {
   takeQuestToggle() { return this.keybinds.poll('QUEST'); }
   /** 消费 3D 参考网格切换信号（H） */
   takeGridToggle() { return this.keybinds.poll('GRID'); }
-  /** 消费社交面板切换信号（F=1 / Enter=3） */
+  /** 消费社交面板切换信号（O=好友 / U=公会 / Enter=聊天） */
   takeSocialToggle() {
     if (this.keybinds.poll('FRIENDS')) return 1;
+    if (this.keybinds.poll('GUILD')) return 2;
     if (this.keybinds.poll('CHAT')) return 3;
     return 0;
   }

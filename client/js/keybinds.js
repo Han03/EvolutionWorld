@@ -3,22 +3,22 @@
  * 纯边沿触发：keydown/mousedown 写入 pending，poll() 消费
  */
 
-// 技能栏按键映射
+// 技能栏按键映射（1-8: Q W E R A S D F；9-16: 备用键位）
 const SKILL_KEYS = [
-  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
-  'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0',
-  'Minus', 'Equal', 'KeyQ', 'KeyR', 'KeyT', 'KeyY'
+  'KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyA', 'KeyS', 'KeyD', 'KeyF',
+  'Digit9', 'Digit0', 'Minus', 'Equal', 'KeyX', 'KeyZ', 'KeyT', 'KeyY'
 ];
 
 // 动作注册表（技能栏动态生成）
 const ACTIONS = {
   INTERACT:   { key: 'KeyG' },
-  PICKUP:     { key: 'KeyE' },
+  PICKUP:     { key: 'KeyC' },
   SHOP:       { key: 'KeyB' },
   INVENTORY:  { key: 'KeyI' },
   QUEST:      { key: 'KeyL' },
   GRID:       { key: 'KeyH' },
-  FRIENDS:    { key: 'KeyF' },
+  FRIENDS:    { key: 'KeyO' },
+  GUILD:      { key: 'KeyU' },
   CHAT:       { key: 'Enter' },
   MOUSE_LEFT: { key: 'Mouse0' },
 };

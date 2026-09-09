@@ -132,17 +132,10 @@ export const WH_FAIL_TEXT = {
 
 export const SHOP_CAT_NAME = { 1: '装备', 2: '消耗品', 3: '材料', 4: '特殊' };
 
-// 技能槽位 → 热键标签
+// 技能槽位 → 热键标签（与 keybinds.js SKILL_KEYS 一一对应）
+const SKILL_KEY_LABELS = ['Q', 'W', 'E', 'R', 'A', 'S', 'D', 'F', '9', '0', '-', '=', 'X', 'Z', 'T', 'Y'];
 export function SKILL_KEY_LABEL(slot) {
-  if (slot >= 1 && slot <= 9) return String(slot);
-  if (slot === 10) return '0';
-  if (slot === 11) return '-';
-  if (slot === 12) return '=';
-  if (slot === 13) return 'Q';
-  if (slot === 14) return 'R';
-  if (slot === 15) return 'T';
-  if (slot === 16) return 'Y';
-  return String(slot);
+  return SKILL_KEY_LABELS[slot - 1] || String(slot);
 }
 
 // ---- 工具函数 ----
