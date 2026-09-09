@@ -177,10 +177,19 @@ export class InputState {
     if (this.keybinds.poll('CHAT')) return 3;
     return 0;
   }
+  /** 消费技能面板切换信号（K） */
+  takeSkillsToggle() { return this.keybinds.poll('SKILLS'); }
   /** 消费技能栏热键信号（1-16 槽位） */
   takeSkillSlot() {
     for (let i = 1; i <= 16; i++) {
       if (this.keybinds.poll('SKILL_' + i)) return i;
+    }
+    return 0;
+  }
+  /** 消费快捷消耗品栏热键信号（1-8 槽位，数字键） */
+  takeConsumableSlot() {
+    for (let i = 1; i <= 8; i++) {
+      if (this.keybinds.poll('CONSUMABLE_' + i)) return i;
     }
     return 0;
   }

@@ -42,6 +42,7 @@ struct SkillDef {
   std::string desc;
   std::string icon;              // 客户端缩略图标识
   SkillTarget target = SkillTarget::SELF;
+  uint32_t levelReq = 1;         // 学习所需等级（升级自动解锁，levelReq<=当前等级）
   double manaCost = 0;           // 耗蓝
   uint32_t cooldownMs = 0;       // 冷却（毫秒，服务端权威）
   double range = 0;              // 目标距离（ENEMY/AOE）

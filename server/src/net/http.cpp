@@ -68,10 +68,9 @@ std::string httpBuildResponse(int code, const std::string& status,
   res += "Connection: close\r\n";
   res += "Access-Control-Allow-Origin: *\r\n";
   res += "X-Content-Type-Options: nosniff\r\n";
-  // HTML/JS/CSS 使用 no-cache（允许缓存但每次须重验证），避免 Edge 对 no-store 的 HTML 触发下载
-  if (contentType.find("text/html") != std::string::npos ||
-      contentType.find("javascript") != std::string::npos ||
-      contentType.find("text/css") != std::string::npos) {
+  // HTML 使用 no-cache（允许缓存但每次须重验证），避免 Edge 对 no-store 的 HTML 触发下载；
+  // JS/CSS/其余一律 no-store：开发期模块无版本号，no-cache 会让浏览器直接复用旧 JS 导致热更不生效
+  if (contentType.find("text/html") != std::string::npos) {
     res += "Cache-Control: no-cache\r\n";
   } else {
     res += "Cache-Control: no-store\r\n";

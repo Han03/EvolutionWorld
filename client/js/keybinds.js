@@ -9,6 +9,12 @@ const SKILL_KEYS = [
   'Digit9', 'Digit0', 'Minus', 'Equal', 'KeyX', 'KeyZ', 'KeyT', 'KeyY'
 ];
 
+// 快捷消耗品栏按键映射（1-8: 数字键）
+const CONSUMABLE_KEYS = [
+  'Digit1', 'Digit2', 'Digit3', 'Digit4',
+  'Digit5', 'Digit6', 'Digit7', 'Digit8'
+];
+
 // 动作注册表（技能栏动态生成）
 const ACTIONS = {
   INTERACT:   { key: 'KeyG' },
@@ -19,11 +25,15 @@ const ACTIONS = {
   GRID:       { key: 'KeyH' },
   FRIENDS:    { key: 'KeyO' },
   GUILD:      { key: 'KeyU' },
+  SKILLS:     { key: 'KeyK' },
   CHAT:       { key: 'Enter' },
   MOUSE_LEFT: { key: 'Mouse0' },
 };
 SKILL_KEYS.forEach((key, i) => {
   ACTIONS['SKILL_' + (i + 1)] = { key };
+});
+CONSUMABLE_KEYS.forEach((key, i) => {
+  ACTIONS['CONSUMABLE_' + (i + 1)] = { key };
 });
 
 // 需要 preventDefault 的按键
